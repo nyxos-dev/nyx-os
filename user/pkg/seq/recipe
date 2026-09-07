@@ -1,0 +1,3 @@
+name: seq
+source: seq.c
+bin: seq
