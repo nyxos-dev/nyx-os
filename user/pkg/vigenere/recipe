@@ -1,0 +1,3 @@
+name: vigenere
+source: vigenere.c
+bin: vigenere
