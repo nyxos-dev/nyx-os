@@ -25,7 +25,7 @@
 #define WORKSPACE_COUNT    4
 #define TASKBAR_H          36
 #define START_W            160
-#define START_H            400
+#define START_H            428   /* 14 entries: START_ITEM_Y + 14*START_ITEM_H + pad */
 #define CLOCK_W            160   /* fits "Www HH:MM  DD/MM" (24h) and the wider "Www II:MM PP  DD/MM" (12h nyx.conf clock) */
 
 enum {

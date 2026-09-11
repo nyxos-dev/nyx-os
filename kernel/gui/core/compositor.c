@@ -29,6 +29,7 @@
 #include "../games/tetris_win.h"
 #include "../games/games_win.h"
 #include "../apps/selene_win.h"
+#include "../apps/oneiros_win.h"
 #include "wallpaper_win.h"
 #include "../../drivers/misc/rtc.h"
 #include "../../auth/login.h"
@@ -707,7 +708,7 @@ static int start_menu_hit(int mx, int my) {
 #define START_HDR_H   24    /* accent brand header band */
 #define START_ITEM_Y  28    /* first entry's top, relative to the menu top */
 #define START_ITEM_H  28    /* entry pitch: 26 px body + 1 px separator + 1 */
-#define START_ITEM_N  13    /* entries in the menu (indices 0..12) */
+#define START_ITEM_N  14    /* entries in the menu (indices 0..13) */
 
 // The Start-menu entries — file scope so the draw, the hit test, and the
 // type-to-search filter share ONE list. The index IS do_start_menu_action()'s arg.
@@ -715,7 +716,7 @@ static const char* const start_items[START_ITEM_N] = {
     "File Manager", "Text Editor", "Image Viewer", "Terminal",
     "Settings", "Nyx Monitor", "Selene",
     "Paint", "Sound Test", "About", "Shutdown", "Calculator",
-    "Games",
+    "Games", "Oneiros",
 };
 // Type-to-search (Windows-style): while the menu is open, typed letters narrow the
 // list to entries containing the query (case-insensitive substring). The buffer is
@@ -1164,7 +1165,7 @@ static void draw_start_menu(void) {
         fb_rgb(80,140,215),  fb_rgb(230,170,60),  fb_rgb(70,175,175), fb_rgb(60,150,90),
         fb_rgb(130,135,150), fb_rgb(210,95,80),   fb_rgb(150,120,235),
         fb_rgb(210,90,150),  fb_rgb(90,170,235),  fb_rgb(110,110,200), fb_rgb(200,70,70), fb_rgb(90,180,120),
-        fb_rgb(170,100,210),
+        fb_rgb(170,100,210), fb_rgb(190,110,235),
     };
 
     // Only the entries matching the type-to-search filter are shown, packed from the
@@ -2644,21 +2645,30 @@ static void do_start_menu_action(int idx) {
         case 12: // Games — folder of the built-in games (DOOM, Pong, Snake, Tetris, Minesweeper)
             launch_games_folder();
             break;
-        case 13: // DOOM — launch the userspace game from its desktop icon.
-                 // Every other action opens an in-kernel window; DOOM is a real ring-3
-                 // ELF. v5.9.35 used a bare spawn_user_path() here, which left the child
-                 // unscheduled so the click did nothing; v5.9.36 uses the shell's proven
-                 // foreground-run (spawn + pump the desktop + block until exit), so DOOM
-                 // is actually scheduled and its SYS_FBPRESENT takeover is serviced.
-                 // main() injects `-iwad /mnt/doom1.wad` when launched with no args.
-                 // v5.9.37: run it in a WINDOW (not fullscreen) via launch_doom_windowed.
-            launch_doom_windowed();
+        case 13: // Oneiros — the NyxOS AI, live in a window (github.com/nyxos-dev/oneiros).
+                 // The same from-scratch model the `nyxgen` command runs, streaming into
+                 // the compositor: type a seed, press Dream, watch it generate NyxOS-style C.
+            {
+                window_t* owin = window_create(150, 90, ONEIROS_WIN_W, ONEIROS_WIN_H, "Oneiros", oneiros_win_draw);
+                if (owin) {
+                    owin->reserved = oneiros_create_ctx();
+                    if (owin->reserved) {
+                        owin->on_click = oneiros_win_click;
+                        owin->on_key   = oneiros_win_key;
+                        owin->on_tick  = oneiros_win_tick;   // ~30 Hz: stream a few chars per tick
+                        owin->on_close = oneiros_win_close;  // free the model + scratch
+                    }
+                }
+            }
             break;
         case 14: // Games folder — a desktop shelf of the built-in games
             launch_games_folder();
             break;
         case 15: // Selene — the NyxOS web browser
             launch_selene();
+            break;
+        case 16: // DOOM — the ring-3 game, run in a window (also reachable from the Games folder).
+            launch_doom_windowed();
             break;
     }
     redraw_all();

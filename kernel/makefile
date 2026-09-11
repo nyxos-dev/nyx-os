@@ -37,7 +37,7 @@ OBJS_KERNEL = boot.o kernel.o datefmt.o ini.o factor.o semver.o comm.o seq.o url
         serial.o umoddi3.o paging.o switch.o stubs.o dhcp.o \
         vbe.o fb.o tri.o mat4.o mouse.o gui.o font.o compositor.o userwin.o speaker.o tcp.o \
         sb16.o ac97.o terminal_win.o fileman_win.o paint_win.o taskman_win.o \
-        editor_win.o imageview_win.o soundtest_win.o calc_win.o wallpaper_win.o minesweeper_win.o pong_win.o voxel_win.o fire_win.o matrix_win.o lava_win.o mandel_win.o julia_win.o particles_win.o rotor_win.o fill_win.o life_win.o blobs_win.o snake_win.o tetris_win.o games_win.o selene_win.o \
+        editor_win.o imageview_win.o soundtest_win.o calc_win.o wallpaper_win.o minesweeper_win.o pong_win.o voxel_win.o fire_win.o matrix_win.o lava_win.o mandel_win.o julia_win.o particles_win.o rotor_win.o fill_win.o life_win.o blobs_win.o snake_win.o tetris_win.o games_win.o selene_win.o oneiros_win.o \
         elf.o initramfs.o rtc.o apic.o dns.o ipaddr.o ipcalc.o numparse.o namecheck.o urlparse.o fnmatch.o leb128.o crc16.o ansi.o caldate.o http.o tls.o curve25519.o ed25519.o tls_prf.o aes_gcm.o csprng.o der.o base64.o base32.o base16.o base85.o fnv.o utf8.o p256.o p384.o rsa.o sha512.o x509.o inflate.o deflate.o png.o bmp.o gif.o jpeg.o smp.o trampoline.o bootsplash.o auth.o login.o sha256.o sha1.o md5.o totp.o hkdf.o chacha20.o siphash.o poly1305.o chacha20poly1305.o blake2s.o aes_cmac.o aes_ctr.o sha3.o ct.o aes_cbc.o aes_kw.o shared_libc.o
 
 OBJS = $(OBJS_KERNEL)
