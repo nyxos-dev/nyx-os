@@ -30,6 +30,17 @@ gcc -O2 -Wall -Wextra -o nppc lang/nppc/nppc.c
 
 One file, C99, no dependencies — the `ncc` discipline.
 
+The focused module regression runs on Linux x86_64 (including WSL), using
+Python 3 and a C99 compiler:
+
+```sh
+python3 lang/nppc/tests/test_modules.py
+```
+
+It compiles and runs modules with colliding basenames and sanitized stems,
+checking their private functions, types, generic destructors, nested/diamond imports
+and deterministic lowering. Set `CC` to select another compiler.
+
 ## What this rung is (M6.2), plainly
 
 The accepted dialect is **exactly the N subset**, and lowering is the
@@ -123,9 +134,11 @@ as it would in one file. The rules are the ones design §6.2 names:
   slot, a type argument, an `impl` type. A field or method after `.`, or
   a binding or parameter name, is not one.
 - **private items never collide.** Each non-`pub` item of a module is
-  renamed `__m_<stem>_<name>` (`__m_modlib_is_even`) at its declaration
+  renamed `__m_<id>_<stem>_<name>` (`__m_1_modlib_is_even`) at its declaration
   and at every reference inside the module, so two modules' private
-  `helper`s are two functions in the lowered N. The renaming is a text
+  `helper`s are two functions in the lowered N. The file id is assigned in
+  import order and keeps names distinct even when modules have the same
+  basename or names such as `a-b.npp` and `a_b.npp`. The renaming is a text
   splice done before the generic pass, which then sees the mangled names
   as ordinary ones — a private generic, or a private type used as a type
   argument, needs nothing special. The main file's items keep their

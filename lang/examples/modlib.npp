@@ -3,7 +3,7 @@
 // A module is a file. `pub` marks what it exports — here the output helper,
 // a generic enum, and a function over one instantiation of it. Everything
 // else is private to this file: `is_even` is visible only here (a call
-// from modmain.npp is refused), and nppc renames it `__m_modlib_is_even`
+// from modmain.npp is refused), and nppc renames it `__m_1_modlib_is_even`
 // in the lowered program so another module's private `is_even` could not
 // collide with it. Monomorphization runs over the whole program after `use`
 // resolution, so an instantiation made in modmain.npp (`Maybe<str>`) lands

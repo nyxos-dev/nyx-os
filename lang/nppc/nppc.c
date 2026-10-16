@@ -1485,6 +1485,18 @@ static char* mod_stem(const char* name) {
     return out;
 }
 
+/* The file id is assigned in import order, independently of its basename.
+ * A readable stem alone is not unique: a/util.npp and b/util.npp (or
+ * a-b.npp and a_b.npp) would otherwise give their private items one name.
+ * Use the same mangling for ordinary references and #[drop] attributes. */
+static char* private_name(int owner, const char* name, int len) {
+    char* stem = mod_stem(MODS[owner].name);
+    char* out = xmalloc(strlen(stem) + (size_t)len + 32);
+    sprintf(out, "__m_%d_%s_%.*s", MODS[owner].id, stem, len, name);
+    free(stem);
+    return out;
+}
+
 /* Is IDENT token t shaped like a reference to a top-level item — a call
  * `x(`, a construction or generic use `x.` / `x{` / `x<`, a type slot after
  * ':' / '->' / '*' / 'as', or the type of an `impl`? A field or method
@@ -1510,7 +1522,7 @@ static int names_item(int t) {
  * An item — a top-level fn, struct, or enum — is visible in the file that
  * declares it; `pub` makes it visible program-wide. A name-shaped
  * reference (names_item) from another file to a non-pub item is refused.
- * Every non-pub item of a MODULE is then renamed `__m_<stem>_<name>` at
+ * Every non-pub item of a MODULE is then renamed `__m_<id>_<stem>_<name>` at
  * its declaration and every reference inside the module, so two modules'
  * private `helper`s stay two functions in the lowered N. The renaming is a
  * text splice: the generic pass runs on the result and sees the mangled
@@ -1575,8 +1587,7 @@ static char* modules_pass(const char* prog) {
             }
             if (alocal >= 0 && !ITEMS[alocal].pub && aowner >= 0) {
                 if (ne >= MAXITEMS * 4) die("%s: too many private references", FILENAME);
-                char* mn = xmalloc(strlen(MODS[aowner].name) + (size_t)fl + 8);
-                sprintf(mn, "__m_%s_%s", mod_stem(MODS[aowner].name), fname);
+                char* mn = private_name(aowner, fname, fl);
                 es[ne] = TOKS[t].start + 7; ee[ne] = TOKS[t].end - 2; er[ne] = mn; ne++;
             }
             continue;
@@ -1620,8 +1631,7 @@ static char* modules_pass(const char* prog) {
         }
         if (ITEMS[local].pub || owner < 0) continue;  /* exported, or the main file's own */
         if (ne >= MAXITEMS * 4) die("%s: too many private references", FILENAME);
-        char* mn = xmalloc(strlen(MODS[owner].name) + (size_t)TOKS[t].slen + 8);
-        sprintf(mn, "__m_%s_%.*s", mod_stem(MODS[owner].name), TOKS[t].slen, TOKS[t].s);
+        char* mn = private_name(owner, TOKS[t].s, TOKS[t].slen);
         es[ne] = TOKS[t].start; ee[ne] = TOKS[t].end; er[ne] = mn; ne++;
     }
     NGS = 0;
