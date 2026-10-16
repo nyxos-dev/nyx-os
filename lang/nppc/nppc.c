@@ -1343,16 +1343,56 @@ static char* read_file(const char* path, long* out_len) {
     return buf;
 }
 
-/* `rel` resolved against the directory of `from` (textually — two spellings
- * of one file are two files to the once-per-program rule). */
+/* Module identity is lexical: collapse separators, '.' and cancellable '..'
+ * components before opening a file or comparing it with USED/CHAIN. Leading
+ * '..' in a relative path must survive; an absolute path cannot climb above
+ * its root. This does not resolve symlinks or equate relative/absolute paths. */
+static char* normalize_path(const char* path) {
+    size_t len = strlen(path), n = 0, depth = 0;
+    char* out = xmalloc(len + 2);
+    size_t* starts = xmalloc((len + 1) * sizeof(size_t));
+    const char* p = path;
+    int rooted = *p == '/';
+    if (rooted) out[n++] = '/';
+    while (*p) {
+        while (*p == '/') p++;
+        const char* part = p;
+        while (*p && *p != '/') p++;
+        size_t plen = (size_t)(p - part);
+        if (!plen || (plen == 1 && part[0] == '.')) continue;
+        if (plen == 2 && part[0] == '.' && part[1] == '.') {
+            if (depth && !(n - starts[depth - 1] == 2 &&
+                           out[starts[depth - 1]] == '.' && out[starts[depth - 1] + 1] == '.')) {
+                n = starts[--depth];
+                if (n && out[n - 1] == '/' && !(rooted && n == 1)) n--;
+                continue;
+            }
+            if (rooted) continue;
+        }
+        if (n && out[n - 1] != '/') out[n++] = '/';
+        starts[depth++] = n;
+        memcpy(out + n, part, plen);
+        n += plen;
+    }
+    if (!n) out[n++] = '.';
+    out[n] = 0;
+    free(starts);
+    return out;
+}
+
+/* `rel` is based at the using file's directory, or at '/' if absolute.
+ * Both the returned path and the initial source path use the same identity. */
 static char* join_path(const char* from, const char* rel) {
+    if (*rel == '/') return normalize_path(rel);
     int dl = 0;
     for (int i = 0; from[i]; i++)
         if (from[i] == '/' || from[i] == '\\') dl = i + 1;
     char* out = xmalloc((size_t)dl + strlen(rel) + 1);
     memcpy(out, from, (size_t)dl);
     strcpy(out + dl, rel);
-    return out;
+    char* normalized = normalize_path(out);
+    free(out);
+    return normalized;
 }
 
 static void app(char** b, size_t* n, size_t* cap, const char* s, size_t l) {
@@ -3048,12 +3088,13 @@ int main(int argc, char** argv) {
     FILENAME = argv[1];
 
     long sz;
-    char* buf = read_file(FILENAME, &sz);
+    char* source_path = normalize_path(FILENAME);
+    char* buf = read_file(source_path, &sz);
     if (!buf) die("nppc: cannot open '%s'", FILENAME);
 
     /* Modules first (M6.5): the program is the main file with every `use`
      * inlined. A file with no directives resolves to itself byte-for-byte. */
-    char* prog = resolve_file(FILENAME, buf, sz);
+    char* prog = resolve_file(source_path, buf, sz);
     FILENAME = argv[1];
 
     /* The read side is real: the whole program lexes as the N dialect (a

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and run the N++ private-module-name regression on Linux x86_64."""
+"""Compile and run N++ module identity and private-name regressions on Linux x86_64."""
 
 import argparse
 import os
@@ -45,6 +45,9 @@ use "second.npp";
 use "a-b.npp";
 use "a_b.npp";
 use "a/util.npp";
+use "./a/util.npp";
+use "b/../a/./util.npp";
+use "a//util.npp";
 
 extern syscall {
     fn write_main(fd: i32, buf: *u8, len: isize) -> i64 = 1
@@ -62,9 +65,9 @@ fn main() -> i64 {
 '''
 
 
-def run(args):
+def run(args, cwd=None):
     result = subprocess.run(
-        [str(arg) for arg in args], capture_output=True, text=True, timeout=30
+        [str(arg) for arg in args], cwd=cwd, capture_output=True, text=True, timeout=30
     )
     if result.returncode:
         raise RuntimeError(
@@ -72,6 +75,15 @@ def run(args):
             f"{result.stdout}{result.stderr}"
         )
     return result.stdout
+
+
+def expect_cycle(nppc, source, output, diagnostic):
+    result = subprocess.run(
+        [str(nppc), str(source), "-o", str(output)],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 1 or diagnostic not in result.stderr or output.exists():
+        raise RuntimeError(f"expected a located cycle error before output: {result.stderr!r}")
 
 
 def main():
@@ -103,12 +115,13 @@ def main():
                 encoding="utf-8",
             )
         # Nested modules are recorded in a different order from their file ids.
-        # Both bridges reach a/util, exercising a re-exported diamond as well.
+        # Both bridges reach a/util through different spellings. The same file
+        # must keep its identity and export edges throughout the diamond.
         (work / "first.npp").write_text(
-            'pub use "a/util.npp";\npub use "b/util.npp";\n', encoding="utf-8"
+            'pub use "./a/util.npp";\npub use "b/util.npp";\n', encoding="utf-8"
         )
         (work / "second.npp").write_text(
-            'pub use "a/util.npp";\n', encoding="utf-8"
+            'pub use "b/../a//util.npp";\n', encoding="utf-8"
         )
         source = work / "main.npp"
         source.write_text(MAIN, encoding="utf-8")
@@ -117,6 +130,15 @@ def main():
         run([nppc, source, "-o", repeated])
         if lowered.read_bytes() != repeated.read_bytes():
             raise RuntimeError("module lowering changed across identical invocations")
+        # Do not let pathlib discard the lexical aliases before nppc sees them.
+        for alias, cwd in (
+            (f"{work}/./a/../main.npp", None),
+            (f"/../../{str(source).lstrip('/')}", None),
+            ("../main.npp", work / "a"),
+        ):
+            run([nppc, alias, "-o", repeated], cwd=cwd)
+            if lowered.read_bytes() != repeated.read_bytes():
+                raise RuntimeError(f"initial path alias changed module lowering: {alias}")
 
         generated = work / "main.c"
         run([ncc, lowered, "-o", generated])
@@ -132,7 +154,21 @@ def main():
         expected = "drop 11\ndrop 22\ndrop 33\ndrop 44\nvalues 11 22 33 44\n"
         if output != expected:
             raise RuntimeError(f"unexpected module output: {output!r}; wanted {expected!r}")
-    print("OK: distinct private functions, types and generic drops; nested/diamond imports; deterministic lowering")
+
+        # Normalize the root before it joins CHAIN, and reject a cycle at the
+        # offending directive rather than exhausting the 64-module budget.
+        (work / "cycle.npp").write_text('use "./cycle.npp";\n', encoding="utf-8")
+        expect_cycle(
+            nppc, f"{work}/./a/../cycle.npp", work / "cycle.n",
+            f'{work}/cycle.npp:1: cyclic use of "./cycle.npp"',
+        )
+        (work / "cycle_a.npp").write_text('use "a/../cycle_b.npp";\n', encoding="utf-8")
+        (work / "cycle_b.npp").write_text('use "./b/../cycle_a.npp";\n', encoding="utf-8")
+        expect_cycle(
+            nppc, work / "cycle_a.npp", work / "cycle_pair.n",
+            f'{work}/cycle_b.npp:1: cyclic use of "./b/../cycle_a.npp"',
+        )
+    print("OK: private names and generic drops; equivalent/nested/diamond imports; path aliases and cycles")
 
 
 if __name__ == "__main__":

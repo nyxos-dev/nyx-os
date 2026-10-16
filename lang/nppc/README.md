@@ -38,8 +38,8 @@ python3 lang/nppc/tests/test_modules.py
 ```
 
 It compiles and runs modules with colliding basenames and sanitized stems,
-checking their private functions, types, generic destructors, nested/diamond imports
-and deterministic lowering. Set `CC` to select another compiler.
+checking their private functions, types, generic destructors, nested/diamond imports,
+equivalent paths and located cycle errors. Set `CC` to select another compiler.
 
 ## What this rung is (M6.2), plainly
 
@@ -112,7 +112,13 @@ in one file and instantiated in another monomorphizes and dedups exactly
 as it would in one file. The rules are the ones design §6.2 names:
 
 - **once per program** — a second `use` of the same file, from anywhere,
-  leaves only a marker comment;
+  leaves only a marker comment. Paths are normalized lexically before opening
+  or resolving them: `./lib.npp`, `dir/../lib.npp` and `lib.npp` identify the
+  same module, and repeated `/` separators collapse. The initial source path
+  follows the same rule. Leading `..` components remain in relative paths;
+  absolute paths cannot climb above `/`. This is a lexical path contract:
+  it does not resolve symlinks, fold filename case, or equate relative paths
+  with absolute paths through the host's working directory;
 - **cycles refused** — a file that names one still being resolved is an
   error at the offending `use`;
 - **an item is visible in its file; `pub` makes it visible to the files
