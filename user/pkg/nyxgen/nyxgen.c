@@ -81,7 +81,30 @@ static float k_sqrtf(float x){ if(x<=0)return 0; float g=x; for(int i=0;i<24;i++
 
 static u64 rng=0x9E3779B97F4A7C15ULL;
 static u32 rnd(void){ rng^=rng<<13; rng^=rng>>7; rng^=rng<<17; return (u32)(rng>>32); }
-static float frand(void){ return (float)(rnd()/4294967296.0); }
+
+static int text_token(int c){ return c=='\n' || c=='\t' || (c>=32 && c<127); }
+static int text_byte(int c){ return text_token(c)?c:' '; }
+static int finite_float(float value){
+    union { float value; u32 bits; } v; v.value=value;
+    return (v.bits&0x7F800000u)!=0x7F800000u;
+}
+
+/* Same text alphabet as the desktop app. Temperature weights are in [0,1];
+ * sample their allowed mass only, so NUL/escape/control bytes never reach stdout. */
+static int sample_text(const float *probs, u32 random){
+    float total=0;
+    int last=' ';
+    for (int c=0;c<V;c++) if (text_token(c) && probs[c]>0.0f && probs[c]<=1.0f){
+        total+=probs[c]; last=c;
+    }
+    if (!(total>0.0f)) return ' ';
+    float target=(float)(random>>8)*(1.0f/16777216.0f)*total, cumulative=0;
+    for (int c=0;c<V;c++) if (text_token(c) && probs[c]>0.0f && probs[c]<=1.0f){
+        cumulative+=probs[c];
+        if (target<cumulative) return c;
+    }
+    return last;
+}
 
 static void rms(const float *x, const float *g, float *y){
     float ss=0; for(int i=0;i<D;i++) ss+=x[i]*x[i];
@@ -124,7 +147,15 @@ static int load_ckpt(const char *path, Params *p){
     if (fread(dims,sizeof(dims),1,f)!=1){ fclose(f); return 0; }
     if (dims[0]!=V||dims[1]!=E||dims[2]!=B||dims[3]!=HID||dims[4]!=NH||dims[5]!=FF){
         fprintf(stderr,"model dims mismatch\n"); fclose(f); return 0; }
-    int ok=fread(p,sizeof(Params),1,f)==1; fclose(f); return ok;
+    int ok=fread(p,sizeof(Params),1,f)==1;
+    if (ok) ok=fgetc(f)==EOF && !ferror(f);   /* exact ONEIROS4 payload */
+    fclose(f);
+    if (!ok) return 0;
+    for (unsigned long offset=0;offset<sizeof(Params);offset+=sizeof(float)){
+        float value; memmove(&value,(const u8*)p+offset,sizeof(value));
+        if (!finite_float(value)) return 0;
+    }
+    return 1;
 }
 
 int main(int argc, char **argv){
@@ -134,15 +165,20 @@ int main(int argc, char **argv){
     const char *path = getenv("ONEIROS_MODEL");
     if (!path) path = "/usr/pkg/nyxgen/model.bin";
 
+    if (!(temp>0.0f) || !finite_float(temp)){
+        fprintf(stderr,"nyxgen: temperature must be positive and finite\n"); return 1;
+    }
+
     Params *p=malloc(sizeof(Params));
-    if (!p || !load_ckpt(path,p)){ fprintf(stderr,"nyxgen: cannot load model %s\n",path); return 1; }
+    if (!p || !load_ckpt(path,p)){ fprintf(stderr,"nyxgen: cannot load model %s\n",path); free(p); return 1; }
+    float *probs=malloc(V*sizeof(float));
+    if (!probs){ fprintf(stderr,"nyxgen: out of memory\n"); free(p); return 1; }
 
     unsigned char ctx[B];
     int sl=(int)strlen(seed);
-    for (int t=0;t<B;t++){ int idx=sl-B+t; ctx[t]=(idx>=0)?(unsigned char)seed[idx]:(unsigned char)' '; }
-    fputs(seed,stdout);
+    for (int t=0;t<B;t++){ int idx=sl-B+t; ctx[t]=(idx>=0)?(unsigned char)text_byte((u8)seed[idx]):(unsigned char)' '; }
+    for (int i=0;i<sl;i++) putchar(text_byte((u8)seed[i]));
 
-    float *probs=malloc(V*sizeof(float));
 #ifdef __TINYC__
     { nyx_tm tm; time(&tm);                          /* in-OS: seed from the RTC (SYS_TIME) */
       u64 s = (u64)tm.sec + 61u*tm.min + 3661u*tm.hour
@@ -153,12 +189,15 @@ int main(int argc, char **argv){
 #endif
     for (int i=0;i<nout;i++){
         forward(p,ctx,probs);
-        float mx=-1e30f; for(int c=0;c<V;c++){ float lp=k_logf(probs[c]+1e-12f)/temp; probs[c]=lp; if(lp>mx)mx=lp; }
-        float s=0; for(int c=0;c<V;c++){ probs[c]=k_expf(probs[c]-mx); s+=probs[c]; }
-        float r=frand()*s,cc=0; int nx=V-1; for(int c=0;c<V;c++){ cc+=probs[c]; if(r<=cc){nx=c;break;} }
+        float mx=-1e30f; for(int c=0;c<V;c++){ float lp=k_logf(probs[c]+1e-12f); probs[c]=lp; if(lp>mx)mx=lp; }
+        /* Subtract before dividing: tiny positive temperatures may underflow a
+         * non-max weight, but cannot turn the maximum into infinity-infinity. */
+        for(int c=0;c<V;c++) probs[c]=k_expf((probs[c]-mx)/temp);
+        int nx=sample_text(probs,rnd());
         putchar(nx);
         memmove(ctx,ctx+1,B-1); ctx[B-1]=(unsigned char)nx;
     }
     putchar('\n');
+    free(probs); free(p);
     return 0;
 }
