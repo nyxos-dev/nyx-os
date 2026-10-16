@@ -6457,17 +6457,46 @@ static int pkg_recipe_value(const char* buf, const char* key, char* out, int out
 }
 
 // A package name / recipe filename token must be a PLAIN name: non-empty, not
-// "."/".." and containing no '/' or whitespace. Values interpolated into the paths
-// and the `cc` command line — the CLI `name` (/usr/pkg/<name>/recipe) and the
+// "."/".." and containing only ASCII letters, digits, '.', '_', '+' and '-'.
+// Values interpolated into paths and the `cc` command line — the CLI `name`
+// (/usr/pkg/<name>/recipe) and the
 // recipe's `source:`/`bin:` fields (compile input + /mnt/bin/<bin> output) — are
 // validated with this, so a crafted name or recipe can't traverse out of /usr/pkg
-// or /mnt/bin (arbitrary read/write) nor inject extra `cc` arguments via a space.
+// or /mnt/bin (arbitrary read/write), inject shell operators, or trigger expansion.
 static int pkg_valid_name(const char* s) {
     if (!s || !s[0]) return 0;
     if (strcmp(s, ".") == 0 || strcmp(s, "..") == 0) return 0;
-    for (const char* p = s; *p; p++)
-        if (*p == '/' || *p == ' ' || *p == '\t') return 0;
+    for (const char* p = s; *p; p++) {
+        char c = *p;
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '+' || c == '-') continue;
+        return 0;
+    }
     return 1;
+}
+
+// Package paths also become shell command text during install. Pin the shared
+// name gate, including values extracted from recipes, without running a compiler.
+static int xbm_name_selftest(void) {
+    static const char* const valid[] = {"hello", "hello.c", "N9", "libfoo-1.2+3_x"};
+    static const char* const invalid[] = {
+        "", ".", "..", "../hello", "a/b", "a b", "a\tb", "a\nb", "a\rb",
+        "a;b", "a|b", "a>b", "a<b", "a&b", "$HOME", "${HOME}", "a`b",
+        "a'b", "a\"b", "~a", "a*b", "a?b", "a\\b", "a\x1b" "b", "a\x7f" "b", "a\x80" "b"
+    };
+    if (pkg_valid_name(NULL)) return 1;
+    for (unsigned int i = 0; i < sizeof(valid) / sizeof(valid[0]); i++)
+        if (!pkg_valid_name(valid[i])) return 2 + (int)i;
+    for (unsigned int i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+        if (pkg_valid_name(invalid[i])) return 10 + (int)i;
+    char value[64];
+    const char* recipe = "source: hello.c\nbin: hello\n";
+    if (!pkg_recipe_value(recipe, "source", value, sizeof(value)) || !pkg_valid_name(value)) return 40;
+    if (!pkg_recipe_value(recipe, "bin", value, sizeof(value)) || !pkg_valid_name(value)) return 41;
+    recipe = "source: hello.c;clear\nbin: hello|clear\n";
+    if (!pkg_recipe_value(recipe, "source", value, sizeof(value)) || pkg_valid_name(value)) return 42;
+    if (!pkg_recipe_value(recipe, "bin", value, sizeof(value)) || pkg_valid_name(value)) return 43;
+    return 0;
 }
 
 /* xbm — the NyxOS package manager (our pacman/apt), built on the in-OS `cc` toolchain.
@@ -6898,7 +6927,10 @@ static void cmd_xbm(int argc, char** argv) {
         printf("Package: %s\n", name);
         if (pkg_recipe_value(rbuf, "source", v, sizeof(v))) printf("Source:  %s\n", v);
         bin[0] = '\0';
-        if (pkg_recipe_value(rbuf, "bin", bin, sizeof(bin))) printf("Binary:  %s\n", bin);
+        if (pkg_recipe_value(rbuf, "bin", bin, sizeof(bin))) {
+            if (!pkg_valid_name(bin)) { printf("%s: recipe for '%s' has an unsafe 'bin' name\n", prog, name); return; }
+            printf("Binary:  %s\n", bin);
+        }
         printf("Deps:    %s\n", pkg_recipe_value(rbuf, "deps", v, sizeof(v)) ? v : "(none)");
         printf("Fetch:   %s\n", pkg_recipe_value(rbuf, "url", v, sizeof(v)) ? v : "(builds from local source)");
         if (bin[0]) {
@@ -10968,6 +11000,7 @@ static void run_selftests(void) {
         {"json-query",   json_query_selftest},
         {"json-fmt",     json_fmt_selftest},
         {"pkg-hash",     pkg_hash_selftest},
+        {"xbm-name",     xbm_name_selftest},
         {"xbm-wire",     xbm_fetch_wire_selftest},
         {"xbm-redirect", xbm_redirect_selftest},
         {"ppm",          ppm_selftest},
