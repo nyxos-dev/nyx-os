@@ -94,6 +94,23 @@ location and wording — for every file it claims; the corpus doubles
 as ncc's own regression battery, so the reference and its rewrite
 keep each other honest.
 
+The checker accepts `ncheck file.n`, including relative paths and quoted
+paths containing spaces. With no argument it still reads
+`/tmp/n_check_target.n`; an absent target keeps the existing skip message
+and successful exit. Diagnostic text remains filename-free so the
+differential contract below is unchanged.
+
+To build and exercise the real checker on Linux x86_64 (including WSL):
+
+```sh
+python3 lang/selfhost/tests/test_check_cli.py
+```
+
+This compiles `check.n` through ncc and the host runtime, compares valid
+and invalid argv targets against ncc, and checks both legacy fallback
+outcomes. It temporarily creates `/tmp/n_check_target.n` exclusively and
+refuses to overwrite an existing fixture.
+
 **Rung 1 — the tree + the first errors (landed)**: the parser's code
 accretes one more time, transformed — every parse function now
 returns a NODE INDEX instead of printing, and the tree the toy

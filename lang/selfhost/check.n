@@ -16,9 +16,9 @@
 // (tests/bad/ + MANIFEST.txt): for every claimed file, check.n must
 // print ncc's exact first error — location AND wording — then stop
 // (ncc dies on its first error; the flag st[41] mirrors that). One
-// normalization, documented in tests/bad/README.md: check.n reads a
-// fixed target path and cannot know the original basename, so it
-// prints `line: message` and the harness strips the filename column
+// normalization, documented in tests/bad/README.md: check.n keeps
+// its filename-free diagnostic format for argv and fallback targets.
+// It prints `line: message` and the harness strips the filename column
 // from the manifest side (cut -d: -f2-). A clean program prints
 // NOTHING — the harness also claims positive targets whose output
 // must be empty.
@@ -70,8 +70,8 @@
 //   st[40] var count    st[41] the error flag (first error wins)
 //   st[55] LOOP_DEPTH   st[56] MATCH_DEPTH (the v0.18 move gates)
 //
-// The target path is fixed: /tmp/n_check_target.n — the harness
-// copies each source there before a run.
+// The target: `ncheck file.n`, like the other selfhost tools. With no
+// argument, keep /tmp/n_check_target.n for the existing harness.
 
 #[caps(syscall)]
 extern syscall {
@@ -4193,7 +4193,8 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
 
 #[caps(syscall)]
 fn main() -> i64 {
-    path := "/tmp/n_check_target.n";
+    mut path := "/tmp/n_check_target.n";
+    if arg_count() > 1 { path = arg(1); }
     fd := sys_open(path.ptr as *u8, 0, 0);
     if fd < 0 {
         put("(no check target - skipped)\n");
