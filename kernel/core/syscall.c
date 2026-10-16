@@ -166,8 +166,10 @@ static void ufd_release(int ufd) {
 /* A read() on an EMPTY fd 0 slot reads the keyboard: it drains the IRQ-fed
  * ASCII ring via getchar_poll(), echoing each key (putchar mirrors to the
  * terminal capture hook and the serial console) and handling backspace, and
- * returns when Enter arrives (the line includes the '\n'). The assembled line
- * lives in the caller's per-invocation kbuf, so the line discipline itself holds
+ * returns on Enter (including '\n'), Ctrl-D (without the control byte), or a
+ * full read buffer. Full reads stop consuming keys so subsequent reads retain
+ * the rest of a long line. Editing applies only to the current read's bytes.
+ * The assembled line lives in the caller's per-invocation kbuf, so the discipline holds
  * no shared state. On a single core the ring is contention-free too, because the
  * compositor — its usual consumer — is parked in kwait() while a foreground
  * process runs; but under `smpbalance on` the two can run on different cores at
@@ -178,11 +180,46 @@ static void ufd_release(int ufd) {
  * scheduling it — no wakeup hook in the keyboard IRQ needed yet), with
  * `blocked_in_kernel` set so the scheduler resumes it on the KERNEL CR3, and
  * the shared user_cr3/user_rsp globals saved/restored around the loop. */
+enum { STDIN_LINE_ECHO = 1, STDIN_LINE_ERASE = 2, STDIN_LINE_DONE = 4 };
+
+/* Update one bounded read. Keep EOF out of both the data and the echo stream.
+ * The caller stops before fetching another key when DONE is returned. */
+static int stdin_line_key(char* kbuf, int max, int* len, char c) {
+    if (c == 4) return STDIN_LINE_DONE;
+    if (c == '\r') c = '\n';
+    if (c == '\b' || c == 0x7F) {
+        if (*len > 0) { (*len)--; return STDIN_LINE_ERASE; }
+        return 0;
+    }
+    if (*len >= max) return STDIN_LINE_DONE;
+    kbuf[(*len)++] = c;
+    return STDIN_LINE_ECHO | ((c == '\n' || *len == max) ? STDIN_LINE_DONE : 0);
+}
+
+int stdin_line_selftest(void) {
+    char buf[4] = {0, 0, 0, '!'};
+    int len = 0;
+    if (stdin_line_key(buf, 3, &len, 4) != STDIN_LINE_DONE || len != 0 || buf[0]) return 1;
+    if (stdin_line_key(buf, 3, &len, '\b') != 0 || len != 0) return 2;
+    if (stdin_line_key(buf, 3, &len, 'a') != STDIN_LINE_ECHO || len != 1 || buf[0] != 'a') return 3;
+    if (stdin_line_key(buf, 3, &len, 4) != STDIN_LINE_DONE || len != 1 || buf[1]) return 4;
+    if (stdin_line_key(buf, 3, &len, 0x7F) != STDIN_LINE_ERASE || len != 0) return 5;
+    if (stdin_line_key(buf, 3, &len, '\r') != (STDIN_LINE_ECHO | STDIN_LINE_DONE) || len != 1 || buf[0] != '\n') return 6;
+    len = 0;
+    if (stdin_line_key(buf, 3, &len, 'x') != STDIN_LINE_ECHO) return 7;
+    if (stdin_line_key(buf, 3, &len, 'y') != STDIN_LINE_ECHO) return 8;
+    if (stdin_line_key(buf, 3, &len, 'z') != (STDIN_LINE_ECHO | STDIN_LINE_DONE)) return 9;
+    if (len != 3 || buf[0] != 'x' || buf[1] != 'y' || buf[2] != 'z' || buf[3] != '!') return 10;
+    len = 0;
+    if (stdin_line_key(buf, 1, &len, '\n') != (STDIN_LINE_ECHO | STDIN_LINE_DONE) || len != 1 || buf[0] != '\n') return 11;
+    return 0;
+}
+
 static int stdin_read_line(char* kbuf, int max) {
     process_t* self = get_cur_proc();
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     int len = 0;
-    for (;;) {
+    while (len < max) {
         char c = getchar_poll();
         if (!c) {
             if (!self) break;                    /* no process context: don't block */
@@ -199,17 +236,13 @@ static int stdin_read_line(char* kbuf, int max) {
             self->blocked_in_kernel = 0;
             continue;
         }
-        if (c == '\r') c = '\n';
-        if (c == '\b' || c == 0x7F) {            /* rub out the last echoed char */
-            if (len > 0) {
-                len--;
-                putchar('\b'); putchar(' '); putchar('\b');
-            }
-            continue;
+        int action = stdin_line_key(kbuf, max, &len, c);
+        if (action & STDIN_LINE_ERASE) {
+            putchar('\b'); putchar(' '); putchar('\b');
+        } else if (action & STDIN_LINE_ECHO) {
+            putchar(kbuf[len - 1]);
         }
-        putchar(c);                              /* echo */
-        if (len < max) kbuf[len++] = c;
-        if (c == '\n') break;                    /* canonical: return on Enter */
+        if (action & STDIN_LINE_DONE) break;
     }
     user_cr3 = saved_cr3;
     user_rsp = saved_ursp;

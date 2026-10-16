@@ -109,6 +109,34 @@ static char kbd_translate(int layout, uint8_t sc, int shift, int altgr, int caps
     return (shift || caps) ? es_shift[sc] : es_normal[sc];
 }
 
+/* Both IRQ and direct polling use the same cooked Ctrl keys. The caller holds
+ * kbd_lock while reading modifier state; any signal is sent after unlocking. */
+static char kbd_control_char(char c, int ctrl, int* sig) {
+    *sig = 0;
+    if (ctrl && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+        c = (char)((c | 0x20) - 'a' + 1);
+        if (c == 3) { *sig = SIGINT; return 0; }
+        if (c == 26) { *sig = SIGTSTP; return 0; }
+    }
+    return c;
+}
+
+int kbd_control_selftest(void) {
+    int sig;
+    for (int i = 0; i < 26; i++) {
+        int expected_sig = i == 2 ? SIGINT : (i == 25 ? SIGTSTP : 0);
+        char expected = expected_sig ? 0 : (char)(i + 1);
+        if (kbd_control_char((char)('a' + i), 1, &sig) != expected || sig != expected_sig) return 1;
+        if (kbd_control_char((char)('A' + i), 1, &sig) != expected || sig != expected_sig) return 2;
+        if (kbd_control_char((char)('a' + i), 0, &sig) != 'a' + i || sig) return 3;
+    }
+    sig = SIGINT;
+    if (kbd_control_char('\n', 1, &sig) != '\n' || sig) return 4;
+    if (kbd_control_char('1', 1, &sig) != '1' || sig) return 5;
+    if (kbd_control_char(0, 1, &sig) != 0 || sig) return 6;
+    return 0;
+}
+
 // ============================================================
 // Inicialización
 // ============================================================
@@ -268,21 +296,12 @@ void keyboard_irq_handler(void* unused) {
     }
 
     char c = scancode_to_ascii(sc);
+    c = kbd_control_char(c, ctrl_pressed, &sig);
     if (c) {
-        if (ctrl_pressed && (c == 'c' || c == 'C')) {
-            sig = SIGINT;                                   // don't buffer 'c'
-        } else if (ctrl_pressed && (c == 'z' || c == 'Z')) {
-            sig = SIGTSTP;                                  // don't buffer 'z'
-        } else {
-            // Ctrl+letter -> the ASCII control char (Ctrl-A=0x01 .. Ctrl-Z=0x1A), so
-            // TUI programs can bind commands (nano-style Ctrl-O save / Ctrl-X exit).
-            if (ctrl_pressed && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
-                c = (char)((c | 0x20) - 'a' + 1);
-            int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
-            if (next != kbd_tail) {
-                kbd_buffer[kbd_head] = c;
-                kbd_head = next;
-            }
+        int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
+        if (next != kbd_tail) {
+            kbd_buffer[kbd_head] = c;
+            kbd_head = next;
         }
     }
     spin_unlock_irqrestore(&kbd_lock, fl);
@@ -293,10 +312,11 @@ void keyboard_irq_handler(void* unused) {
 // ============================================================
 // Funciones de lectura
 // ============================================================
-static inline char kbd_poll_direct(void) {
+static inline char kbd_poll_direct(int* sig) {
     if (inb(0x64) & 0x01) {
         uint8_t sc = inb(0x60);
-        return scancode_to_ascii(sc);
+        char c = scancode_to_ascii(sc);
+        return kbd_control_char(c, ctrl_pressed, sig);
     }
     return 0;
 }
@@ -324,8 +344,10 @@ char getchar_poll(void) {
     // Ring empty: the hardware-poll fallback re-enters scancode_to_ascii (modifier
     // state + keycode ring), so it stays under the lock; serial touches no keyboard
     // state, so release first.
-    char c = kbd_poll_direct();
+    int sig = 0;
+    char c = kbd_poll_direct(&sig);
     spin_unlock_irqrestore(&kbd_lock, fl);
+    if (sig) signal_send_foreground(sig);
     if (c) return c;
     c = serial_getchar_nonblock();
     if (c == 0x7F) return '\b';

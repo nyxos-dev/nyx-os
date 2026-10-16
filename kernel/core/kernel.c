@@ -305,6 +305,8 @@ extern int editor_goto_selftest(void);      // gui/apps/editor_win.c — Ctrl+G 
 extern int editor_selection_selftest(void);
 extern int oneiros_text_selftest(void);
 extern int mouse_bounds_selftest(void);
+extern int stdin_line_selftest(void);
+extern int kbd_control_selftest(void);
 extern int selene_nav_selftest(void);       // gui/apps/selene_win.c — Back/Forward history KAT
 extern int heap_selftest(void);             // mm/heap.c — kernel-heap usage-accounting KAT
 extern int mmap_aslr_selftest(void);        // mm/mmap.c — mmap-base ASLR slide KAT
@@ -410,7 +412,7 @@ static const command_t commands[] = {
     {"pushd",     cmd_pushd,     "Push the current dir and cd to another: pushd <path>", false},
     {"popd",      cmd_popd,      "Pop the directory stack and cd back", false},
     {"dirs",      cmd_dirs,      "List the directory stack (current dir first)", false},
-    {"cat",       cmd_cat,       "Display file contents: cat [-nb] <file>", false},
+    {"cat",       cmd_cat,       "Copy files or stdin: cat [-nb] [file ...] [> output]", false},
     {"open",      cmd_open,      "Open a file in the GUI Text Editor: open <file>", false},
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"truncate",  cmd_truncate,  "Set a file's size: truncate -s <size> <file>", false},
@@ -862,7 +864,7 @@ static int shell_glob_token(const char* tok, char (*out)[256], int start) {
 // caller can suppress $/~ expansion + globbing for it (bash: '...' is literal). Returns argc
 // (<= max); sets *overflow if the line held more tokens than `max`. Compaction only ever
 // removes quote bytes, so the write cursor never runs ahead of the read cursor.
-static int shell_tokenize(char* line, char** argv, char* had_sq, int max, int* overflow) {
+static int shell_tokenize(char* line, char** argv, char* had_sq, char* redir, int max, int* overflow) {
     int argc = 0;
     *overflow = 0;
     char* p = line;
@@ -870,6 +872,7 @@ static int shell_tokenize(char* line, char** argv, char* had_sq, int max, int* o
         while (*p == ' ') p++;                    // skip separators between tokens
         if (!*p) break;
         if (argc >= max) { *overflow = 1; break; }
+        redir[argc] = (*p == '>' || (p[0] == '2' && p[1] == '>'));
         char* out = p;                            // dequoted token compacted here (w <= p always)
         char* w = p;
         int sq = 0;
@@ -931,6 +934,63 @@ static int shell_redir_op(const char* tok, int* kind, int* append, const char** 
     *append = ap;
     *file = (*p) ? p : (const char*)0;
     return 1;
+}
+
+// Keep ordinary arguments after redirects; quoted/expanded operators are data.
+static int shell_parse_redirs(int argc, char** argv, const char* redir,
+                              const char** out, int* out_ap,
+                              const char** err, int* err_ap) {
+    *out = *err = NULL; *out_ap = *err_ap = 0;
+    int kept = 1;
+    for (int i = 1; i < argc; i++) {
+        int kind, ap;
+        const char* name;
+        if (!redir[i] || !shell_redir_op(argv[i], &kind, &ap, &name)) {
+            argv[kept++] = argv[i];
+            continue;
+        }
+        if (!name) {
+            if (i + 1 >= argc || redir[i + 1] || !argv[i + 1][0]) return -1;
+            name = argv[++i];
+        }
+        if (kind == 0) { *out = name; *out_ap = ap; }
+        else          { *err = name; *err_ap = ap; }
+    }
+    return kept;
+}
+
+static int cat_needs_stdin(int argc, char** argv) {
+    int options = 1, files = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-") == 0) return 1;
+        if (options && strcmp(argv[i], "--") == 0) { options = 0; continue; }
+        if (options && argv[i][0] == '-' && argv[i][1]) continue;
+        files++;
+    }
+    return files == 0;
+}
+
+static int shell_redir_selftest(void) {
+    char line[] = "cat >'out file' -n input 2>>errors \" > \" '>'";
+    char* argv[MAX_CMD_ARGS]; char sq[MAX_CMD_ARGS], redir[MAX_CMD_ARGS];
+    int overflow = 0, out_ap, err_ap;
+    const char *out, *err;
+    int argc = shell_tokenize(line, argv, sq, redir, MAX_CMD_ARGS, &overflow);
+    argc = shell_parse_redirs(argc, argv, redir, &out, &out_ap, &err, &err_ap);
+    if (overflow || argc != 5 || strcmp(out, "out file") || out_ap ||
+        strcmp(err, "errors") || !err_ap || strcmp(argv[1], "-n") ||
+        strcmp(argv[2], "input") || strcmp(argv[3], " > ") || strcmp(argv[4], ">")) return 1;
+    char missing[] = "cat >";
+    argc = shell_tokenize(missing, argv, sq, redir, MAX_CMD_ARGS, &overflow);
+    if (shell_parse_redirs(argc, argv, redir, &out, &out_ap, &err, &err_ap) >= 0) return 2;
+    char chained[] = "cat > 2>err";
+    argc = shell_tokenize(chained, argv, sq, redir, MAX_CMD_ARGS, &overflow);
+    if (shell_parse_redirs(argc, argv, redir, &out, &out_ap, &err, &err_ap) >= 0) return 3;
+    char* plain[] = {"cat", "-nb"};
+    char* file[] = {"cat", "--", "-file"};
+    char* input[] = {"cat", "a", "-", "b"};
+    if (!cat_needs_stdin(2, plain) || cat_needs_stdin(3, file) || !cat_needs_stdin(4, input)) return 4;
+    return 0;
 }
 
 static void execute_one_command(const char* cmd_line);   // fwd: the single-command runner
@@ -1038,9 +1098,9 @@ static void execute_one_command(const char* cmd_line) {
     // byte tokenizes exactly like the old strtok, so the cc self-host + every existing flow is
     // byte-for-byte unchanged). Detect $/~ on the raw line BEFORE the in-place tokenize edits it.
     int may_expand = (strchr(cmd_copy, '$') != NULL || strchr(cmd_copy, '~') != NULL);
-    char had_sq[MAX_CMD_ARGS];
+    char had_sq[MAX_CMD_ARGS], redir[MAX_CMD_ARGS];
     int overflow = 0;
-    int argc = shell_tokenize(cmd_copy, argv, had_sq, MAX_CMD_ARGS, &overflow);
+    int argc = shell_tokenize(cmd_copy, argv, had_sq, redir, MAX_CMD_ARGS, &overflow);
     if (overflow) {               /* more tokens than the cap: refuse rather than silently truncate */
         printf("error: too many arguments (max %d)\n", MAX_CMD_ARGS);
         return;
@@ -1064,19 +1124,27 @@ static void execute_one_command(const char* cmd_line) {
     int any_glob = 0;
     for (int i = 0; i < argc; i++) if (!had_sq[i] && glob_has_magic(argv[i])) { any_glob = 1; break; }
     if (any_glob && (globbuf = (char (*)[256])kmalloc(MAX_CMD_ARGS * 256)) != NULL) {
+        char globredir[MAX_CMD_ARGS] = {0};
         int gargc = 0, ovf = 0;
         for (int i = 0; i < argc && !ovf; i++) {
-            if (!had_sq[i] && glob_has_magic(argv[i])) {
+            if (!had_sq[i] && !redir[i] && glob_has_magic(argv[i])) {
                 int r = shell_glob_token(argv[i], globbuf, gargc);
                 if (r < 0) ovf = 1; else gargc = r;
             } else if (gargc < MAX_CMD_ARGS) {
+                globredir[gargc] = redir[i];
                 strncpy(globbuf[gargc], argv[i], 255); globbuf[gargc][255] = '\0'; gargc++;
             } else ovf = 1;
         }
-        if (!ovf) { for (int i = 0; i < gargc; i++) argv[i] = globbuf[i]; argc = gargc; }
+        if (!ovf) {
+            for (int i = 0; i < gargc; i++) { argv[i] = globbuf[i]; redir[i] = globredir[i]; }
+            argc = gargc;
+        }
     }
+    int user_cat = strcmp(argv[0], "cat") == 0 && cat_needs_stdin(argc, argv);
+    if (strcmp(argv[0], "cat") == 0)
+        for (int i = 1; i < argc; i++) if (redir[i]) user_cat = 1;
     for (int i = 0; commands[i].name != NULL; i++) {
-        if (strcmp(argv[0], commands[i].name) == 0) {
+        if (!user_cat && strcmp(argv[0], commands[i].name) == 0) {
             commands[i].func(argc, argv);
             if (argbuf) kfree(argbuf);
             if (globbuf) kfree(globbuf);
@@ -1088,27 +1156,11 @@ static void execute_one_command(const char* cmd_line) {
     // name; the child gets the full argv.
     char path[128];
     if (resolve_user_elf(argv[0], path, sizeof(path))) {
-        // Strip trailing redirects and route the child's stdout (`>`/`>>`) and/or stderr
-        // (`2>`/`2>>`) to files (issue #88 + stderr follow-up — the exec path used to pass
-        // the operator + filename as args and print to the console). Builtins keep self-
-        // handling their own `>` (e.g. echo), so only the user-ELF path is touched here.
-        // Real args end at the FIRST operator; the filename may be glued (`>out`) or the
-        // next token (`> out`); both may appear, e.g. `cc x.c >out 2> errs`.
         const char *out_p = (const char*)0, *err_p = (const char*)0;
-        int out_ap = 0, err_ap = 0, rargc = argc;
-        for (int i = 1; i < argc; i++) {
-            int kind, ap;
-            const char* glued;
-            if (!shell_redir_op(argv[i], &kind, &ap, &glued)) continue;
-            if (rargc == argc) rargc = i;                 // real args end at the first operator
-            const char* fname;
-            if (glued) fname = glued;                     // `>out`
-            else if (i + 1 < argc) fname = argv[++i];     // `> out` — consume the next token
-            else break;                                   // trailing bare operator, no filename
-            if (kind == 0) { out_p = fname; out_ap = ap; }
-            else           { err_p = fname; err_ap = ap; }
-        }
-        run_foreground_elf_redir(path, argv, rargc, out_p, out_ap, err_p, err_ap);
+        int out_ap = 0, err_ap = 0;
+        int rargc = shell_parse_redirs(argc, argv, redir, &out_p, &out_ap, &err_p, &err_ap);
+        if (rargc < 0) printf("shell: missing redirect filename\n");
+        else run_foreground_elf_redir(path, argv, rargc, out_p, out_ap, err_p, err_ap);
         if (argbuf) kfree(argbuf);
         if (globbuf) kfree(globbuf);
         return;
@@ -7573,17 +7625,18 @@ static void cmd_taskset(int argc, char** argv) {
 // the child cannot run (and write) until its stdout is wired. The handle is closed
 // (and the mount file flushed) when the process is reaped, which the foreground caller
 // waits for. redir_path == NULL keeps the console.
-// Pin a redirect target file at the child's fd `slot` (1=stdout, 2=stderr). Opened
-// O_TRUNC (`>`) or O_CREAT+seek-to-EOF (`>>`); on any failure the slot is left empty so
-// that stream falls back to the console. Shared by the stdout and stderr redirect paths.
-static void install_child_fd_redirect(process_t* proc, int slot, const char* path, int append) {
-    if (!proc || !path || !*path || slot < 0 || slot >= PROC_MAX_FDS) return;
+// A failed redirect must never silently send the child's output to the console.
+static int install_child_fd_redirect(process_t* proc, int slot, const char* path, int append) {
+    if (!path) return 0;
+    if (!proc || !*path || slot < 0 || slot >= PROC_MAX_FDS) return -1;
+    if (vfs_isdir(path)) return -1;
     int h = vfs_open(path, append ? O_CREAT : (O_CREAT | O_TRUNC), 0644);
-    if (h < 0) return;
+    if (h < 0) return -1;
     proc->ufd_inuse[slot]  = 1;
     proc->ufd_handle[slot] = h;
     proc->ufd_offset[slot] = 0;
     if (append) { int sz = vfs_fsize(h); proc->ufd_offset[slot] = (sz > 0) ? (uint32_t)sz : 0; }
+    return 0;
 }
 
 int spawn_user_path_args_redir(const char* path, char* const* argv, int argc,
@@ -7618,15 +7671,16 @@ int spawn_user_path_args_redir(const char* path, char* const* argv, int argc,
         strncpy(proc->cmdline, path, sizeof(proc->cmdline) - 1);
         proc->cmdline[sizeof(proc->cmdline) - 1] = '\0';
     }
-    proc->sched_managed = 1;   // scheduler now round-robins this ring-3 process
     extern process_t* get_current_process(void);
     process_t* parent = get_current_process();
     proc->ppid = parent ? parent->pid : 0;   // so kwait() can find/wake the parent
-    // stdout `>`/`>>` and stderr `2>`/`2>>` redirects: open the targets and pin them at the
-    // child's fd 1 / fd 2 before it can run, so write(1|2,…) routes to the file. On failure
-    // the slot stays empty and that stream falls back to the console.
-    install_child_fd_redirect(proc, 1, out_path, out_append);
-    install_child_fd_redirect(proc, 2, err_path, err_append);
+    if (install_child_fd_redirect(proc, 1, out_path, out_append) < 0 ||
+        install_child_fd_redirect(proc, 2, err_path, err_append) < 0) {
+        printf("exec: cannot open redirect target\n");
+        destroy_process(proc->pid);   // never scheduled; also closes already installed handles
+        return -6;
+    }
+    proc->sched_managed = 1;   // publish only after argv, parent and descriptors are ready
     sched_enable();
     return (int)proc->pid;
 }
@@ -9010,27 +9064,62 @@ static int cat_number_selftest(void) {
 }
 
 static void cmd_cat(int argc, char** argv) {
-    int mode = 0, ai = 1;                       // mode: 0 plain, 1 = -n, 2 = -b
-    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+    int mode = 0, options = 1;
+    for (int ai = 1; ai < argc; ai++) {
+        if (options && strcmp(argv[ai], "--") == 0) { options = 0; continue; }
+        if (!options || argv[ai][0] != '-' || !argv[ai][1]) continue;
         for (const char* f = argv[ai] + 1; *f; f++) {
             if (*f == 'n')      { if (mode != 2) mode = 1; }
             else if (*f == 'b') mode = 2;        // -b wins over -n, as in GNU
             else { printf("cat: unknown option -%c\n", *f); return; }
         }
-    if (ai >= argc) { printf("Usage: cat [-nb] <file>\n"); return; }
-    if (mode == 0) { vfs_cat_file(argv[ai]); putchar('\n'); return; }   // unchanged fast path
-    int fd = vfs_open(argv[ai], 0, 0);
-    if (fd < 0) { printf("cat: %s: No such file\n", argv[ai]); return; }
-    // vfs_pread is offset-aware (vfs_read is stateless — always the file head), so
-    // this streams the whole file and stops at EOF (pread returns 0).
-    char in[512], out[8192]; long line_no = 0; int at_bol = 1, n; uint32_t off = 0;
-    while ((n = vfs_pread(fd, in, sizeof in, off)) > 0) {
-        off += (uint32_t)n;
-        int outn = 0;
-        cat_number(in, n, mode, &line_no, &at_bol, out, sizeof out, &outn);
-        for (int i = 0; i < outn; i++) putchar(out[i]);
     }
-    vfs_close(fd);
+    // The compositor has a 4 KiB stack; numbering scratch must live on the heap.
+    enum { CAT_OUT_CAP = 8192 };
+    char* out = mode ? (char*)kmalloc(CAT_OUT_CAP) : NULL;
+    if (mode && !out) { printf("cat: out of memory\n"); return; }
+    char in[512]; long line_no = 0; int at_bol = 1;
+    options = 1;
+    for (int ai = 1; ai < argc; ai++) {
+        if (options && strcmp(argv[ai], "--") == 0) { options = 0; continue; }
+        if (options && argv[ai][0] == '-' && argv[ai][1]) continue;
+        int fd = vfs_open(argv[ai], 0, 0);
+        if (fd < 0) { printf("cat: %s: No such file\n", argv[ai]); continue; }
+        uint32_t off = 0; int n;
+        while ((n = vfs_pread(fd, in, sizeof in, off)) > 0) {
+            off += (uint32_t)n;
+            if (mode) {
+                int outn = 0;
+                cat_number(in, n, mode, &line_no, &at_bol, out, CAT_OUT_CAP, &outn);
+                for (int i = 0; i < outn; i++) putchar(out[i]);
+            } else for (int i = 0; i < n; i++) putchar(in[i]);
+        }
+        if (n < 0) printf("cat: %s: read error\n", argv[ai]);
+        vfs_close(fd);
+    }
+    if (out) kfree(out);
+}
+
+static int cat_stream_selftest(void) {
+    const char* paths[] = {"/tmp/kat-cat-a", "/tmp/kat-cat-b"};
+    const char* contents[] = {"ab", "\n\nc"};
+    for (int i = 0; i < 2; i++) {
+        int fd = vfs_open(paths[i], O_CREAT | O_TRUNC, 0);
+        if (fd < 0) return 1;
+        int wrote = vfs_pwrite(fd, contents[i], (uint32_t)strlen(contents[i]), 0);
+        vfs_close(fd);
+        if (wrote != (int)strlen(contents[i])) return 2;
+    }
+    char* args[] = {"cat", (char*)paths[0], "-nb", (char*)paths[1]};
+    pipe_start(); cmd_cat(4, args); int count = pipe_stop();
+    const char expected[] = "     1\tab\n\n     2\tc";
+    int result = count != (int)sizeof(expected) - 1 ||
+                 strncmp(pipe_get_data(), expected, sizeof(expected) - 1) ? 3 : 0;
+    char* plain[] = {"cat", (char*)paths[0], (char*)paths[1]};
+    pipe_start(); cmd_cat(3, plain); count = pipe_stop();
+    if (count != 5 || strncmp(pipe_get_data(), "ab\n\nc", 5)) result = 4;
+    for (int i = 0; i < 2; i++) vfs_unlink(paths[i]);
+    return result;
 }
 
 // Open a file in the GUI Text Editor window. Runs on the compositor thread (the
@@ -11036,11 +11125,13 @@ static void run_selftests(void) {
         {"term-paste",   term_paste_selftest},   {"term-hist",     term_hist_selftest},
         {"term-clear",   term_clear_selftest},
         {"shell-dispatch", shell_dispatch_selftest},
+        {"shell-redir", shell_redir_selftest}, {"stdin-line", stdin_line_selftest},
         {"term-rsearch", term_rsearch_selftest},  {"term-kill",     term_kill_selftest},
         {"du",           du_selftest},
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
-        {"kbdmap",       kbd_translate_selftest}, {"mouse-decode",  mouse_decode_selftest},
+        {"kbdmap",       kbd_translate_selftest}, {"kbd-control", kbd_control_selftest},
+        {"mouse-decode",  mouse_decode_selftest},
         {"nyxgrub",      nyxgrub_selftest},
         {"fbpick",       fb_pick_selftest},
         {"gpt",          gpt_selftest},
@@ -11129,6 +11220,7 @@ static void run_selftests(void) {
         {"cddash",       cd_selftest},
         {"globexp",      shell_glob_selftest},
         {"catnumber",    cat_number_selftest},
+        {"cat-stream",   cat_stream_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };

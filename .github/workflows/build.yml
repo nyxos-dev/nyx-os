@@ -42,6 +42,12 @@ jobs:
       - name: Test memory reporting and free options
         run: python3 tools/test_memory_reporting.py
 
+      - name: Test cat streaming and canonical terminal input
+        run: |
+          python3 tools/test_cat.py
+          python3 tools/test_stdin_canonical.py
+          python3 tools/test_keyboard_control.py
+
       - name: Report compiler warnings
         run: |
           # Informational (does NOT fail the build): the kernel is compiled with

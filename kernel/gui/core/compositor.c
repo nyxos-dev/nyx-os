@@ -2020,6 +2020,8 @@ static void redraw_all(void) {
 // loop. Pure draw: touches no input state, safe to call re-entrantly from a
 // command handler that the compositor's key dispatch invoked.
 void compositor_redraw_now(void) {
+    // Foreground ELF commands also run from the serial/text shell without VBE.
+    if (!fb_get_width() || !fb_get_height()) return;
     redraw_all();
     fb_present();     // this path runs outside the event loop, so publish here
     frame_dirty = 0;
