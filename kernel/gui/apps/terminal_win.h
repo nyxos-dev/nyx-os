@@ -8,6 +8,7 @@
 #define TERM_COLS       80
 #define TERM_INPUT_MAX  256
 #define TERM_OUTPUT_MAX 4096
+#define TERM_CLEAR_SEQUENCE "\x1b[2J\x1b[H\x1b[3J"
 #define TERM_HIST_MAX   16     // command lines kept for Up/Down recall (ring buffer)
 
 // Command-line history ring (Up/Down recall, v6.4.326). Newest entry is the one added
@@ -75,6 +76,7 @@ void terminal_capture_reset(terminal_win_t* t);   // leave screen mode when a cm
 int term_input_paste(char* input, int* input_len, int* cursor_pos, int cap,
                      const char* clip, int clip_len);   // Ctrl+V insert (bounded)
 int term_paste_selftest(void);
+int term_clear_selftest(void);
 
 // Command-history ring core (pure, unit-tested by term_hist_selftest).
 void term_hist_add(term_hist_t* h, const char* line);     // record a command (skip blank/dup)

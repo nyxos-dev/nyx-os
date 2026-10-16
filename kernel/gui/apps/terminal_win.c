@@ -236,6 +236,7 @@ static void term_screen_clear(terminal_win_t* t) {
     }
     t->line_count = TERM_SCREEN_ROWS;
     t->scroll_offset = 0;
+    t->output_len = 0;
     t->out_row = t->out_col = 0;
     t->screen_mode = 1;
 }
@@ -267,9 +268,12 @@ int terminal_capture_putchar(int c) {
             t->out_row = esc_p[0] > 0 ? esc_p[0] - 1 : 0;
             t->out_col = esc_p[1] > 0 ? esc_p[1] - 1 : 0;
         } else if (c == 'J') {                    // erase display
-            if (esc_p[0] == 3 && !t->screen_mode) {   // ESC[3J: wipe scrollback, stay normal
+            if (esc_p[0] == 3) {                  // ESC[3J: wipe scrollback, return to the prompt
                 t->line_count = 0;                    // (userspace `clear` — composes in the shell)
                 t->scroll_offset = 0;
+                t->output_len = 0;
+                t->out_row = t->out_col = 0;
+                t->screen_mode = 0;
             } else {                                   // ESC[2J / ESC[J: full-screen clear (TUI)
                 term_screen_clear(t);
             }
@@ -321,6 +325,35 @@ int terminal_capture_putchar(int c) {
     }
     return c;
 }
+int term_clear_selftest(void) {
+    terminal_win_t* t = (terminal_win_t*)kmalloc(sizeof(*t));
+    if (!t) return 1;
+    memset_asm(t, 0, sizeof(*t));
+    terminal_win_t* saved = capture_term;
+    int saved_state = esc_state, saved_np = esc_np;
+    int saved_p0 = esc_p[0], saved_p1 = esc_p[1];
+    capture_term = t;
+    esc_state = 0;
+    t->capturing = 1;
+    t->cur_color = TERM_DEFAULT_COLOR;
+    t->input[0] = 'x';
+    t->input_len = 1;
+    term_hist_add(&t->hist, "clear");
+    const char* text = "old line\npending" TERM_CLEAR_SEQUENCE;
+    for (const char* p = text; *p; p++) terminal_capture_putchar(*p);
+    int result = 0;
+    if (t->line_count || t->output_len || t->scroll_offset || t->screen_mode) result = 2;
+    text = "new\n";
+    for (const char* p = text; *p; p++) terminal_capture_putchar(*p);
+    if (t->line_count != 1 || strncmp(t->lines[0], "new", 3) != 0 || t->lines[0][3] != ' ') result = 3;
+    if (t->input_len != 1 || t->input[0] != 'x' || t->hist.count != 1) result = 4;
+    capture_term = saved;
+    esc_state = saved_state; esc_np = saved_np;
+    esc_p[0] = saved_p0; esc_p[1] = saved_p1;
+    kfree(t);
+    return result;
+}
+
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;

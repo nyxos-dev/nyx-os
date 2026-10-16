@@ -67,6 +67,7 @@
 #include "../image/gif.h"
 #include "../image/jpeg.h"
 #include "../gui/apps/selene_win.h"
+#include "../gui/apps/terminal_win.h"
 #include "../crypto/rsa.h"
 #include "../crypto/sha512.h"
 #include "../crypto/sha1.h"
@@ -301,6 +302,9 @@ extern int term_rsearch_selftest(void);     // gui/apps/terminal_win.c — Ctrl+
 extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
 extern int editor_replace_selftest(void);   // gui/apps/editor_win.c — Ctrl+R find-and-replace KAT
 extern int editor_goto_selftest(void);      // gui/apps/editor_win.c — Ctrl+G goto-line KAT
+extern int editor_selection_selftest(void);
+extern int oneiros_text_selftest(void);
+extern int mouse_bounds_selftest(void);
 extern int selene_nav_selftest(void);       // gui/apps/selene_win.c — Back/Forward history KAT
 extern int heap_selftest(void);             // mm/heap.c — kernel-heap usage-accounting KAT
 extern int mmap_aslr_selftest(void);        // mm/mmap.c — mmap-base ASLR slide KAT
@@ -977,6 +981,26 @@ static void execute_segment(char* seg) {
     execute_one_command(rbuf);
 }
 
+static int shell_dispatch_selftest(void) {
+    const char* path = "/tmp/kat-shell-dispatch";
+    execute_command("echo 'one;two' > /tmp/kat-shell-dispatch; echo three >> /tmp/kat-shell-dispatch");
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return 1;
+    char data[32];
+    int n = vfs_pread(fd, data, sizeof(data), 0);
+    vfs_close(fd);
+    vfs_unlink(path);
+    const char expected[] = "one;two\nthree\n";
+    if (n != (int)sizeof(expected) - 1 || strncmp(data, expected, sizeof(expected) - 1)) return 2;
+    execute_command("echo stale | cat");
+    execute_command(" | cat");
+    uint32_t size = 1;
+    int isdir = 0;
+    if (vfs_stat("/tmp/pipe", &size, &isdir) != 0 || size != 0 || isdir) return 3;
+    vfs_unlink("/tmp/pipe");
+    return 0;
+}
+
 static void execute_one_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
@@ -1413,6 +1437,7 @@ static void cmd_version(int argc, char** argv) {
 
 static void cmd_clear(int argc, char** argv) {
     (void)argc; (void)argv;
+    printf(TERM_CLEAR_SEQUENCE);
     clear_screen();
 }
 
@@ -11009,6 +11034,8 @@ static void run_selftests(void) {
         {"xbm-deps",     xbm_deps_selftest},
         {"clipboard",    clipboard_selftest},
         {"term-paste",   term_paste_selftest},   {"term-hist",     term_hist_selftest},
+        {"term-clear",   term_clear_selftest},
+        {"shell-dispatch", shell_dispatch_selftest},
         {"term-rsearch", term_rsearch_selftest},  {"term-kill",     term_kill_selftest},
         {"du",           du_selftest},
         {"pci",          pci_selftest},
@@ -11047,6 +11074,10 @@ static void run_selftests(void) {
         {"uuid",         uuid_selftest},
         {"edfind",       editor_find_selftest},   {"edreplace",     editor_replace_selftest},
         {"edgoto",       editor_goto_selftest},   {"selenenav",     selene_nav_selftest},
+        {"editor-select", editor_selection_selftest},
+        {"oneiros-text", oneiros_text_selftest},
+        {"mouse-bounds", mouse_bounds_selftest},
+        {"win-focus",    window_focus_selftest}, {"selene-start", selene_start_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"od",           od_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
@@ -11669,28 +11700,6 @@ void nyxfetch(void) {
     set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
 }
 
-// Serial-console command tokenizer: split `str` (modified in place) into argv,
-// honouring "..."/'...' quoting via the shared shell_tokenize, then running each
-// non-single-quoted token through the SAME shell_expand_vars the GUI terminal
-// uses — so $VAR, ${VAR}, $((expr)) and a leading ~ all behave identically in
-// both shells ('...' stays literal, like bash). A plain token is copied
-// unchanged. The serial shell is a serialised single-command REPL and each
-// parsed command is fully consumed before the next parse, so one static
-// expansion buffer is reused across calls. Returns argc (<= max, capped at
-// MAX_CMD_ARGS); sets *overflow on a token cap.
-static int serial_parse_argv(char* str, char** argv, int max, int* overflow) {
-    static char exp[MAX_CMD_ARGS][256];
-    char had_sq[MAX_CMD_ARGS];
-    if (max > MAX_CMD_ARGS) max = MAX_CMD_ARGS;
-    int argc = shell_tokenize(str, argv, had_sq, max, overflow);
-    for (int i = 0; i < argc; i++) {
-        if (had_sq[i]) continue;                       // single-quoted: literal (bash)
-        shell_expand_vars(argv[i], exp[i], 256);
-        argv[i] = exp[i];
-    }
-    return argc;
-}
-
 // ============================================================
 // launch_shell
 // ============================================================
@@ -11776,86 +11785,8 @@ void launch_shell(void) {
 
         if (strlen(cmd_line) > 0) {
             add_history(cmd_line);
-            char* pipe_pos_ptr = shell_find_pipe(cmd_line);
-            if (pipe_pos_ptr) {
-                *pipe_pos_ptr = '\0';
-                char* left_str = cmd_line;
-                char* right_str = pipe_pos_ptr + 1;
-                while (*right_str == ' ') right_str++;
-                // Parse left command (quote-aware, $VAR-expanding)
-                char* argv_left[10];
-                int ov_left = 0;
-                int argc_left = serial_parse_argv(left_str, argv_left, 10, &ov_left);
-                if (argc_left > 0) {
-                    pipe_start();
-                    int cmd_found = 0;
-                    for (int i = 0; commands[i].name != NULL; i++) {
-                        if (strcmp(argv_left[0], commands[i].name) == 0) {
-                            commands[i].func(argc_left, argv_left);
-                            cmd_found = 1;
-                            break;
-                        }
-                    }
-                    if (!cmd_found) {
-                        printf("Command not found: %s\n", argv_left[0]);
-                    }
-                    int pipe_len = pipe_stop();
-                    if (cmd_found && pipe_len > 0) {
-                        int fd = vfs_open("/tmp/pipe", 0, 0);
-                        if (fd < 0) fd = vfs_open("/tmp/pipe", 1, 0);
-                        if (fd >= 0) {
-                            vfs_write(fd, pipe_get_data(), pipe_len);
-                            vfs_close(fd);
-                        }
-                    }
-                    // Parse and execute right command with /tmp/pipe as file arg
-                    char* argv_right[10];
-                    char right_copy[256];
-                    strncpy(right_copy, right_str, 255);
-                    right_copy[255] = '\0';
-                    int ov_right = 0;
-                    int argc_right = serial_parse_argv(right_copy, argv_right, 9, &ov_right);
-                    if (argc_right > 0) {
-                        argv_right[argc_right] = "/tmp/pipe";
-                        argc_right++;
-                        set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
-                        int cmd2_found = 0;
-                        for (int i = 0; commands[i].name != NULL; i++) {
-                            if (strcmp(argv_right[0], commands[i].name) == 0) {
-                                commands[i].func(argc_right, argv_right);
-                                cmd2_found = 1;
-                                break;
-                            }
-                        }
-                        if (!cmd2_found) {
-                            set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
-                            printf("Command not found: %s\n", argv_right[0]);
-                        }
-                    }
-                }
-            } else {
-                char* argv[MAX_CMD_ARGS];
-                int overflow = 0;
-                int argc = serial_parse_argv(cmd_line, argv, MAX_CMD_ARGS, &overflow);
-                if (overflow) {              /* more tokens than the cap: report, don't silently drop */
-                    set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
-                    printf("Too many arguments (max %d)\n", MAX_CMD_ARGS);
-                } else if (argc > 0) {
-                    bool found = false;
-                    for (int i = 0; commands[i].name != NULL; i++) {
-                        if (strcmp(argv[0], commands[i].name) == 0) {
-                            set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
-                            commands[i].func(argc, argv);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
-                        printf("Command not found: %s\n", argv[0]);
-                    }
-                }
-            }
+            set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
+            execute_command(cmd_line);
         }
 
         idx = 0;

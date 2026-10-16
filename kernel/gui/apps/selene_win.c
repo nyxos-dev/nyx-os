@@ -133,6 +133,12 @@ typedef struct {
     int  find_active;            // 1 = the find bar is open and taking keystrokes
     int  find_matches;           // total matches of find_q on the page
     int  find_cur;               // index of the current (accented) match, 0-based
+    // A load spans network parsing and HTML rendering. Keep its buffers off the
+    // kernel stack rather than retaining another kilobyte across those calls.
+    struct {
+        http_response_t response;
+        char host[128], path[256], final_host[128], redirect[256];
+    } load;
 } selene_ctx_t;
 
 // A Selene window holds several tabs, each a full page context; one is the active view.
@@ -709,6 +715,24 @@ static uint8_t sel_panel_tint(selene_ctx_t* sx) {
 // draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
 // same aligned columns out spaced apart, with no rules or pipes. cellpad is the HTML cellpadding
 // (spaces of horizontal breathing room inside each cell, per side; default 1 keeps the old layout).
+typedef struct {
+    int used, mcell, cs, spanw, nlines;
+    int lbrk[SEL_CELL_MAXLINES], llen[SEL_CELL_MAXLINES];
+    uint8_t align, th, bg, boxed, boxcol;
+    int boxidx;
+} sel_table_wrap_t;
+typedef struct { int a, b; uint8_t bg; } sel_table_segment_t;
+typedef struct { int c, a, b; } sel_table_box_t;
+typedef struct {
+    int colw[SEL_TBL_MAXCOLS];
+    uint8_t col_align[SEL_TBL_MAXCOLS], col_bg[SEL_TBL_MAXCOLS];
+    char rule[SEL_LINE_COLS], capline[SEL_LINE_COLS], line[SEL_LINE_COLS];
+    uint8_t lcol[SEL_LINE_COLS], lbg[SEL_LINE_COLS], lbld[SEL_LINE_COLS], llnk[SEL_LINE_COLS];
+    sel_table_wrap_t wr[SEL_TBL_MAXCOLS];
+    sel_table_segment_t seg[SEL_TBL_MAXCOLS + 1];
+    sel_table_box_t lboxes[SEL_TBL_MAXCOLS];
+} sel_table_scratch_t;
+
 static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uint32_t te,
                          char* txt, uint8_t* tlink, uint8_t* tfield, uint8_t* tbgcol, uint8_t* tcolor, uint8_t* tbold, uint32_t* pti, uint32_t cap,
                          int has_border, int cellpad) {
@@ -717,10 +741,12 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     if (!cells) return;
     uint8_t* occ = (uint8_t*)kmalloc(SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS);   // grid: 1 = covered by a span
     if (!occ) { kfree(cells); return; }
+    sel_table_scratch_t* scratch = (sel_table_scratch_t*)kmalloc(sizeof(*scratch));
+    if (!scratch) { kfree(cells); kfree(occ); return; }
     for (int z = 0; z < SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS; z++) occ[z] = 0;
-    int colw[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
-    uint8_t col_align[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_align[c] = 0;  // <col>/<colgroup align> per-column default
-    uint8_t col_bg[SEL_TBL_MAXCOLS];    for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_bg[c] = 0;     // <col>/<colgroup bgcolor> per-column default background
+    int* colw = scratch->colw; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
+    uint8_t* col_align = scratch->col_align; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_align[c] = 0;  // <col>/<colgroup align> per-column default
+    uint8_t* col_bg = scratch->col_bg; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_bg[c] = 0;  // <col>/<colgroup bgcolor> per-column default background
     int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0, cur_row_align = 0, cur_row_bg = 0, colidx = 0;
 
     // Pass 1 — collect cells (row, col, col/row span, th?, byte range). colspan/rowspan cells reserve
@@ -821,7 +847,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
         }
         { uint32_t k = i + 1; while (k < te && body[k] != '>') k++; if (k < te) k++; i = k; }   // skip other tag
     }
-    if (ncols == 0 || nrows == 0) { kfree(cells); kfree(occ); return; }
+    if (ncols == 0 || nrows == 0) { kfree(cells); kfree(occ); kfree(scratch); return; }
     if (ncols > SEL_TBL_MAXCOLS) ncols = SEL_TBL_MAXCOLS;
     if (nrows > SEL_TBL_MAXROWS) nrows = SEL_TBL_MAXROWS;
     for (int c = 0; c < ncols; c++) if (colw[c] < 1) colw[c] = 1;      // empty columns still get a slot
@@ -849,7 +875,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     }
 
     // Build a horizontal rule "+----+---+" once (reused for top / header sep / bottom).
-    char rule[SEL_LINE_COLS]; { int p = 0; rule[p++] = '+';
+    char* rule = scratch->rule; { int p = 0; rule[p++] = '+';
         for (int c = 0; c < ncols && p < SEL_LINE_COLS - 2; c++) {
             for (int z = 0; z < colw[c] + 2 * pad && p < SEL_LINE_COLS - 2; z++) rule[p++] = '-';
             rule[p++] = '+'; } rule[p] = '\0'; }
@@ -861,7 +887,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     // caption belonging to a nested table is skipped by tracking <table> nesting depth; only THIS
     // table's top-level caption is used. The centred line is built once into capline and emitted at
     // whichever end caption-side selects.
-    char capline[SEL_LINE_COLS] = {0}; int cap_ready = 0, cap_bottom = 0;
+    char* capline = scratch->capline; capline[0] = 0; int cap_ready = 0, cap_bottom = 0;
     {
         uint32_t ctag = 0, cs = 0, ce = 0; int have_cap = 0, tdepth = 0;
         for (uint32_t i = ts; i < te && !have_cap; ) {
@@ -912,8 +938,8 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     uint8_t* pb = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
     uint8_t* pd = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
     uint8_t* pl = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
-    if (!pt || !pc || !pb || !pd || !pl) { if (pt) kfree(pt); if (pc) kfree(pc); if (pb) kfree(pb); if (pd) kfree(pd); if (pl) kfree(pl); kfree(cells); kfree(occ); return; }
-    struct { int used, mcell, cs, spanw, nlines; int lbrk[SEL_CELL_MAXLINES], llen[SEL_CELL_MAXLINES]; uint8_t align, th, bg, boxed, boxcol; int boxidx; } wr[SEL_TBL_MAXCOLS];
+    if (!pt || !pc || !pb || !pd || !pl) { if (pt) kfree(pt); if (pc) kfree(pc); if (pb) kfree(pb); if (pd) kfree(pd); if (pl) kfree(pl); kfree(cells); kfree(occ); kfree(scratch); return; }
+    sel_table_wrap_t* wr = scratch->wr;
     int tint = -1;                                            // subtle panel-fill tint, interned lazily only if a boxed cell without its own bg needs it (so a table with none stays byte-identical)
     for (int r = 0; r < nrows; r++) {
         // ---- Phase A: extract + word-wrap each cell of this row; H = tallest cell's line count ----
@@ -957,11 +983,11 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
         }
         // ---- Phase B: emit H stacked text lines; a cell shows its line h (or blanks past its last line) ----
         for (int h = 0; h < H; h++) {
-            char line[SEL_LINE_COLS]; int p = 0; line[p++] = bch;
-            uint8_t lcol[SEL_LINE_COLS], lbg[SEL_LINE_COLS], lbld[SEL_LINE_COLS], llnk[SEL_LINE_COLS];   // this line's per-column cell-text styling, painted after emit
+            char* line = scratch->line; int p = 0; line[p++] = bch;
+            uint8_t* lcol = scratch->lcol, *lbg = scratch->lbg, *lbld = scratch->lbld, *llnk = scratch->llnk;
             for (int z = 0; z < SEL_LINE_COLS; z++) { lcol[z] = 0; lbg[z] = 0; lbld[z] = 0; llnk[z] = 0; }
-            struct { int a, b; uint8_t bg; } seg[SEL_TBL_MAXCOLS + 1]; int nseg = 0;
-            struct { int c, a, b; } lboxes[SEL_TBL_MAXCOLS]; int nlbox = 0;   // boxed cells emitted on this line (col span), for the in-cell outline
+            sel_table_segment_t* seg = scratch->seg; int nseg = 0;
+            sel_table_box_t* lboxes = scratch->lboxes; int nlbox = 0;   // boxed cells emitted on this line (col span), for the in-cell outline
             int c = 0;
             while (c < ncols && p < SEL_LINE_COLS - 2) {
                 if (wr[c].used) {                                        // a cell starts here — draw its line h across its cspan
@@ -1024,7 +1050,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
         sel_emit(txt, tlink, tfield, pti, cap, capline, 0);
     }
     *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
-    kfree(cells); kfree(occ);
+    kfree(cells); kfree(occ); kfree(scratch);
 }
 
 // Free a decoded <img>'s pixels: an animated GIF owns its frames array (px only ALIASES the current
@@ -1276,7 +1302,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     uint8_t* talign = (uint8_t*)kmalloc(len + 1);            // per-char text-align (for wrap_text -> line_align)
     uint8_t* trule  = (uint8_t*)kmalloc(len + 1);            // per-char <hr> flag (for wrap_text -> line_rule)
     uint8_t* tindent= (uint8_t*)kmalloc(len + 1);            // per-char <blockquote> nesting level (for wrap_text)
-    if (!txt || !tlink || !tfield || !timg || !tcolor || !tbgcol || !tbold || !talign || !trule || !tindent) {
+    struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt, ol, nw; } *colstk = kmalloc(16 * sizeof(*colstk));
+    if (!txt || !tlink || !tfield || !timg || !tcolor || !tbgcol || !tbold || !talign || !trule || !tindent || !colstk) {
         if (txt) kfree(txt);
         if (tlink) kfree(tlink);
         if (tfield) kfree(tfield);
@@ -1287,6 +1314,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         if (talign) kfree(talign);
         if (trule) kfree(trule);
         if (tindent) kfree(tindent);
+        if (colstk) kfree(colstk);
         return;
     }
     __builtin_memset(tfield,  0, len + 1);
@@ -1314,7 +1342,6 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int listdepth = 0;                                        // 0 = not in a list
     struct { uint8_t bordered, col; } boxstk[SEL_BOX_MAXDEPTH]; int boxsp = 0;   // bordered-<div> stack: each open <div> pushes {has a CSS border, its border-colour palette idx} so the matching </div> closes + colours the box
     int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0, cur_tt = 0, cur_ol = 0, cur_nowrap = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>), +text-transform, +overline, +white-space:nowrap
-    struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt, ol, nw; } colstk[16];  // style stack: push a styled open, pop its close
     int coldepth = 0;
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
@@ -2219,6 +2246,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         kfree(line_start);
     } else s->num_cell_boxes = 0;                                // no map -> no in-cell boxes this render
     kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tcolor); kfree(tbgcol); kfree(tbold); kfree(talign); kfree(trule); kfree(tindent);
+    kfree(colstk);
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
@@ -2387,14 +2415,16 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
     // header re-fetches the resolved target (301/302/303 downgrade to GET; 307/308 keep method+body).
     const char* cur_method = method;
     const uint8_t* cur_body = body; uint32_t cur_body_len = body_len;
-    char final_host[128] = {0};
-    http_response_t resp;
+    char* final_host = s->load.final_host;
+    final_host[0] = 0;
+    http_response_t* resp = &s->load.response;
 
     for (int hop = 0; ; hop++) {
-        char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
+        char* host = s->load.host; char* path = s->load.path;
+        host[0] = path[0] = 0; uint16_t port = 80; int is_https = 0;
         parse_url(s->url, host, &port, path, &is_https);
         if (!host[0]) { strncpy(s->status, "Enter a URL, e.g. example.com", 95); return; }
-        strncpy(final_host, host, sizeof(final_host)-1); final_host[sizeof(final_host)-1] = '\0';
+        strncpy(final_host, host, sizeof(s->load.final_host)-1); final_host[sizeof(s->load.final_host)-1] = '\0';
         int is_post = (cur_method && (cur_method[0] == 'P' || cur_method[0] == 'p'));
         // base for resolving this page's relative links (and a relative redirect target)
         strncpy(s->base_host, host, sizeof(s->base_host)-1); s->base_host[sizeof(s->base_host)-1] = '\0';
@@ -2413,34 +2443,34 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
                 uint8_t* raw = (uint8_t*)kmalloc(HTTP_MAX_RESPONSE);
                 if (!raw) { strncpy(s->status, "Out of memory", 95); return; }
                 int rn = tls_https_request(host, path, cur_method, cur_body, cur_body_len, iface, raw, HTTP_MAX_RESPONSE - 1, 0);
-                if (rn >= 0) { raw[rn] = '\0'; if (http_parse_response(raw, (uint32_t)rn, &resp) == 0) ok = 1; }
+                if (rn >= 0) { raw[rn] = '\0'; if (http_parse_response(raw, (uint32_t)rn, resp) == 0) ok = 1; }
                 kfree(raw);
             } else {
-                if (http_request(host, port, path, cur_method, cur_body, cur_body_len, &resp, iface) == 0) ok = 1;
+                if (http_request(host, port, path, cur_method, cur_body, cur_body_len, resp, iface) == 0) ok = 1;
             }
         }
         if (!ok) { snprintf(s->status, sizeof(s->status), "Could not load %s", host); return; }
 
-        int sc = resp.status_code;
-        if ((sc == 301 || sc == 302 || sc == 303 || sc == 307 || sc == 308) && resp.location[0] && hop < SEL_MAX_REDIRECTS) {
-            char newurl[256] = {0};
-            selene_resolve(s, resp.location, newurl);          // absolute / relative Location -> full URL
+        int sc = resp->status_code;
+        if ((sc == 301 || sc == 302 || sc == 303 || sc == 307 || sc == 308) && resp->location[0] && hop < SEL_MAX_REDIRECTS) {
+            char* newurl = s->load.redirect; newurl[0] = 0;
+            selene_resolve(s, resp->location, newurl);          // absolute / relative Location -> full URL
             if (newurl[0]) {
                 selene_set_url(s, newurl);                     // follow it: the URL bar shows the final URL
                 if (sc != 307 && sc != 308) { cur_method = "GET"; cur_body = 0; cur_body_len = 0; }
-                http_free(&resp);
+                http_free(resp);
                 continue;
             }
         }
         break;   // final response: not a redirect, no Location, unresolvable, or the hop cap was reached
     }
 
-    render_html(s, resp.body, resp.body_len);
+    render_html(s, resp->body, resp->body_len);
     strncpy(s->cur_url, s->url, sizeof(s->cur_url)-1); s->cur_url[sizeof(s->cur_url)-1] = '\0';
     snprintf(s->status, sizeof(s->status), "%d %s  -  %s  -  %d links",
-             resp.status_code, resp.status_text,
+             resp->status_code, resp->status_text,
              s->title[0] ? s->title : final_host, s->num_links);
-    http_free(&resp);
+    http_free(resp);
     compositor_redraw_now();                 // show the page instantly; visible images stream in via selene_win_tick
 }
 
@@ -2668,6 +2698,18 @@ void* selene_create_ctx(void) {
     return T;
 }
 
+// window_destroy owns the manager itself; the browser owns each tab and its
+// page grids, decoded images and history. Release those before the window goes.
+void selene_win_close(window_t* win) {
+    selene_tabs_t* T = (selene_tabs_t*)win->reserved;
+    if (!T) return;
+    for (int i = 0; i < T->ntabs; i++) {
+        selene_free_ctx(T->tab[i]);
+        T->tab[i] = NULL;
+    }
+    T->ntabs = 0; T->active = 0;
+}
+
 // Open a fresh tab (blank, URL bar pre-filled) and focus it. No-op if the window is full.
 static void selene_tab_new(selene_tabs_t* T) {
     if (T->ntabs >= SEL_MAX_TABS) return;
@@ -2708,11 +2750,37 @@ static void selene_tab_geom(int ntabs, int i, int* x, int* w) {
     *x = i * tw; *w = tw - 1;
 }
 
-// launch_selene calls this right after creating the window, so the browser opens
-// already showing its default page instead of a blank view.
+// Opening a browser must not wait for DHCP/DNS/TCP while the compositor owns
+// input dispatch. The start page is local; Enter explicitly loads the URL bar.
 void selene_first_load(window_t* win) {
     selene_tabs_t* T = (selene_tabs_t*)win->reserved;
-    if (T && T->tab[T->active]) selene_load(T->tab[T->active]);
+    if (!T || !T->tab[T->active]) return;
+    static const uint8_t page[] =
+        "<html><head><title>Welcome to Selene</title></head><body>"
+        "<h1>Selene</h1><p>Your NyxOS web browser.</p>"
+        "<p>Type an address in the URL bar and press Enter to open a page.</p>"
+        "<p>Ctrl+T opens a tab. Ctrl+F searches the current page.</p>"
+        "</body></html>";
+    selene_ctx_t* s = T->tab[T->active];
+    render_html(s, page, sizeof(page) - 1);
+    strncpy(s->status, "Ready - type a URL and press Enter", sizeof(s->status) - 1);
+}
+
+int selene_start_selftest(void) {
+    window_t win = {0};
+    win.reserved = selene_create_ctx();
+    if (!win.reserved) return 1;
+    selene_tabs_t* T = (selene_tabs_t*)win.reserved;
+    selene_first_load(&win);     // must render without a network interface or fetch
+    selene_ctx_t* s = T->tab[0];
+    int rc = 0;
+    if (s->num_lines <= 0 || strcmp(s->title, "Welcome to Selene")) rc = 2;
+    else if (strcmp(s->url, "example.com") || s->cur_url[0] || s->hist_len) rc = 3;
+    else if (s->num_imgs || s->num_links) rc = 4;
+    selene_win_close(&win);
+    if (T->ntabs || T->tab[0]) rc = 5;
+    kfree(T);
+    return rc;
 }
 
 static int visible_rows(void) {

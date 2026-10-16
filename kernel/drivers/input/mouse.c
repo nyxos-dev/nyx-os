@@ -130,6 +130,19 @@ void mouse_decode_packet(const uint8_t pkt[4], int has_wheel,
     if (out_dz) *out_dz = dz;
 }
 
+// The driver owns the cursor position, so it must share the display's bounds.
+// Accumulating motion beyond an edge makes reversing direction feel stuck until
+// that invisible distance is paid back. Clamp the old position too, for a resize.
+static int mouse_axis_position(int position, int delta, uint32_t extent) {
+    int limit = (extent > 0 && extent <= 0x7FFFFFFFu) ? (int)extent - 1 : 4095;
+    if (position < 0) position = 0;
+    if (position > limit) position = limit;
+    int64_t next = (int64_t)position + delta;
+    if (next < 0) return 0;
+    if (next > limit) return limit;
+    return (int)next;
+}
+
 // Parse one byte of the PS/2 packet stream. Called both from the IRQ handler and from
 // mouse_poll() (the polling fallback for machines where IRQ12 is never delivered); the
 // callers serialise access so packet_idx/packet[] are never touched re-entrantly.
@@ -149,12 +162,8 @@ static void mouse_process_byte(uint8_t data) {
         int buttons, dx, dy, dz;
         mouse_decode_packet((const uint8_t*)packet, mouse_has_wheel, &buttons, &dx, &dy, &dz);
         mouse_buttons = buttons;
-        mouse_x += dx;
-        mouse_y += dy;
-        if (mouse_x < 0) mouse_x = 0;
-        if (mouse_y < 0) mouse_y = 0;
-        if (mouse_x > 4095) mouse_x = 4095;
-        if (mouse_y > 4095) mouse_y = 4095;
+        mouse_x = mouse_axis_position(mouse_x, dx, fb_get_width());
+        mouse_y = mouse_axis_position(mouse_y, dy, fb_get_height());
         mouse_z += dz;
     }
 }
@@ -204,7 +213,29 @@ int mouse_get_buttons(void) {
     return b;
 }
 int mouse_get_z(void) { mouse_poll(); return mouse_z; }
-void mouse_set_pos(int x, int y) { mouse_x = x; mouse_y = y; }
+void mouse_set_pos(int x, int y) {
+    uint64_t flags = mouse_irq_save();
+    mouse_x = mouse_axis_position(x, 0, fb_get_width());
+    mouse_y = mouse_axis_position(y, 0, fb_get_height());
+    mouse_irq_restore(flags);
+}
+
+// Pure edge/resize KAT: after pushing past an edge, one reverse pixel must move
+// immediately. Covers both axes, a resized display, and pre-framebuffer input.
+int mouse_bounds_selftest(void) {
+    int y = mouse_axis_position(767, 60, 768);
+    if (y != 767 || mouse_axis_position(y, -1, 768) != 766) return 1;
+    int x = mouse_axis_position(1023, 127, 1024);
+    if (x != 1023 || mouse_axis_position(x, -1, 1024) != 1022) return 2;
+    x = mouse_axis_position(0, -128, 1024);
+    if (x != 0 || mouse_axis_position(x, 1, 1024) != 1) return 3;
+    if (mouse_axis_position(4095, -1, 768) != 766) return 4;
+    if (mouse_axis_position(4999, 1, 5000) != 4999) return 5;
+    if (mouse_axis_position(12, 1, 1) != 0) return 6;
+    if (mouse_axis_position(4095, 1, 0) != 4095) return 7;
+    if (mouse_axis_position(1, 0x7FFFFFFF, 1024) != 1023) return 8;
+    return 0;
+}
 
 // KAT (`mouse-decode`): pins the pure PS/2 packet decode (mouse_decode_packet) — the int8 sign
 // extension of dx/dy, the Y negation, the overflow drop-movement-keep-buttons rule, and the 4-bit

@@ -11,6 +11,63 @@ static void editor_clear_undo(editor_win_t* ed);   // defined below; a new file 
 #define STATUS_H 18
 #define BTN_W 56
 #define BTN_H 20
+#define TEXT_LEFT 36
+#define TEXT_RIGHT 2
+
+static void editor_clamp_cursor(editor_win_t* ed) {
+    if (ed->cursor_y < 0) ed->cursor_y = 0;
+    if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;
+    int len = (int)strlen(ed->lines[ed->cursor_y]);
+    if (ed->cursor_x < 0) ed->cursor_x = 0;
+    if (ed->cursor_x > len) ed->cursor_x = len;
+}
+
+static int editor_rows(const window_t* win) {
+    int n = ((int)win->h - TOOLBAR_H - STATUS_H) / FONT_HEIGHT;
+    return n > 0 ? n : 1;
+}
+
+static int editor_cols(const window_t* win) {
+    int n = ((int)win->w - TEXT_LEFT - TEXT_RIGHT) / FONT_WIDTH;
+    return n > 0 ? n : 1;
+}
+
+static void editor_clear_selection(editor_win_t* ed) {
+    ed->selection_active = 0;
+    ed->selecting = 0;
+}
+
+// Half-open [start,end), in document order, independent of drag direction.
+static int editor_selection_bounds(const editor_win_t* ed, int* sx, int* sy, int* ex, int* ey) {
+    if (!ed->selection_active) return 0;
+    *sx = ed->selection_x; *sy = ed->selection_y;
+    *ex = ed->cursor_x; *ey = ed->cursor_y;
+    if (*sy > *ey || (*sy == *ey && *sx > *ex)) {
+        int x = *sx, y = *sy;
+        *sx = *ex; *sy = *ey; *ex = x; *ey = y;
+    }
+    return *sy != *ey || *sx != *ex;
+}
+
+static int editor_delete_selection(editor_win_t* ed) {
+    int sx, sy, ex, ey;
+    if (!editor_selection_bounds(ed, &sx, &sy, &ex, &ey)) return 0;
+    int tail = (int)strlen(ed->lines[ey]) - ex;
+    if (sx + tail >= EDITOR_LINE_LEN) {
+        snprintf(ed->status, sizeof(ed->status), "Cannot join lines beyond %d columns", EDITOR_LINE_LEN - 1);
+        return 0;
+    }
+    // Forward copy is safe even for a selection within one line (dst <= src).
+    for (int i = 0; i <= tail; i++) ed->lines[sy][sx + i] = ed->lines[ey][ex + i];
+    int removed = ey - sy;
+    for (int y = sy + 1; y < ed->line_count - removed; y++)
+        memcpy_asm(ed->lines[y], ed->lines[y + removed], EDITOR_LINE_LEN);
+    ed->line_count -= removed;
+    ed->cursor_x = sx; ed->cursor_y = sy;
+    ed->modified = 1;
+    editor_clear_selection(ed);
+    return 1;
+}
 
 editor_win_t* editor_create_ctx(void) {
     editor_win_t* ed = (editor_win_t*)kmalloc(sizeof(editor_win_t));
@@ -60,6 +117,10 @@ static void editor_save(editor_win_t* ed) {
 
 static void editor_open(editor_win_t* ed, const char* path) {
     editor_clear_undo(ed);                          // a different file: old snapshots no longer apply
+    editor_clear_selection(ed);
+    ed->cursor_x = 0; ed->cursor_y = 0;
+    ed->scroll_x = 0; ed->scroll_y = 0;
+    ed->modified = 0;
     strncpy(ed->filename, path, sizeof(ed->filename) - 1);
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) {
@@ -124,11 +185,16 @@ static void editor_insert_char(editor_win_t* ed, char c) {
         ed->lines[y][ed->cursor_x] = c;
         if (ed->cursor_x < EDITOR_LINE_LEN - 1) ed->cursor_x++;
         ed->modified = 1;
+    } else {
+        snprintf(ed->status, sizeof(ed->status), "Line limit: %d columns; press Enter", EDITOR_LINE_LEN - 1);
     }
 }
 
 static void editor_newline(editor_win_t* ed) {
-    if (ed->line_count >= EDITOR_MAX_LINES) return;
+    if (ed->line_count >= EDITOR_MAX_LINES) {
+        snprintf(ed->status, sizeof(ed->status), "Document limit: %d lines", EDITOR_MAX_LINES);
+        return;
+    }
     int y = ed->cursor_y;
     for (int i = ed->line_count; i > y + 1; i--)
         strncpy(ed->lines[i], ed->lines[i - 1], EDITOR_LINE_LEN - 1);
@@ -182,10 +248,9 @@ static void editor_delete(editor_win_t* ed) {
 }
 
 static void editor_adjust_scroll(editor_win_t* ed, window_t* win) {
-    int max_rows = ((int)win->h - TOOLBAR_H - STATUS_H) / FONT_HEIGHT;
-    int max_cols = (((int)win->w - 4) / FONT_WIDTH) - 4;
-    if (max_rows < 1) max_rows = 1;
-    if (max_cols < 1) max_cols = 1;
+    editor_clamp_cursor(ed);
+    int max_rows = editor_rows(win);
+    int max_cols = editor_cols(win);
     if (ed->cursor_y < ed->scroll_y) ed->scroll_y = ed->cursor_y;
     if (ed->cursor_y >= ed->scroll_y + max_rows) ed->scroll_y = ed->cursor_y - max_rows + 1;
     if (ed->cursor_x < ed->scroll_x) ed->scroll_x = ed->cursor_x;
@@ -194,9 +259,60 @@ static void editor_adjust_scroll(editor_win_t* ed, window_t* win) {
     if (ed->scroll_x < 0) ed->scroll_x = 0;
 }
 
+// Regression cases for selection edits and the shared viewport geometry.
+// The document is heap-backed here too: kernel task stacks are only 4 KiB.
+int editor_selection_selftest(void) {
+    editor_win_t* ed = (editor_win_t*)kmalloc(sizeof(*ed));
+    if (!ed) return 1;
+    memset_asm(ed, 0, sizeof(*ed));
+    int result = 0;
+    window_t win = {0};
+    win.w = 120; win.h = 80;
+#define ED_CHECK(cond, code) do { if (!(cond)) { result = (code); goto done; } } while (0)
+    ed->line_count = 3;
+    strcpy(ed->lines[0], "alpha"); strcpy(ed->lines[1], "beta"); strcpy(ed->lines[2], "gamma");
+    ed->selection_active = 1; ed->selection_x = 2; ed->selection_y = 0;
+    ed->cursor_x = 2; ed->cursor_y = 2;
+    ED_CHECK(editor_delete_selection(ed) && ed->line_count == 1 && !strcmp(ed->lines[0], "almma"), 2);
+    ED_CHECK(ed->cursor_x == 2 && ed->cursor_y == 0 && !ed->selection_active, 3);
+
+    strcpy(ed->lines[0], "abcdef");
+    ed->selection_active = 1; ed->selection_x = 5; ed->selection_y = 0;
+    ed->cursor_x = 2;
+    ED_CHECK(editor_delete_selection(ed) && !strcmp(ed->lines[0], "abf"), 4);
+    ed->selection_active = 1; ed->selection_x = 0;
+    ed->cursor_x = 3;
+    ED_CHECK(editor_delete_selection(ed) && ed->line_count == 1 && !ed->lines[0][0], 5);
+
+    // Reject an overlong join atomically; never truncate the unselected suffix.
+    ed->line_count = 2;
+    for (int i = 0; i < 200; i++) { ed->lines[0][i] = 'a'; ed->lines[1][i] = 'b'; }
+    ed->lines[0][200] = 0; ed->lines[1][200] = 0;
+    ed->selection_active = 1; ed->selection_x = 150; ed->selection_y = 0;
+    ed->cursor_x = 50; ed->cursor_y = 1;
+    ED_CHECK(!editor_delete_selection(ed) && ed->line_count == 2 &&
+             strlen(ed->lines[0]) == 200 && strlen(ed->lines[1]) == 200, 6);
+    editor_clear_selection(ed);
+    strcpy(ed->lines[1], "x"); ed->cursor_x = 100;
+    editor_adjust_scroll(ed, &win);
+    ED_CHECK(ed->cursor_x == 1 && ed->scroll_x == 0, 7);
+    ed->cursor_y = 0; ed->cursor_x = 30;
+    editor_adjust_scroll(ed, &win);
+    ED_CHECK(editor_cols(&win) == 10 && ed->scroll_x == 21, 8);
+    win.w = 600;
+    ed->cursor_x = 0;
+    editor_adjust_scroll(ed, &win);
+    ED_CHECK(ed->scroll_x == 0 && editor_rows(&win) == 2, 9);
+done:
+#undef ED_CHECK
+    kfree(ed);
+    return result;
+}
+
 void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
+    editor_adjust_scroll(ed, win);   // keep the cursor visible after resizing too
 
     // Toolbar
     fb_fill_rect(cx, cy, cw, TOOLBAR_H, THEME_ROW_DIV);
@@ -219,7 +335,7 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int text_area_y = cy + TOOLBAR_H;
     int avail_w = (int)cw - 4;
     int avail_h = (int)ch - TOOLBAR_H - STATUS_H;
-    int max_cols = avail_w / (int)FONT_WIDTH;
+    int max_cols = ((int)cw - TEXT_LEFT - TEXT_RIGHT) / (int)FONT_WIDTH;
     int max_rows = avail_h / (int)FONT_HEIGHT;
     if (max_cols < 1) max_cols = 1;
     if (max_rows < 1) max_rows = 1;
@@ -229,7 +345,7 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     for (int r = 0; r < max_rows; r++) {
         int idx = r + ed->scroll_y;
         if (idx >= ed->line_count) break;
-        int draw_x = cx + 36 - ed->scroll_x * (int)FONT_WIDTH;
+        int draw_x = cx + TEXT_LEFT;
         int draw_y = text_area_y + r * (int)FONT_HEIGHT;
         uint32_t line_bg = (idx == ed->cursor_y) ? fb_rgb(55,60,70) : fb_rgb(40,42,48);
         fb_fill_rect(cx + 2, draw_y, (uint32_t)avail_w, FONT_HEIGHT, line_bg);
@@ -237,17 +353,30 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         char ln[12];
         snprintf(ln, sizeof(ln), "%d", idx + 1);
         font_draw_string(cx + 2, draw_y, ln, fb_rgb(100,120,140), line_bg);
-        // Text
-        if (draw_x < (int)(cx + cw))
-            font_draw_string((uint32_t)draw_x, (uint32_t)draw_y, ed->lines[idx], THEME_TEXT, line_bg);
+        // Draw only visible cells. Moving an entire string left allowed its
+        // hidden prefix to overwrite the gutter (and unsigned x to wrap).
+        int sx, sy, ex, ey;
+        int selected = editor_selection_bounds(ed, &sx, &sy, &ex, &ey);
+        int len = (int)strlen(ed->lines[idx]);
+        for (int c = 0; c < max_cols; c++) {
+            int col = ed->scroll_x + c;
+            if (col > len) break;
+            int mark = selected && idx >= sy && idx <= ey &&
+                       (idx > sy || col >= sx) && (idx < ey || col < ex);
+            if (col == len && !mark) break;
+            font_draw_char((uint32_t)(draw_x + c * FONT_WIDTH), (uint32_t)draw_y,
+                           col < len ? (unsigned char)ed->lines[idx][col] : ' ',
+                           mark ? fb_rgb(255,255,255) : THEME_TEXT,
+                           mark ? THEME_SELECTION : line_bg);
+        }
     }
 
     // Cursor (blink)
     if ((get_ticks() - ed->cursor_tick) < 500) {
-        int cur_x = cx + 36 + ed->cursor_x * (int)FONT_WIDTH - ed->scroll_x * (int)FONT_WIDTH;
+        int cur_x = cx + TEXT_LEFT + (ed->cursor_x - ed->scroll_x) * (int)FONT_WIDTH;
         int cur_y = text_area_y + (ed->cursor_y - ed->scroll_y) * (int)FONT_HEIGHT;
         if (cur_y >= text_area_y && cur_y < text_area_y + avail_h &&
-            cur_x >= (int)cx + 36 && cur_x < (int)(cx + cw - 2))
+            cur_x >= cx + TEXT_LEFT && cur_x < cx + TEXT_LEFT + max_cols * FONT_WIDTH)
             fb_fill_rect((uint32_t)cur_x, (uint32_t)cur_y, 2, FONT_HEIGHT, fb_rgb(255,255,255));
     }
 
@@ -266,9 +395,24 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     font_draw_string((uint32_t)px, (uint32_t)status_y + 2, pos, fb_rgb(150,185,215), THEME_WINDOW_BG);
 }
 
+static void editor_point_cursor(editor_win_t* ed, window_t* win, int mx, int my) {
+    int tx = WIN_CLIENT_X(win) + TEXT_LEFT;
+    int ty = WIN_CLIENT_Y(win) + TOOLBAR_H;
+    int row = my < ty ? 0 : (my - ty) / FONT_HEIGHT;
+    int col = mx < tx ? 0 : (mx - tx) / FONT_WIDTH;
+    int rows = editor_rows(win), cols = editor_cols(win);
+    if (row >= rows) row = rows - 1;
+    if (col >= cols) col = cols - 1;
+    ed->cursor_y = ed->scroll_y + row;
+    ed->cursor_x = ed->scroll_x + col;
+    editor_clamp_cursor(ed);
+    ed->cursor_tick = get_ticks();
+}
+
 void editor_win_click(window_t* win, int mx, int my, int btn) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed || btn != 1) return;
+    ed->selecting = 0;
     // Toolbar click
     if (my >= WIN_CLIENT_Y(win) && my < WIN_CLIENT_Y(win) + TOOLBAR_H) {
         int rx = mx - WIN_CLIENT_X(win);
@@ -299,21 +443,36 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
             return;
         }
     }
-    // Click in text area → move cursor
+    // A fresh text press sets the anchor; held presses extend the selection.
     int text_area_y = WIN_CLIENT_Y(win) + TOOLBAR_H;   /* was missing TITLE_H too */
     int avail_h = (int)win->h - TOOLBAR_H - STATUS_H;
-    if (my >= text_area_y && my < text_area_y + avail_h && mx >= win->x + 36) {
-        int max_rows = avail_h / FONT_HEIGHT;
-        if (max_rows < 1) max_rows = 1;
-        int row = (my - text_area_y) / FONT_HEIGHT;
-        int col = (mx - (win->x + 36)) / FONT_WIDTH;
-        ed->cursor_y = ed->scroll_y + row;
-        if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;
-        int len = strlen(ed->lines[ed->cursor_y]);
-        ed->cursor_x = ed->scroll_x + col;
-        if (ed->cursor_x > len) ed->cursor_x = len;
-        ed->cursor_tick = get_ticks();
+    if (my >= text_area_y && my < text_area_y + avail_h &&
+        mx >= WIN_CLIENT_X(win) + TEXT_LEFT && mx < WIN_CLIENT_X(win) + (int)win->w) {
+        editor_point_cursor(ed, win, mx, my);
+        ed->selection_x = ed->cursor_x; ed->selection_y = ed->cursor_y;
+        ed->selection_active = 1;
+        ed->selecting = 1;
+        ed->status[0] = 0;
     }
+}
+
+void editor_win_pressed(window_t* win, int mx, int my, int btn) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (!ed || btn != 1 || !ed->selecting) return;
+    int tx = WIN_CLIENT_X(win) + TEXT_LEFT;
+    int ty = WIN_CLIENT_Y(win) + TOOLBAR_H;
+    if (mx < tx && ed->scroll_x > 0) ed->scroll_x--;
+    if (mx >= tx + editor_cols(win) * FONT_WIDTH && ed->scroll_x < EDITOR_LINE_LEN - 1) ed->scroll_x++;
+    if (my < ty && ed->scroll_y > 0) ed->scroll_y--;
+    if (my >= ty + editor_rows(win) * FONT_HEIGHT && ed->scroll_y < ed->line_count - 1) ed->scroll_y++;
+    editor_point_cursor(ed, win, mx, my);
+    editor_adjust_scroll(ed, win);
+}
+
+void editor_win_mousemove(window_t* win, int mx, int my, int btns) {
+    (void)mx; (void)my;
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (ed && !(btns & 1)) ed->selecting = 0;
 }
 
 // First index >= `start` where `pat` occurs in NUL-terminated `s`, or -1.
@@ -469,6 +628,9 @@ static void editor_push_undo(editor_win_t* ed) {
     ed->undo[ed->undo_n].line_count = ed->line_count;
     ed->undo[ed->undo_n].cx = ed->cursor_x;
     ed->undo[ed->undo_n].cy = ed->cursor_y;
+    ed->undo[ed->undo_n].anchor_x = ed->selection_x;
+    ed->undo[ed->undo_n].anchor_y = ed->selection_y;
+    ed->undo[ed->undo_n].selected = ed->selection_active;
     ed->undo_n++;
 }
 
@@ -479,6 +641,9 @@ static void editor_undo_pop(editor_win_t* ed) {
     ed->line_count = (u->line_count < 1) ? 1 : u->line_count;
     memcpy_asm(ed->lines, u->text, u->line_count * EDITOR_LINE_LEN);
     ed->cursor_y = u->cy; ed->cursor_x = u->cx;
+    ed->selection_x = u->anchor_x; ed->selection_y = u->anchor_y;
+    ed->selection_active = u->selected;
+    ed->selecting = 0;
     if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;
     if (ed->cursor_y < 0) ed->cursor_y = 0;
     int llen = strlen(ed->lines[ed->cursor_y]);
@@ -503,11 +668,14 @@ void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
 
+    editor_clamp_cursor(ed);
+    ed->selecting = 0;
     ed->cursor_tick = get_ticks();
 
     // Ctrl+F — enter incremental find mode (type a pattern, Enter = jump to next match,
     // Enter again = keep advancing, Esc = back to editing).
     if (key == 0x06 && !ed->repl_active && !ed->goto_active) {
+        editor_clear_selection(ed);
         ed->find_active = 1; ed->find_len = 0; ed->find_pat[0] = '\0';
         snprintf(ed->status, sizeof(ed->status), "Find: ");
         return;
@@ -547,6 +715,7 @@ void editor_win_key(window_t* win, int key) {
     // Ctrl+G — go to a line number. Pairs with the line-number gutter: type digits, Enter jumps
     // (clamped to the file), Esc cancels. Handy for a long file instead of scrolling by hand.
     if (key == 0x07 && !ed->repl_active) {
+        editor_clear_selection(ed);
         ed->goto_active = 1; ed->goto_len = 0; ed->goto_buf[0] = '\0';
         snprintf(ed->status, sizeof(ed->status), "Go to line: ");
         return;
@@ -583,6 +752,7 @@ void editor_win_key(window_t* win, int key) {
     // Ctrl+R — find-and-replace. Phase 1: type the text to find, Enter. Phase 2: type the
     // replacement, Enter = replace every occurrence across the file. Esc cancels either phase.
     if (key == 0x12) {
+        editor_clear_selection(ed);
         ed->repl_active = 1;
         ed->repl_find_len = 0; ed->repl_find[0] = '\0';
         ed->repl_with_len = 0; ed->repl_with[0] = '\0';
@@ -639,6 +809,20 @@ void editor_win_key(window_t* win, int key) {
         editor_save(ed);
         return;
     }
+
+    if (key == 0x01) { // Ctrl+A — the entire document, including intervening newlines
+        ed->selection_x = 0; ed->selection_y = 0;
+        ed->cursor_y = ed->line_count - 1;
+        ed->cursor_x = (int)strlen(ed->lines[ed->cursor_y]);
+        ed->selection_active = 1;
+        editor_adjust_scroll(ed, win);
+        snprintf(ed->status, sizeof(ed->status), "All text selected");
+        return;
+    }
+    if (key == 0x1B) {
+        editor_clear_selection(ed);
+        return;
+    }
     if (key == 0x0F) { // Ctrl+O
         // Open: if filename ends in .txt or similar, open it
         if (ed->filename[0]) {
@@ -655,24 +839,32 @@ void editor_win_key(window_t* win, int key) {
         return;
     }
 
+    int sx, sy, ex, ey;
+    int selected = editor_selection_bounds(ed, &sx, &sy, &ex, &ey);
+    int editing = (key >= 0x20 && key <= 0x7E) || key == '\r' || key == '\n' ||
+                  key == '\b' || key == KEY_DEL;
+    if (editing) {
+        editor_push_undo(ed);           // replacement + insertion is one undo step
+        if (selected && !editor_delete_selection(ed)) return;
+        if (selected) ed->status[0] = 0;
+        editor_clear_selection(ed);
+    }
     if (key >= 0x20 && key <= 0x7E) {
-        editor_push_undo(ed);
         editor_insert_char(ed, (char)key);
     } else if (key == '\r' || key == '\n') {
-        editor_push_undo(ed);
         editor_newline(ed);
     } else if (key == '\b') {
-        editor_push_undo(ed);
-        editor_backspace(ed);
+        if (!selected) editor_backspace(ed);
     } else if (key == KEY_DEL) {
-        editor_push_undo(ed);
-        editor_delete(ed);
+        if (!selected) editor_delete(ed);
     } else if (key == KEY_LEFT) {
-        if (ed->cursor_x > 0) ed->cursor_x--;
+        if (selected) { ed->cursor_x = sx; ed->cursor_y = sy; }
+        else if (ed->cursor_x > 0) ed->cursor_x--;
         else if (ed->cursor_y > 0) { ed->cursor_y--; ed->cursor_x = strlen(ed->lines[ed->cursor_y]); }
     } else if (key == KEY_RIGHT) {
         int len = strlen(ed->lines[ed->cursor_y]);
-        if (ed->cursor_x < len) ed->cursor_x++;
+        if (selected) { ed->cursor_x = ex; ed->cursor_y = ey; }
+        else if (ed->cursor_x < len) ed->cursor_x++;
         else if (ed->cursor_y < ed->line_count - 1) { ed->cursor_y++; ed->cursor_x = 0; }
     } else if (key == KEY_UP) {
         if (ed->cursor_y > 0) ed->cursor_y--;
@@ -683,17 +875,19 @@ void editor_win_key(window_t* win, int key) {
     } else if (key == KEY_END) {
         ed->cursor_x = strlen(ed->lines[ed->cursor_y]);
     } else if (key == KEY_PGUP) {
-        int rows = ((int)win->h - TOOLBAR_H - STATUS_H) / FONT_HEIGHT;
-        if (rows < 1) rows = 1;
+        int rows = editor_rows(win);
         ed->cursor_y -= rows;
         if (ed->cursor_y < 0) ed->cursor_y = 0;
     } else if (key == KEY_PGDN) {
-        int rows = ((int)win->h - TOOLBAR_H - STATUS_H) / FONT_HEIGHT;
-        if (rows < 1) rows = 1;
+        int rows = editor_rows(win);
         ed->cursor_y += rows;
         if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;
     }
 
+    if (key >= KEY_UP && key <= KEY_PGDN) {
+        editor_clear_selection(ed);
+        if (selected) ed->status[0] = 0;
+    }
     editor_adjust_scroll(ed, win);
     // (The live Ln/Col is drawn in the status bar every frame, so we no longer overwrite the
     // status MESSAGE on each keystroke — "Saved: ..." / "Opened: ..." now persists.)

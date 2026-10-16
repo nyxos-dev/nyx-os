@@ -74,6 +74,7 @@ static uint8_t mouse_btns = 0;
 // menu/drag handlers that call it directly (not via the loop's `redraw` flag) —
 // gets its finished frame published, without every caller having to remember to.
 static int frame_dirty = 0;
+static void welcome_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 
 #define CURSOR_W 12
 #define CURSOR_H 16
@@ -2172,6 +2173,8 @@ window_t* compositor_open_editor(const char* path) {
     ewin->reserved = editor_create_ctx();
     if (!ewin->reserved) { window_destroy(ewin->id); return NULL; }
     ewin->on_click = editor_win_click;
+    ewin->on_pressed = editor_win_pressed;
+    ewin->on_mousemove = editor_win_mousemove;
     ewin->on_key = editor_win_key;
     ewin->on_close = editor_win_close;   // free the undo snapshots when the window closes
     if (path && path[0]) editor_load_file((editor_win_t*)ewin->reserved, path);
@@ -2467,8 +2470,7 @@ void launch_minesweeper(void) {
     }
 }
 
-// Open Selene, the NyxOS web browser (selene_win.c). Fetches its default page right
-// away (selene_first_load) so it opens showing a real site rather than a blank view.
+// Open Selene on its local start page, without a network wait in the input loop.
 void launch_selene(void) {
     int px = ((int)fb_get_width()  - SELENE_W) / 2;            if (px < 0) px = 0;
     int py = ((int)fb_get_height() - SELENE_H - TITLE_H) / 2;  if (py < 0) py = 0;
@@ -2478,8 +2480,9 @@ void launch_selene(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_key   = selene_win_key;
     w->on_click = selene_win_click;
-    w->on_tick  = selene_win_tick;   // cooperative loader: streams in one image per tick, UI stays live
-    selene_first_load(w);      // fetches the main page (blocks briefly); images stream in via the tick
+    w->on_tick  = selene_win_tick;
+    w->on_close = selene_win_close;
+    selene_first_load(w);
 }
 
 // Open the Image Viewer, optionally on a file. Mirrors launch_selene: a centred window wired for
@@ -2621,10 +2624,10 @@ static void do_start_menu_action(int idx) {
             }
             break;
         case 9: // About
-            // Centred on the 1024x768 design grid — (1024-300)/2, (768-200)/2 —
+            // Centred on the 1024x768 design grid — (1024-380)/2, (768-210)/2 —
             // NOT on the live framebuffer. Deriving it from fb_get_width() would
             // have the scale applied twice and land the window left of centre.
-            window_create(362, 284, 300, 200, "About NyxOS", NULL);
+            window_create(322, 279, 380, 210, "About NyxOS", welcome_draw_fn);
             break;
         case 10: // Shutdown
             quit = 1;
@@ -3022,11 +3025,45 @@ void window_destroy(int id) {
         focus_next_window();
 }
 
+// Keep a bounded, unique stacking rank. Assigning window_count + 10 on every
+// focus tied older windows, so a clicked window could remain behind its peers.
+static void raise_window(window_t* const* list, int count, window_t* raised) {
+    window_t* ordered[MAX_WINDOWS];
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        window_t* w = list[i];
+        if (!w || w == raised) continue;
+        int j = n;
+        while (j > 0 && ordered[j - 1]->z_order > w->z_order) {
+            ordered[j] = ordered[j - 1]; j--;
+        }
+        ordered[j] = w; n++;
+    }
+    for (int i = 0; i < n; i++) ordered[i]->z_order = i;
+    raised->z_order = n;
+}
+
+int window_focus_selftest(void) {
+    static window_t a, b, c;
+    window_t* list[] = {&a, NULL, &b, &c};
+    a.z_order = 13; b.z_order = 13; c.z_order = 13;
+    raise_window(list, 4, &a);
+    if (b.z_order != 0 || c.z_order != 1 || a.z_order != 2) return 1;
+    raise_window(list, 4, &b);
+    if (c.z_order != 0 || a.z_order != 1 || b.z_order != 2) return 2;
+    raise_window(list, 4, &b);
+    if (c.z_order != 0 || a.z_order != 1 || b.z_order != 2) return 3;
+    c.z_order = 2147483647;
+    raise_window(list, 4, &a);
+    if (b.z_order != 0 || c.z_order != 1 || a.z_order != 2) return 4;
+    return 0;
+}
+
 void window_focus(int id) {
     window_t* win = find_window(id);
     if (!win || !win->visible || win->state == WSTATE_MINIMIZED) return;
     win->focused = 1;
-    win->z_order = window_count + 10;
+    raise_window(windows, MAX_WINDOWS, win);
     focused_id = id;
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (windows[i] && windows[i]->id != id)
@@ -3325,10 +3362,10 @@ static void icon_disc(int ccx, int ccy, int r, uint32_t col);  // defined below 
 // for a pristine desktop. Nyx identity: a night sky with the crescent moon.
 static void welcome_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)win;
-    // cy already sits below the title bar (draw is called with y + TITLE_H), so
-    // the usable client height is ch - TITLE_H. A SOLID night fill (not a gradient)
+    // cy already sits below the title bar; ch is the full client height.
+    // A SOLID night fill (not a gradient)
     // keeps the crescent carve and the scaled wordmark seam-free.
-    int H = (int)ch - TITLE_H;
+    int H = (int)ch;
     if (H < 1) H = 1;
     uint32_t sky = fb_rgb(24, 20, 44);   // Nyx night — deep purple
     fb_fill_rect(cx, cy, cw, (uint32_t)H, sky);
@@ -4788,18 +4825,20 @@ void compositor_run(void) {
 
                 int tb_win_id;
                 if (taskbar_win_hit(mx, my, &tb_win_id)) {
-                    window_t* w = find_window(tb_win_id);
-                    if (w) {
-                        if (w->state == WSTATE_MINIMIZED) {
-                            w->state = WSTATE_NORMAL;
-                            w->workspace = current_workspace;
-                            window_focus(tb_win_id);
-                        } else if (w->focused) {
-                            window_minimize(tb_win_id);
-                        } else {
-                            window_focus(tb_win_id);
+                    if (pressed) {
+                        window_t* w = find_window(tb_win_id);
+                        if (w) {
+                            if (w->state == WSTATE_MINIMIZED) {
+                                w->state = WSTATE_NORMAL;
+                                w->workspace = current_workspace;
+                                window_focus(tb_win_id);
+                            } else if (w->focused) {
+                                window_minimize(tb_win_id);
+                            } else {
+                                window_focus(tb_win_id);
+                            }
+                            redraw = 1;
                         }
-                        redraw = 1;
                     }
                     goto done_click;
                 }
@@ -4999,19 +5038,39 @@ void compositor_run(void) {
                 redraw = 1;
             }
         }
-        prev_btns = btns;
-
 done_click:
+        // Every dispatch path consumes this edge, including menu actions that
+        // jump here. Otherwise a held press toggles the menu again each frame.
+        prev_btns = btns;
 
         int old_cx = mouse_x, old_cy = mouse_y;   // where the cursor started this frame
         int moved = (mx != mouse_x || my != mouse_y);
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
 
-        // While any menu is open, a bare pointer move must recomposite so the
-        // hovered-entry highlight tracks the cursor (a move alone only re-blits the
-        // existing frame + cursor, which would leave the highlight frozen).
-        if (moved && (start_menu_open || ctx_menu_open || user_menu_open)) redraw = 1;
+        // Only a change of hovered entry changes a menu's pixels. Repainting the
+        // whole desktop for every pixel of motion within one row caused needless
+        // full-screen presents; the cursor-only path handles that motion instead.
+        if (moved) {
+            int before = -1, after = -1;
+            if (start_menu_open) {
+                start_menu_item_hit(old_cx, old_cy, &before);
+                start_menu_item_hit(mx, my, &after);
+                if (before != after) redraw = 1;
+            }
+            before = after = -1;
+            if (ctx_menu_open) {
+                ctx_menu_item_hit(old_cx, old_cy, &before);
+                ctx_menu_item_hit(mx, my, &after);
+                if (before != after) redraw = 1;
+            }
+            before = after = -1;
+            if (user_menu_open) {
+                user_menu_item_hit(old_cx, old_cy, &before);
+                user_menu_item_hit(mx, my, &after);
+                if (before != after) redraw = 1;
+            }
+        }
 
         uint32_t now = get_ticks();
         int taskbar_only = 0;
