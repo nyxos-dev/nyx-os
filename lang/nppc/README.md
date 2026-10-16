@@ -12,9 +12,9 @@ byte-faithful by the selfhost differentials.
 file.npp ──nppc──► file.n ──ncc / toolbox──► C ──cc/tcc──► ELF
 ```
 
-The right-hand end of that pipeline is real, not a diagram: the lowered
-N of every program in [../examples](../examples) — twenty-five of them
-— has been compiled and run inside NyxOS by the in-OS `ncc`
+The right-hand end of that pipeline is real, not a diagram: the earlier
+corpus of twenty-five programs in [../examples](../examples) has had its
+lowered N compiled and run inside NyxOS by the in-OS `ncc`
 (`xbm install ncc`, then `ncc /mnt/X.n -o /mnt/X_gen.c`,
 `cc /mnt/X_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nX`, `nX`), each
 printing exactly what its host run prints — see *verified three ways* in
@@ -40,6 +40,40 @@ python3 lang/nppc/tests/test_modules.py
 It compiles and runs modules with colliding basenames and sanitized stems,
 checking their private functions, types, generic destructors, nested/diamond imports,
 equivalent paths and located cycle errors. Set `CC` to select another compiler.
+
+The bounded M6.6 integration checkpoint adds a small multi-module request
+processor, [`workbench.npp`](../examples/workbench.npp). It parses two digit
+bytes, combines generic value transformations, publishes a result through an
+owning closure, and cancels another. Its Linux/WSL test builds `nppc`, `ncc`,
+and the N-written `ngen` and `ncheck`; compares the emitted C byte-for-byte;
+and compiles and executes both outputs against an exact cleanup trace:
+
+```sh
+python3 lang/nppc/tests/test_workbench.py
+python3 lang/nppc/tests/test_workbench.py --examples
+```
+
+`--examples` also checks the twenty-five earlier N++ programs through both
+emitters and compares their host execution (normalizing only hello's pid).
+The generated workbench ELF has also run inside NyxOS 6.5.190 under QEMU:
+its 301-byte trace matched the oracle on the console and through file
+redirection, with exit status 0. That check used host-built transpilers and
+the target runtime; compiling this program inside NyxOS remains unverified.
+M6.6 remains open: this is a documented combination of implemented
+features, not an N++ compiler written in N++, nor a claim to exercise every
+milestone. See the coverage and limits in
+[design §6.5](../docs/design-npp.md#65-m66-integration-checkpoint).
+
+The checkpoint caught an N ownership bug: the Err return of `?` ran defers
+but skipped local destructors, held parameters' own fields, and the leak
+check. Both compiler implementations now apply ordinary return cleanup to
+that branch, preserving the post-operand ownership state for the continuing
+Ok branch. The test covers binding, assignment and expression forms, equal
+and different Result types, moved values, held fields and destructor-less
+leaks, including moves in assignment targets and bindings that shadow an
+outer owner. `--ncc /path/to/older/ncc` demonstrates the original missing
+`release 11` in the workbench trace. Private access, an own capture in `Fn`, and a
+second call of `FnOnce` are also required to fail.
 
 ## What this rung is (M6.2), plainly
 

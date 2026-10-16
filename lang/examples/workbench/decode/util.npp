@@ -1,0 +1,18 @@
+pub use "../common.npp";
+
+// Deliberately the same private names and basename as encode/util.npp.
+struct Token { value: i64 }
+fn helper(value: i64) -> i64 { value - 48 }
+
+pub fn digit(byte: u8) -> Result<i64, i64> {
+    n := widen<i64>(byte);
+    if n < 48 || n > 57 { return Result.Err{ e: n }; }
+    token := Token{ value: helper(n) };
+    Result.Ok{ v: token.value }
+}
+
+pub fn sum_digits(a: u8, b: u8) -> Result<i64, i64> {
+    x := digit(a)?;
+    y := digit(b)?;
+    Result.Ok{ v: x + y }
+}

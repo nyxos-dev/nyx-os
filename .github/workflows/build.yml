@@ -33,6 +33,9 @@ jobs:
       - name: Test N++ module isolation
         run: python3 lang/nppc/tests/test_modules.py
 
+      - name: Test N++ workbench and ownership cleanup
+        run: python3 lang/nppc/tests/test_workbench.py --examples
+
       - name: Test N selfhost checker arguments
         run: python3 lang/selfhost/tests/test_check_cli.py
 

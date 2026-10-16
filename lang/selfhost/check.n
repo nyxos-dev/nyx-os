@@ -3264,6 +3264,15 @@ fn ctry(p: *u8, st: *i64, i: i64, form: i64) {
         orr := al[ea[oe * 4 + 3] + ovi * 4 + 3];
         okty = T{ pt: al[orr + 2], us: al[orr + 3], s: al[orr + 4], l: al[orr + 5] };
     }
+    // The lhs executes only on Ok, so retain Err's post-operand state
+    // before checking any moves in the assignment target.
+    err_states := sys_sbrk((st[40] + 1) * 8) as *i64;
+    va_err := st[39] as *i64;
+    mut err_index := 0;
+    while err_index < st[40] {
+        err_states[err_index] = va_err[err_index * 10 + 8];
+        err_index = err_index + 1;
+    }
     if form == 2 {                         // lhs = e?; — S_ASSIGN's own
         lhs3 := nd[i * 8 + 1];             // checks against the payload
         cexpr(p, st, lhs3);
@@ -3309,8 +3318,24 @@ fn ctry(p: *u8, st: *i64, i: i64, form: i64) {
             put(")\n");
             st[41] = 1;
         }
-        return;
+        if st[41] == 1 { return; }
     }
+    // Err exits with normal return cleanup. Its drops must not mark
+    // values moved on the continuing Ok path, or hide an Err-path leak.
+    va := st[39] as *i64;
+    states := sys_sbrk((st[40] + 1) * 8) as *i64;
+    mut j := 0;
+    while j < st[40] {
+        states[j] = va[j * 10 + 8];
+        va[j * 10 + 8] = err_states[j];
+        j = j + 1;
+    }
+    cdrops(p, st, 0);
+    cheld(p, st, ln);
+    cleak(p, st, 0, ln, 0);
+    j = 0;
+    while j < st[40] { va[j * 10 + 8] = states[j]; j = j + 1; }
+    if st[41] == 1 { return; }
     if form == 1 {                         // x := e?; — bind the payload
         vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], okty);
     }

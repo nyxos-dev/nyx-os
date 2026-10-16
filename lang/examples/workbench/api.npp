@@ -1,0 +1,13 @@
+// One import exposes the workbench; common.npp is shared by both branches.
+pub use "decode/util.npp";
+pub use "encode/util.npp";
+pub use "resources.npp";
+
+// Result<i64, i64>.Err is rewrapped as Result<str, i64>.Err by ?.
+// The scope guard and defer run on success and on that early return.
+pub fn evaluate_request(a: u8, b: u8, serial: i64) -> Result<str, i64> {
+    scope := Guard<i64>{ value: 0, tag: serial };
+    defer put("request finished\n");
+    sum := sum_digits(a, b)?;
+    label(sum)
+}

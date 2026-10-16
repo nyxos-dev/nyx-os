@@ -1,0 +1,27 @@
+// Shared vocabulary. Both util modules reach this file, forming a diamond.
+#[caps(syscall)]
+extern syscall {
+    fn write_workbench(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+pub #[caps(syscall)] fn put(s: str) {
+    write_workbench(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+pub enum Result<T, E> { Ok(v: T), Err(e: E) }
+pub struct Box<T> { value: T }
+pub struct Pair<T> { first: Box<T>, second: Box<T> }
+pub struct Pack<T> { run: fn(T) -> Box<T> }
+pub struct Mapper<T> { run: Fn(Box<T>) -> T }
+
+pub fn id<T>(value: T) -> T { value }
+pub fn widen<T>(value: u8) -> T { value as T }
+pub fn boxed<T>(value: T) -> Box<T> { Box<T>{ value: value } }
+
+pub fn apply<T>(f: Fn(T) -> T, value: T) -> T { f(value) }
+pub fn twice<T>(f: Fn(T) -> T, value: T) -> T { f(f(value)) }
+pub fn consume<T>(f: FnOnce(T) -> T, value: T) -> T { f(value) }
+
+pub fn adder(amount: i64) -> Fn(i64) -> i64 {
+    fn(value: i64) -> i64 { value + amount }
+}

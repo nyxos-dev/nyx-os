@@ -2316,6 +2316,7 @@ static void gen_preludes(Expr* e, int ind) {
 }
 
 static void gen_block(Block* b, int ind, int fn_tail);
+static void gen_try_cleanup(int ind, int line, const int* err_states);
 
 /* Emit every pending defer, most recently registered first. */
 static void gen_defers(int ind) {
@@ -2344,8 +2345,8 @@ static void emit_zero(Ty t) {
  * The operand and the enclosing function's return type must both be
  * result enums (enum_is_result). On Err the function returns at once:
  * the same value when the two types are identical, otherwise the Err
- * payload rewrapped into the return type — and the defers run before
- * the return, exactly like any other return (spec 5.7). On Ok the
+ * payload rewrapped into the return type — with defers and ownership
+ * cleanup exactly like any other return. On Ok the
  * statement consumes the payload (bind/assign) or discards it (`e?;`). */
 static void gen_try(Stmt* s, int ind) {
     check_expr(s->e);
@@ -2376,6 +2377,10 @@ static void gen_try(Stmt* s, int ind) {
             FILENAME, s->line, oe->name);
     Ty okty; okty.name = NULL; okty.ptrs = 0; okty.is_user = 0;
     if (ov_ok->nf == 1) okty = ov_ok->fs[0].ty;
+    /* The lhs is evaluated only on Ok. Checking it below may consume
+     * owners, but those owners are still live on the Err exit. */
+    int err_states[256];
+    for (int i = 0; i < NVARS; i++) err_states[i] = VARS[i].own_state;
     if (s->k == S_ASSIGN) {                  /* same checks as plain S_ASSIGN */
         check_expr(s->lhs);
         Expr* root = s->lhs;
@@ -2410,7 +2415,7 @@ static void gen_try(Stmt* s, int ind) {
                                               * branch below always returns */
         indentf(ind);
         emit_type(okty);
-        fprintf(OUT, " %s = ", s->name);
+        fprintf(OUT, " __ok%d = ", tid);
         emit_zero(okty);
         fputs(";\n", OUT);
     }
@@ -2423,7 +2428,7 @@ static void gen_try(Stmt* s, int ind) {
     indentf(ind + 1);
     fprintf(OUT, "if (__t%d.tag == %d) {\n", tid, variant_index(oe, "Err"));
     if (same) {
-        gen_defers(ind + 2);
+        gen_try_cleanup(ind + 2, s->line, err_states);
         indentf(ind + 2); fprintf(OUT, "return __t%d;\n", tid);
     } else {
         indentf(ind + 2);
@@ -2435,20 +2440,27 @@ static void gen_try(Stmt* s, int ind) {
             fprintf(OUT, "__e%d.u.Err.%s = __t%d.u.Err.%s;\n",
                     tid, rv_err->fs[0].name, tid, ov_err->fs[0].name);
         }
-        gen_defers(ind + 2);
+        gen_try_cleanup(ind + 2, s->line, err_states);
         indentf(ind + 2); fprintf(OUT, "return __e%d;\n", tid);
     }
     indentf(ind + 1); fputs("}\n", OUT);
     if (s->k == S_LET) {
         indentf(ind + 1);
-        fprintf(OUT, "%s = __t%d.u.Ok.%s;\n", s->name, tid, ov_ok->fs[0].name);
+        fprintf(OUT, "__ok%d = __t%d.u.Ok.%s;\n", tid, tid, ov_ok->fs[0].name);
     } else if (s->k == S_ASSIGN) {
         indentf(ind + 1);
         gen_expr(s->lhs);
         fprintf(OUT, " %s __t%d.u.Ok.%s;\n", s->aop, tid, ov_ok->fs[0].name);
     }
     indentf(ind); fputs("}\n", OUT);
-    if (s->k == S_LET) vars_add(s->name, okty, s->is_mut);
+    if (s->k == S_LET) {
+        /* Bind only after Err cleanup: the new name may shadow an outer
+         * owner which that cleanup still has to refer to. */
+        indentf(ind);
+        emit_type(okty);
+        fprintf(OUT, " %s = __ok%d;\n", s->name, tid);
+        vars_add(s->name, okty, s->is_mut);
+    }
 }
 
 /* Does this block's last statement return? (v0.18: an if arm that ends
@@ -2581,6 +2593,23 @@ static void own_held_drops_emit(int ind, int line) {
         own_field_drops_emit(VARS[i].ty, VARS[i].name, ind);
     }
 }
+
+/* The Err arm of ? exits, but the Ok arm keeps the ownership state
+ * after evaluating the operand. Emit the same cleanup/leak check as a
+ * return without letting Err's auto-drops consume Ok's live bindings. */
+static void gen_try_cleanup(int ind, int line, const int* err_states) {
+    int states[256];
+    for (int i = 0; i < NVARS; i++) {
+        states[i] = VARS[i].own_state;
+        VARS[i].own_state = err_states[i];
+    }
+    gen_defers(ind);
+    own_drops_emit(0, ind);
+    own_held_drops_emit(ind, line);
+    own_leak_scan(0, line, "this return");
+    for (int i = 0; i < NVARS; i++) VARS[i].own_state = states[i];
+}
+
 static int own_held_pending(void) {
     for (int i = 0; i < NVARS; i++) {
         if (VARS[i].own_state != OWN_HELD) continue;

@@ -1,0 +1,43 @@
+// workbench.npp — a bounded M6.6 integration program, not a compiler.
+// Parse two digit bytes, transform values, publish one result, cancel another.
+// Run the complete nppc -> N -> ncc/ngen -> C test with:
+//   python3 lang/nppc/tests/test_workbench.py
+use "workbench/api.npp";
+
+fn show(name: str, result: Result<str, i64>) {
+    match result {
+        Ok(value) => { put("{name}: {value}\n"); },
+        Err(error) => { put("{name}: error {error}\n"); },
+    }
+}
+
+fn main() -> i64 {
+    put("N++ workbench\n");
+    // Literal inference, nested generic fields and a function-typed field.
+    pack := Pack<i64>{ run: boxed<i64> };
+    run := pack.run;
+    pair := Pair<i64>{ first: run(id(2)), second: boxed<i64>(3) };
+    bias := 1;
+    mapper := Mapper<i64>{ run: fn(box: Box<i64>) -> i64 { box.value + bias } };
+    a := mapper.run(pair.first);
+    b := mapper.run(pair.second);
+    inc := adder(1);
+    total := twice<i64>(inc, a + b);
+    same := apply<str>(fn(value: str) -> str { value }, "ready");
+    put("mapped {a} {b}, total {total}, {same}\n");
+
+    good := evaluate_request(50, 51, 10);
+    show("2 + 3", good);
+    show("2 + x", evaluate_request(50, 120, 11));
+    show("1 + 1", evaluate_request(49, 49, 12));
+    description := match good { Ok(value) => value, Err(error) => "failed" };
+
+    commit := emit_once<str>(description, 90);
+    published := consume<str>(commit, "ignored");
+    put("published {published}\n");
+    checked := preview<i64>(total, 91);
+    put("preview result {checked}\n");
+    cancelled := emit_once<str>("must not emit", 92);
+    put("cancelled pending publish\n");
+    0
+}

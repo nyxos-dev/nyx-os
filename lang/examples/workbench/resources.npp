@@ -1,0 +1,24 @@
+use "common.npp";
+
+pub #[drop(close_lease)] own struct Lease { serial: i64 }
+fn close_lease(value: Lease) { put("close {value.serial}\n"); }
+
+pub #[drop(release)] own struct Guard<T> { value: T, tag: i64 }
+fn release<T>(value: Guard<T>) { put("release {value.tag}\n"); }
+
+// The generic maker owns a generic guard containing an own resource.
+// Calling or abandoning the closure must release the guard and its field.
+pub fn emit_once<T>(seed: T, serial: i64) -> FnOnce(T) -> T {
+    ticket := Guard<Lease>{ value: Lease{ serial: serial }, tag: serial };
+    fn(ignored: T) -> T { put("emit {ticket.tag}\n"); seed }
+}
+
+// A second owning form: a by-value := closure born inside a template.
+pub fn preview<T>(seed: T, serial: i64) -> i64 {
+    lease := Lease{ serial: serial };
+    report := fn(n: i64) -> i64 {
+        put("preview {seed} on {lease.serial}\n");
+        n + lease.serial
+    };
+    report(1)
+}

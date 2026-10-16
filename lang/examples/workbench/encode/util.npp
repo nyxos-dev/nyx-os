@@ -1,0 +1,10 @@
+pub use ".././common.npp";
+
+struct Token { value: i64 }
+fn helper(value: i64) -> i64 { value + 1 }
+
+pub fn label(value: i64) -> Result<str, i64> {
+    token := Token{ value: helper(value) };
+    if token.value == 6 { return Result.Ok{ v: "five" }; }
+    Result.Err{ e: value }
+}

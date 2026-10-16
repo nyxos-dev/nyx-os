@@ -378,9 +378,9 @@ same toolchain discipline — and the self-hosting question is deferred
 until the dialect stabilizes (the N ladder showed the way; it can be
 climbed again when it is worth climbing).
 
-**And the third way — the OS itself.** The lowered N of every N++
-program — twenty-five of the twenty-seven `.npp` examples; `modlib` and
-`modutil` are modules their users inline — has been compiled and run
+**And the third way — the OS itself.** The lowered N of the earlier corpus
+of twenty-five N++ programs — with `modlib` and `modutil` as modules their
+users inline — has been compiled and run
 inside NyxOS by the in-OS `ncc` — built from source there by
 `xbm install ncc`, itself compiled by the in-OS TinyCC — with the
 lowered `.n` files and `nyxrt.{c,h}` on the `/mnt` disk:
@@ -455,3 +455,66 @@ program's host run.)
 
 The rungs are sized like M5's were: one honest increment each, docs in
 the same commit, nothing claimed that a fence does not hold.
+
+### 6.5 M6.6 integration checkpoint
+
+[`workbench.npp`](../examples/workbench.npp) and its
+[`workbench/`](../examples/workbench/) modules are a bounded first checkpoint
+toward M6.6. This is a small request processor: decode two ASCII digit bytes,
+add them, produce a label or an error, publish through a one-shot handler and
+cancel an unused handler. It is not a compiler or a self-hosting claim.
+
+| Composition | Exercised by the program |
+|---|---|
+| Modules and re-exports | One `use` of `api.npp` exposes the public API. Decode and encode both re-export the shared common module through equivalent paths, forming a diamond. |
+| Private identities | `decode/util.npp` and `encode/util.npp` deliberately share a basename, a private `Token` type and a private `helper` with different behavior. The exported generic `Guard<T>` has a private generic destructor. |
+| Generics | Structs, enums and functions; literal call inference; inferred Result construction; a generic cast; nested `Box<T>` fields and uses; function/closure fields whose signatures name `Box<T>`. |
+| Reusable closures | A field captures a bias by value; a returned `Fn` survives its maker and is called twice through a generic consumer. A noncapturing lambda also passes through `apply<str>`. |
+| Owning closures | A generic `FnOnce` maker captures an own generic guard containing an own lease. One handler is consumed and one abandoned; both release their captures once. A generic `:=` closure exercises the by-value own form. |
+| Errors and cleanup | Generic Result variants, statement and value `match`, same-type and cross-type `?`; defers and destructors on ordinary and error returns. The writer uses a capability-gated syscall with a checked user pointer. |
+
+The runnable fence is
+[`test_workbench.py`](../nppc/tests/test_workbench.py):
+
+```sh
+python3 lang/nppc/tests/test_workbench.py --examples
+```
+
+On Linux x86_64 or WSL it bootstraps the tools from their checked-in sources,
+lowers the program twice to verify deterministic output, and requires `ncc`
+and the self-hosted `ngen` to emit identical C from that N. Both C outputs
+compile as freestanding C99 and run with the Linux host shim. An exact output
+oracle checks success, both error paths, and resource lifetime/order, while
+the self-hosted checker independently accepts the lowered program. The
+optional corpus pass repeats the differential and execution comparison on
+the twenty-five preceding N++ entry points. `CC` selects the C compiler.
+
+The first integrated run exposed a missing cleanup path in N: `?` returned
+an Err after defers without dropping live locals or held parameters' own
+fields. It also failed to reject destructor-less locals whose only consume
+was after `?`. `ncc` and the N checker/emitter now handle that implicit exit
+like an explicit return. They snapshot ownership after evaluating the
+operand, apply defer/drop/leak handling for Err, and restore that state for
+Ok. The fence includes all three accepted statement forms, same and
+rewrapped Result types, reverse drop order, held fields, values moved into
+the operand or assignment target, shadowing payload bindings, and refused
+leaks. An assignment target's moves count only on Ok, and a payload's source
+name is bound after Err cleanup so it cannot hide an outer owner. Running
+the fence with an earlier `--ncc` fails
+because `release 11` is missing. The packaged `ncc` source and generated
+`ngen` translation unit follow the repaired sources.
+
+The generated ELF also ran inside NyxOS 6.5.190 under QEMU using the target
+runtime and `crt0` build documented in the ncc README. Its 301-byte trace
+matched the oracle both on the console and through file redirection, with
+exit status 0 and no kernel fault. The transpilers ran on the host for this
+check; compiling the workbench inside NyxOS remains unverified.
+
+**M6.6 remains open.** This checkpoint does not exercise every historical
+sub-rung (for example nested lambdas and indexed closure fields retain their
+separate examples). `FnMut` is not implemented; the example uses the actual `Fn` and
+`FnOnce` types. Mutable borrowed captures and `FnOnce` fields are not added.
+The existing bump-allocated closure environments are not reclaimed, and
+module path identity is lexical rather than symlink-aware. The separate
+privacy and ownership refusal cases hold these boundaries without expanding
+the language surface.

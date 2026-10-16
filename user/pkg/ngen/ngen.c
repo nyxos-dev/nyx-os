@@ -171,6 +171,7 @@ void gheld(nyx_u8* p, nyx_i64* st, nyx_i64 d);
 nyx_i64 gheldpend(nyx_u8* p, nyx_i64* st);
 nyx_i64 gpend(nyx_u8* p, nyx_i64* st, nyx_i64 from);
 void gdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 d);
+void gtry_cleanup(nyx_u8* p, nyx_i64* st, nyx_i64 d);
 void gdefs(nyx_u8* p, nyx_i64* st, nyx_i64 d);
 void gstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d);
 void gblock(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 d, nyx_i64 ftail);
@@ -4521,6 +4522,13 @@ void ctry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 form) {
         nyx_i64 orr = al[((ea[((oe * 4) + 3)] + (ovi * 4)) + 3)];
         okty = ((T){.pt = al[(orr + 2)], .us = al[(orr + 3)], .s = al[(orr + 4)], .l = al[(orr + 5)]});
     }
+    nyx_i64* err_states = (nyx_i64*)(sys_sbrk(((st[40] + 1) * 8)));
+    nyx_i64* va_err = (nyx_i64*)(st[39]);
+    nyx_i64 err_index = 0;
+    while ((err_index < st[40])) {
+        err_states[err_index] = va_err[((err_index * 10) + 8)];
+        err_index = (err_index + 1);
+    }
     if ((form == 2)) {
         nyx_i64 lhs3 = nd[((i * 8) + 1)];
         cexpr(p, st, lhs3);
@@ -4590,6 +4598,27 @@ void ctry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 form) {
             put(((nyx_str){")\n", 2}));
             st[41] = 1;
         }
+        if ((st[41] == 1)) {
+            return;
+        }
+    }
+    nyx_i64* va = (nyx_i64*)(st[39]);
+    nyx_i64* states = (nyx_i64*)(sys_sbrk(((st[40] + 1) * 8)));
+    nyx_i64 j = 0;
+    while ((j < st[40])) {
+        states[j] = va[((j * 10) + 8)];
+        va[((j * 10) + 8)] = err_states[j];
+        j = (j + 1);
+    }
+    cdrops(p, st, 0);
+    cheld(p, st, ln);
+    cleak(p, st, 0, ln, 0);
+    j = 0;
+    while ((j < st[40])) {
+        va[((j * 10) + 8)] = states[j];
+        j = (j + 1);
+    }
+    if ((st[41] == 1)) {
         return;
     }
     if ((form == 1)) {
@@ -6481,9 +6510,12 @@ void gtry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d, nyx_i64 form) {
     if ((form == 1)) {
         eind(d);
         ety(p, st, okty);
-        put(((nyx_str){" ", 1}));
-        put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
-        put(((nyx_str){" = ", 3}));
+        char __b0[256];
+        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" __ok", 5});
+        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" = ", 3});
+        put(__s0);
         ezero(p, st, okty);
         put(((nyx_str){";\n", 2}));
     }
@@ -6492,91 +6524,92 @@ void gtry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d, nyx_i64 form) {
     gpre(p, st, e, (d + 1));
     eind((d + 1));
     put_span(p, ea[(oe * 4)], ea[((oe * 4) + 1)]);
-    char __b0[256];
-    nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
-    __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" __t", 4});
-    __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(tid));
-    __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" = ", 3});
-    put(__s0);
+    char __b1[256];
+    nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+    __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){" __t", 4});
+    __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(tid));
+    __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){" = ", 3});
+    put(__s1);
     gexpr(p, st, e);
     put(((nyx_str){";\n", 2}));
     eind((d + 1));
-    char __b1[256];
-    nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
-    __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){"if (__t", 7});
-    __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(tid));
-    __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){".tag == ", 8});
-    __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(erv));
-    __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){") {\n", 4});
-    put(__s1);
+    char __b2[256];
+    nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+    __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){"if (__t", 7});
+    __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(tid));
+    __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){".tag == ", 8});
+    __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(erv));
+    __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){") {\n", 4});
+    put(__s2);
     if (same) {
-        gdefs(p, st, (d + 2));
+        gtry_cleanup(p, st, (d + 2));
         eind((d + 2));
-        char __b2[256];
-        nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
-        __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){"return __t", 10});
-        __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(tid));
-        __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){";\n", 2});
-        put(__s2);
+        char __b3[256];
+        nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
+        __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){"return __t", 10});
+        __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){";\n", 2});
+        put(__s3);
     }
     if (!(same)) {
         eind((d + 2));
         put_span(p, ea[(re * 4)], ea[((re * 4) + 1)]);
-        char __b3[256];
-        nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
-        __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){" __e", 4});
-        __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(tid));
-        __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){" = {0};\n", 8});
-        put(__s3);
-        eind((d + 2));
         char __b4[256];
         nyx_str __s4 = __nyx_fmt_begin(__b4, 256);
-        __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){"__e", 3});
+        __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){" __e", 4});
         __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(tid));
-        __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){".tag = ", 7});
-        __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(erv2));
-        __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){";\n", 2});
+        __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){" = {0};\n", 8});
         put(__s4);
+        eind((d + 2));
+        char __b5[256];
+        nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
+        __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){"__e", 3});
+        __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){".tag = ", 7});
+        __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(erv2));
+        __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){";\n", 2});
+        put(__s5);
         if ((al[((rvb + (erv2 * 4)) + 2)] == 1)) {
             nyx_i64 orr = al[((ovb + (erv * 4)) + 3)];
             nyx_i64 rrr = al[((rvb + (erv2 * 4)) + 3)];
             eind((d + 2));
-            char __b5[256];
-            nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
-            __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){"__e", 3});
-            __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(tid));
-            __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){".u.Err.", 7});
-            put(__s5);
-            put_span(p, al[rrr], al[(rrr + 1)]);
             char __b6[256];
             nyx_str __s6 = __nyx_fmt_begin(__b6, 256);
-            __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){" = __t", 6});
+            __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){"__e", 3});
             __nyx_fmt_i64(&__s6, __b6, 256, (nyx_i64)(tid));
             __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){".u.Err.", 7});
             put(__s6);
+            put_span(p, al[rrr], al[(rrr + 1)]);
+            char __b7[256];
+            nyx_str __s7 = __nyx_fmt_begin(__b7, 256);
+            __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){" = __t", 6});
+            __nyx_fmt_i64(&__s7, __b7, 256, (nyx_i64)(tid));
+            __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){".u.Err.", 7});
+            put(__s7);
             put_span(p, al[orr], al[(orr + 1)]);
             put(((nyx_str){";\n", 2}));
         }
-        gdefs(p, st, (d + 2));
+        gtry_cleanup(p, st, (d + 2));
         eind((d + 2));
-        char __b7[256];
-        nyx_str __s7 = __nyx_fmt_begin(__b7, 256);
-        __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){"return __e", 10});
-        __nyx_fmt_i64(&__s7, __b7, 256, (nyx_i64)(tid));
-        __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){";\n", 2});
-        put(__s7);
+        char __b8[256];
+        nyx_str __s8 = __nyx_fmt_begin(__b8, 256);
+        __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){"return __e", 10});
+        __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){";\n", 2});
+        put(__s8);
     }
     eind((d + 1));
     put(((nyx_str){"}\n", 2}));
     if ((form == 1)) {
         eind((d + 1));
-        put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
-        char __b8[256];
-        nyx_str __s8 = __nyx_fmt_begin(__b8, 256);
-        __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){" = __t", 6});
-        __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(tid));
-        __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){".u.Ok.", 6});
-        put(__s8);
+        char __b9[256];
+        nyx_str __s9 = __nyx_fmt_begin(__b9, 256);
+        __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){"__ok", 4});
+        __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){" = __t", 6});
+        __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){".u.Ok.", 6});
+        put(__s9);
         put_span(p, al[okr], al[(okr + 1)]);
         put(((nyx_str){";\n", 2}));
     }
@@ -6592,18 +6625,28 @@ void gtry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d, nyx_i64 form) {
         if ((nd[((i * 8) + 3)] == 2)) {
             put(((nyx_str){" -= ", 4}));
         }
-        char __b9[256];
-        nyx_str __s9 = __nyx_fmt_begin(__b9, 256);
-        __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){"__t", 3});
-        __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(tid));
-        __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){".u.Ok.", 6});
-        put(__s9);
+        char __b10[256];
+        nyx_str __s10 = __nyx_fmt_begin(__b10, 256);
+        __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){"__t", 3});
+        __nyx_fmt_i64(&__s10, __b10, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){".u.Ok.", 6});
+        put(__s10);
         put_span(p, al[okr], al[(okr + 1)]);
         put(((nyx_str){";\n", 2}));
     }
     eind(d);
     put(((nyx_str){"}\n", 2}));
     if ((form == 1)) {
+        eind(d);
+        ety(p, st, okty);
+        put(((nyx_str){" ", 1}));
+        put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
+        char __b11[256];
+        nyx_str __s11 = __nyx_fmt_begin(__b11, 256);
+        __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){" = __ok", 7});
+        __nyx_fmt_i64(&__s11, __b11, 256, (nyx_i64)(tid));
+        __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){";\n", 2});
+        put(__s11);
         vadd(st, nd[((i * 8) + 5)], nd[((i * 8) + 6)], nd[((i * 8) + 3)], okty);
     }
 }
@@ -6815,6 +6858,24 @@ void gdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 d) {
             }
         }
         j = (j - 1);
+    }
+}
+
+void gtry_cleanup(nyx_u8* p, nyx_i64* st, nyx_i64 d) {
+    nyx_i64* va = (nyx_i64*)(st[39]);
+    nyx_i64* states = (nyx_i64*)(sys_sbrk(((st[40] + 1) * 8)));
+    nyx_i64 j = 0;
+    while ((j < st[40])) {
+        states[j] = va[((j * 10) + 8)];
+        j = (j + 1);
+    }
+    gdefs(p, st, d);
+    gdrops(p, st, 0, d);
+    gheld(p, st, d);
+    j = 0;
+    while ((j < st[40])) {
+        va[((j * 10) + 8)] = states[j];
+        j = (j + 1);
     }
 }
 
