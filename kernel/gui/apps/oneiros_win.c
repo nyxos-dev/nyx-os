@@ -142,6 +142,7 @@ struct oneiros_win {
     int      seed_len;
     char     out[OW_OUT_MAX];
     int      out_len;
+    int      copied_len;
     unsigned char ctx[OG_B];
     int      generating, want, done;
     float    temp;
@@ -149,6 +150,53 @@ struct oneiros_win {
 };
 
 static uint32_t ow_rnd(oneiros_win_t *o){ o->rng^=o->rng<<13; o->rng^=o->rng>>7; o->rng^=o->rng<<17; return (uint32_t)(o->rng>>32); }
+
+static int ow_text_token(int c){ return c=='\n' || c=='\t' || (c>=32 && c<127); }
+
+/* Sample only displayable text, renormalizing the allowed probability mass.
+ * forward() provides normalized probabilities; ignore invalid values as well as
+ * control bytes. Integer RNG input avoids the kernel's unavailable float ABI. */
+static int ow_sample_text(const float *pr, uint32_t random){
+    float total=0;
+    int last=' ';
+    for (int c=0;c<OG_V;c++) if (ow_text_token(c) && pr[c]>0.0f && pr[c]<=1.0f){
+        total+=pr[c]; last=c;
+    }
+    if (!(total>0.0f)) return ' ';
+    /* Use 24 bits so converting the largest RNG value never rounds to 1.0. */
+    float target=(float)(random>>8)*(1.0f/16777216.0f)*total, cumulative=0;
+    for (int c=0;c<OG_V;c++) if (ow_text_token(c) && pr[c]>0.0f && pr[c]<=1.0f){
+        cumulative+=pr[c];
+        if (target<cumulative) return c;
+    }
+    return last;   /* rounding at the CDF end must also return an allowed token */
+}
+
+int oneiros_text_selftest(void){
+    float pr[OG_V];
+    memset_asm(pr, 0, sizeof(pr));
+    if (ow_sample_text(pr, 0)!=' ' || ow_sample_text(pr, 0xFFFFFFFFu)!=' ') return 1;
+    for (int c=0;c<OG_V;c++){
+        pr[c]=1.0f;
+        int expected=(c==9 || c==10 || (c>31 && c<127))?c:' ';
+        if (ow_sample_text(pr, 0)!=expected || ow_sample_text(pr, 0xFFFFFFFFu)!=expected) return 2;
+        pr[c]=0.0f;
+    }
+    pr[0]=1.0f; pr[27]=1.0f; pr[127]=1.0f; pr[255]=1.0f;
+    pr['A']=0.25f; pr['B']=0.75f;
+    if (ow_sample_text(pr, 0)!='A' || ow_sample_text(pr, 0x3FFFFF00u)!='A' ||
+        ow_sample_text(pr, 0x40000000u)!='B' || ow_sample_text(pr, 0xFFFFFFFFu)!='B') return 3;
+    memset_asm(pr, 0, sizeof(pr));
+    union { uint32_t bits; float value; } bad;
+    bad.bits=0x7FC00000u; pr['A']=bad.value;   /* NaN */
+    bad.bits=0x7F800000u; pr['B']=bad.value;   /* infinity */
+    pr['C']=-0.5f; pr['D']=2.0f;
+    if (ow_sample_text(pr, 0xFFFFFFFFu)!=' ') return 4;
+    pr['\t']=0.25f; pr['\n']=0.75f;
+    if (ow_sample_text(pr, 0)!='\t' || ow_sample_text(pr, 0x40000000u)!='\n' ||
+        ow_sample_text(pr, 0xFFFFFFFFu)!='\n') return 5;
+    return 0;
+}
 
 oneiros_win_t* oneiros_create_ctx(void){
     oneiros_win_t *o=(oneiros_win_t*)kmalloc(sizeof(oneiros_win_t));
@@ -177,6 +225,7 @@ static void ow_start(oneiros_win_t *o){
     if (!o->loaded) return;
     int n=o->seed_len; if (n>OW_OUT_MAX-1) n=OW_OUT_MAX-1;
     memmove(o->out, o->seed, n); o->out[n]=0; o->out_len=n;
+    o->copied_len=0;
     for (int t=0;t<OG_B;t++){ int idx=o->seed_len-OG_B+t; o->ctx[t]=(idx>=0)?(unsigned char)o->seed[idx]:(unsigned char)' '; }
     o->want=OW_GEN_N; o->done=0; o->generating=1;
     o->rng ^= (uint64_t)get_ticks()*0x2545F4914F6CDD1DULL + 0x9E3779B97F4A7C15ULL;
@@ -185,10 +234,7 @@ static void ow_start(oneiros_win_t *o){
 static void ow_gen_one(oneiros_win_t *o){
     o->sc->temp=o->temp;
     forward(o->model, o->sc, o->ctx);            /* s->probs = normalized (temperature applied) */
-    float *pr=o->sc->probs;
-    /* sample: r in [0,1) from the integer RNG (no float-returning helper), walk the CDF */
-    float r=(float)ow_rnd(o) * (1.0f/4294967296.0f), cc=0; int nx=OG_V-1;
-    for (int c=0;c<OG_V;c++){ cc+=pr[c]; if (r<=cc){ nx=c; break; } }
+    int nx=ow_sample_text(o->sc->probs, ow_rnd(o));
     if (o->out_len<OW_OUT_MAX-1){ o->out[o->out_len++]=(char)nx; o->out[o->out_len]=0; }
     memmove(o->ctx, o->ctx+1, OG_B-1); o->ctx[OG_B-1]=(unsigned char)nx;
     o->done++;
@@ -204,7 +250,7 @@ int oneiros_win_tick(window_t *win){
 
 /* ---- layout (shared by draw + click; ox,oy = client origin) ---------------- */
 typedef struct { int x,y,w,h; } Rect;
-typedef struct { Rect seed, dream, stop, clear, tminus, tplus, out; } Layout;
+typedef struct { Rect seed, dream, stop, clear, copy, tminus, tplus, out; } Layout;
 static int ow_hit(Rect r,int mx,int my){ return mx>=r.x && mx<r.x+r.w && my>=r.y && my<r.y+r.h; }
 
 static void ow_layout(int ox,int oy,int cw,int ch,Layout *L){
@@ -212,6 +258,7 @@ static void ow_layout(int ox,int oy,int cw,int ch,Layout *L){
     L->dream=(Rect){ ox+OW_PAD,        oy+76, 76, 26 };
     L->stop =(Rect){ L->dream.x+76+8,  oy+76, 58, 26 };
     L->clear=(Rect){ L->stop.x+58+8,   oy+76, 62, 26 };
+    L->copy =(Rect){ L->clear.x+62+8,  oy+76, 62, 26 };
     L->tplus =(Rect){ ox+cw-OW_PAD-24,       oy+76, 24, 26 };
     L->tminus=(Rect){ ox+cw-OW_PAD-24-44-24, oy+76, 24, 26 };
     L->out=(Rect){ ox+OW_PAD, oy+112, cw-2*OW_PAD, ch-112-22 };
@@ -236,7 +283,8 @@ static void ow_draw_text(Rect box,const char *s,int len,int caret){
     int col=0,total=1;
     for (int i=0;i<len;i++){ char c=s[i];
         if (c=='\n'){ total++; col=0; }
-        else { if (col>=cols){ total++; col=0; } col++; } }
+        else { int cells=c=='\t'?4-(col%4):1;
+            while (cells--){ if (col>=cols){ total++; col=0; } col++; } } }
     int start=total-rows; if (start<0) start=0;
     char line[128]; int ll=0, row=0; int tx=box.x+5, ty=box.y+4;
     col=0;
@@ -245,9 +293,12 @@ static void ow_draw_text(Rect box,const char *s,int len,int caret){
             if (row>=start){ line[ll]=0; font_draw_string_trans(tx, ty+(row-start)*OW_LH, line, THEME_TEXT); }
             ll=0; row++; col=0;
         } else {
-            if (col>=cols){ if (row>=start){ line[ll]=0; font_draw_string_trans(tx, ty+(row-start)*OW_LH, line, THEME_TEXT); } ll=0; row++; col=0; }
-            if (ll<127){ line[ll++]=c; }
-            col++;
+            int cells=c=='\t'?4-(col%4):1;
+            while (cells--){
+                if (col>=cols){ if (row>=start){ line[ll]=0; font_draw_string_trans(tx, ty+(row-start)*OW_LH, line, THEME_TEXT); } ll=0; row++; col=0; }
+                if (ll<127){ line[ll++]=c=='\t'?' ':c; }
+                col++;
+            }
         } }
     if (row>=start){ line[ll]=0; font_draw_string_trans(tx, ty+(row-start)*OW_LH, line, THEME_TEXT); }
     if (caret){ int cax=tx+col*OW_FCW, cay=ty+(row-start)*OW_LH;
@@ -284,6 +335,7 @@ void oneiros_win_draw(window_t *win, int cx, int cy, uint32_t cw, uint32_t ch){
     ow_btn(L.dream, "Dream", 1, o->loaded && !o->generating);
     ow_btn(L.stop,  "Stop",  0, o->generating);
     ow_btn(L.clear, "Clear", 0, 1);
+    ow_btn(L.copy,  "Copy",  0, o->out_len>0);
     ow_btn(L.tminus, "-", 0, 1);
     ow_btn(L.tplus,  "+", 0, 1);
     {
@@ -312,7 +364,10 @@ void oneiros_win_draw(window_t *win, int cx, int cy, uint32_t cw, uint32_t ch){
     {
         char st[64];
         if (!o->loaded)          snprintf(st, sizeof(st), "no model");
+        else if (o->generating && o->copied_len)
+                                snprintf(st, sizeof(st), "dreaming %d/%d; copied %d chars", o->done, o->want, o->copied_len);
         else if (o->generating)  snprintf(st, sizeof(st), "dreaming  %d/%d", o->done, o->want);
+        else if (o->copied_len)  snprintf(st, sizeof(st), "copied %d chars", o->copied_len);
         else if (o->out_len>0)   snprintf(st, sizeof(st), "done  %d chars", o->out_len);
         else                     snprintf(st, sizeof(st), "type a seed, press Dream (Enter)");
         font_draw_string_trans(cx+OW_PAD, cy+(int)ch-16, st, THEME_TEXT_DIM);
@@ -323,10 +378,14 @@ void oneiros_win_click(window_t *win, int mx, int my, int btn){
     if (btn!=1) return;
     oneiros_win_t *o=(oneiros_win_t*)win->reserved;
     if (!o) return;
-    Layout L; ow_layout(win->x, WIN_CLIENT_Y(win), (int)win->w, (int)win->h-TITLE_H, &L);
+    Layout L; ow_layout(win->x, WIN_CLIENT_Y(win), (int)win->w, (int)win->h, &L);
     if (ow_hit(L.dream,mx,my))  { ow_start(o); return; }
     if (ow_hit(L.stop,mx,my))   { o->generating=0; return; }
-    if (ow_hit(L.clear,mx,my))  { o->out_len=0; o->out[0]=0; o->generating=0; o->done=0; return; }
+    if (ow_hit(L.clear,mx,my))  { o->out_len=0; o->out[0]=0; o->generating=0; o->done=0; o->copied_len=0; return; }
+    if (ow_hit(L.copy,mx,my))   {
+        if (o->out_len>0){ clipboard_set(o->out, (uint32_t)o->out_len); o->copied_len=o->out_len; }
+        return;
+    }
     if (ow_hit(L.tminus,mx,my)) { o->temp-=0.1f; if (o->temp<0.1f) o->temp=0.1f; return; }
     if (ow_hit(L.tplus,mx,my))  { o->temp+=0.1f; if (o->temp>1.5f) o->temp=1.5f; return; }
 }

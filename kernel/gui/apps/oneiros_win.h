@@ -23,5 +23,6 @@ void oneiros_win_click(window_t* win, int mx, int my, int btn);
 void oneiros_win_key(window_t* win, int key);
 int  oneiros_win_tick(window_t* win);
 void oneiros_win_close(window_t* win);
+int  oneiros_text_selftest(void);
 
 #endif /* ONEIROS_WIN_H_INCLUDED */
