@@ -49,6 +49,18 @@ static void mon_mem(uint32_t* pct, uint32_t* used_mb, uint32_t* total_mb) {
     *total_mb = total_kb / 1024;
 }
 
+// Keep the allocator's usable pool separate from RAM that firmware detected but
+// this kernel cannot yet allocate. A large VM must not look fully occupied just
+// because the physical allocator currently manages only its first 512 MiB.
+static void mon_size(char* out, size_t size, uint64_t bytes) {
+    uint64_t mib = bytes / (1024 * 1024);
+    if (mib < 1024) snprintf(out, size, "%u MiB", (uint32_t)mib);
+    else {
+        uint64_t tenths = (bytes / (1024 * 1024) * 10 + 512) / 1024;
+        snprintf(out, size, "%llu.%u GiB", tenths / 10, (uint32_t)(tenths % 10));
+    }
+}
+
 // ~30 fps tick from the compositor. Sample the metrics ~4 Hz into the scrolling rings and ask for
 // a repaint only then, so an open monitor doesn't force a full 30 fps recomposite.
 int taskman_win_tick(window_t* win) {
@@ -146,7 +158,7 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 
     // --- Memory performance graph (teal) ---
     y = y + LABEL_H + GRAPH_H + 5;
-    snprintf(lbl, sizeof(lbl), "RAM  %u%%  (%u / %u MB)", mem_pct, mem_used, mem_total);
+    snprintf(lbl, sizeof(lbl), "Managed RAM  %u%%  (%u / %u MiB)", mem_pct, mem_used, mem_total);
     font_draw_string(gx, y, lbl, fb_rgb(150, 235, 215), THEME_WINDOW_BG);
     mon_draw_graph(gx, y + LABEL_H, gw, GRAPH_H, tm->mem_hist, tm->hist_count, tm->hist_head,
                    fb_rgb(90, 210, 180), fb_rgb(25, 85, 72), fb_rgb(150, 240, 220));
@@ -210,8 +222,11 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     // --- Status bar ---
     fb_fill_rect(cx, status_y, cw, HEADER_H, THEME_PANEL_HEADER);
     char status[128];
-    snprintf(status, sizeof(status), "Procs: %d   Up: %us   Mem %u/%u MB   (used = pool - free)",
-             process_count, get_uptime_seconds(), mem_used, mem_total);
+    char detected[24], managed[24];
+    mon_size(detected, sizeof(detected), memory_total);
+    mon_size(managed, sizeof(managed), (uint64_t)mem_total * 1024 * 1024);
+    snprintf(status, sizeof(status), "Procs: %d  RAM detected: %s  Pool: %s",
+             process_count, detected, managed);
     font_draw_string(cx + 4, status_y + 2, status, fb_rgb(180,200,220), THEME_PANEL_HEADER);
 }
 

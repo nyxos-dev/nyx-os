@@ -620,6 +620,16 @@ void vm_unmap(uint64_t virt) {
 uint64_t vm_stat_demand(void) { return vm_demand_faults; }
 uint64_t vm_stat_cow(void) { return vm_cow_faults; }
 
+// Number of 2 MiB entries in the boot identity map. Firmware RAM is a sum
+// of regions, whereas the allocator's indexes span their holes as well.
+static int identity_map_entries(uint64_t detected_bytes, uint32_t managed_pages) {
+    uint64_t bytes = (uint64_t)managed_pages * PAGE_SIZE;
+    if (detected_bytes > bytes) bytes = detected_bytes;
+    if (bytes < ((uint64_t)IDENTITY_MAP_MB << 20)) bytes = (uint64_t)IDENTITY_MAP_MB << 20;
+    if (bytes > (1ULL << 30)) bytes = 1ULL << 30;       // one page directory
+    return (int)((bytes + 0x1FFFFF) >> 21);
+}
+
 void init_paging(void) {
     printf("[PAGING] Allocating PML4 table...\n");
     kernel_pml4 = (uint64_t*)alloc_page();
@@ -643,12 +653,10 @@ void init_paging(void) {
     // heavy memory use (a large program + fork COW + a pipeline) eventually allocated
     // a page above 64 MB and the kernel faulted dereferencing its unmapped identity
     // address — the intermittent `cmd | less`-class crash. One PD spans 512*2MB = 1 GB;
-    // cap there (more RAM would need extra PDs). Size to memory_total, rounded up.
-    uint64_t ram_mb = (memory_total ? memory_total : ((uint64_t)IDENTITY_MAP_MB << 20)) >> 20;
-    int num_pages = (int)((ram_mb + 1) / 2);           // 2MB huge pages, round up
-    if (num_pages < IDENTITY_MAP_MB / 2) num_pages = IDENTITY_MAP_MB / 2;  // >= 64 MB
-    if (num_pages > 512) num_pages = 512;              // one PD = 1 GB max
-    printf("[PAGING] Identity-mapping %d MB (RAM %lu MB)...\n", num_pages * 2, ram_mb);
+    // cap there (more RAM would need extra PDs). Cover at least the whole managed
+    // span even when reserved holes make the sum of detected RAM smaller.
+    int num_pages = identity_map_entries(memory_total, get_total_pages());
+    printf("[PAGING] Identity-mapping %d MB (RAM %llu MB)...\n", num_pages * 2, memory_total >> 20);
     for (int i = 0; i < num_pages; i++) {
         pd[i] = ((uint64_t)i * 0x200000) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_HUGE;
     }

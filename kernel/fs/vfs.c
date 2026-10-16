@@ -470,8 +470,8 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
             uint32_t used, freeb, tot;                 // managed pool — one honest source (see mem_pool_kb)
             mem_pool_kb(&used, &freeb, &tot);
             snprintf(buf, bufsz,
-                     "MemTotal: %u kB\nMemUsed:  %u kB\nMemFree:  %u kB\n",
-                     tot, used, freeb);
+                     "MemTotal: %u kB\nMemUsed:  %u kB\nMemFree:  %u kB\nMemDetected: %llu kB\n",
+                     tot, used, freeb, memory_total / 1024);
             break;
         }
         case PROC_UPTIME: {

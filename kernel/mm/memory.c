@@ -85,19 +85,31 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
         memset_asm(page_bitmap, 0x00, sizeof(page_bitmap));   // all pages USED
         free_pages = 0;
 
-        // Size the pool to the top of available RAM.
-        uint64_t top = 0;
-        for (int r = 0; r < mmap_count; r++)
-            if (mmap[r].type == 1 && mmap[r].base + mmap[r].len > top)
-                top = mmap[r].base + mmap[r].len;
-        total_pages = (uint32_t)(top / PAGE_SIZE);
-        if (total_pages > MAX_PAGES) total_pages = MAX_PAGES;
+        // The basic multiboot memory count only describes low RAM on machines
+        // with a PCI hole. Sum available RAM from the full map, including regions
+        // above 4 GiB, for detection. Keep it distinct from the capped pool: RAM
+        // outside this allocator's address range is NOT allocated/used memory.
+        uint64_t top = 0, detected = 0;
+        const uint64_t pool_limit = (uint64_t)MAX_PAGES * PAGE_SIZE;
+        for (int r = 0; r < mmap_count; r++) {
+            if (mmap[r].type != 1 || mmap[r].len > ~(uint64_t)0 - mmap[r].base) continue;
+            uint64_t end = mmap[r].base + mmap[r].len;
+            if (end > top) top = end;
+            if (mmap[r].len <= ~(uint64_t)0 - detected) detected += mmap[r].len;
+        }
+        if (detected) memory_total = detected;
+        // Cap before narrowing: a high firmware region must not wrap a 32-bit
+        // frame index and accidentally free unrelated low physical pages.
+        total_pages = (uint32_t)((top < pool_limit ? top : pool_limit) / PAGE_SIZE);
 
         // Free every whole page inside an AVAILABLE (type 1) region.
         for (int r = 0; r < mmap_count; r++) {
-            if (mmap[r].type != 1) continue;
+            if (mmap[r].type != 1 || mmap[r].base >= pool_limit ||
+                mmap[r].len > ~(uint64_t)0 - mmap[r].base) continue;
             uint64_t start = (mmap[r].base + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);  // round up
-            uint64_t end   = (mmap[r].base + mmap[r].len)   & ~(uint64_t)(PAGE_SIZE - 1);  // round down
+            uint64_t end = mmap[r].base + mmap[r].len;
+            if (end > pool_limit) end = pool_limit;
+            end &= ~(uint64_t)(PAGE_SIZE - 1);           // round down
             for (uint64_t a = start; a < end; a += PAGE_SIZE) {
                 uint32_t p = (uint32_t)(a / PAGE_SIZE);
                 if (p >= total_pages) break;
@@ -114,8 +126,8 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
         uint32_t low_1mb = 0x100000 / PAGE_SIZE;
         reserve_low_pages(kernel_end_page > low_1mb ? kernel_end_page : low_1mb);
 
-        printf("[MEM] mmap %d regions: %u pages free (%u MB usable), RAM top %u MB\n",
-               mmap_count, free_pages, free_pages / 256, (unsigned)(top / (1024 * 1024)));
+        printf("[MEM] mmap %d regions: %u pages free (%u MiB usable), detected %llu MiB, managed %u MiB\n",
+               mmap_count, free_pages, free_pages / 256, memory_total / (1024 * 1024), total_pages / 256);
         return;
     }
 
@@ -124,8 +136,8 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
     // usable. This is the v5.8.83 behavior; it can't see reserved regions above the
     // kernel, so it is only the safety net for a boot without a type-6 tag.
     memset_asm(page_bitmap, 0xFF, sizeof(page_bitmap));
-    total_pages = mem_size / PAGE_SIZE;
-    if (total_pages > MAX_PAGES) total_pages = MAX_PAGES;
+    uint64_t pages = mem_size / PAGE_SIZE;
+    total_pages = pages > MAX_PAGES ? MAX_PAGES : (uint32_t)pages;
     free_pages = total_pages;
     reserve_low_pages(kernel_end_page);
     printf("[MEM] no mmap: %d pages free (%d KB)\n", free_pages, free_pages * 4);
