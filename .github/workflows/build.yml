@@ -48,6 +48,9 @@ jobs:
       - name: Test Oneiros desktop model loading
         run: python3 tools/test_oneiros_model.py
 
+      - name: Test package installation failures and recovery
+        run: python3 tools/test_xbm_install.py
+
       - name: Test memory reporting and free options
         run: python3 tools/test_memory_reporting.py
 

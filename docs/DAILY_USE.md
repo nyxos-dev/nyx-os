@@ -1,0 +1,210 @@
+# Daily-use roadmap: VM first, then physical hardware
+
+NyxOS's next objective is a dependable daily workspace: open the desktop, edit and
+save files, use the terminal, compile and run programs, install packages, and return
+to the same work after reboot. The first supported environment is a documented VM
+configuration. Physical hardware follows once those workflows are repeatable there.
+
+This is an acceptance plan, not a declaration that NyxOS is ready for daily use.
+The stages below have no calendar deadlines; each closes when its evidence satisfies
+the stated criteria. A passing unit test, a successful boot, and a usable work session
+prove different things and must be reported separately.
+
+The architecture remains the repository's C and x86_64 Assembly kernel, its C runtime
+and in-OS C toolchain, and the N/N++ language pipeline. Changes should extend those
+interfaces in small reviewable steps. The subsystem map is in
+[ARCHITECTURE.md](ARCHITECTURE.md), and the current test machinery is in
+[TESTING.md](TESTING.md).
+
+## 1. Establish the VM reference and evidence
+
+Choose and record a reference QEMU configuration rather than treating every emulator
+setting as supported. Record firmware, CPU model/count, RAM, storage controller and
+disk geometry, framebuffer mode, input devices, and NIC. Use a disposable disk image
+for failure injection and a separate persistent image for normal save/reboot checks.
+
+The initial matrix should exercise BIOS and UEFI/OVMF, one and four CPUs, and RAM
+configurations below and above the current allocator ceiling, including the reported
+4–5 GiB case. Passing with more configured RAM must not be described as allocating all
+of that RAM. Network checks need a declared NIC and test endpoint; a boot without a
+supported NIC is a separate configuration.
+
+Acceptance evidence for each supported configuration:
+
+- The recorded commit builds without warnings; the compiler/tool versions, kernel
+  and ISO hashes, full build log, and test commands are retained together.
+- The self-test boot reaches `SELFTEST-END`, reports no failures, and contains no
+  kernel fault. The authoritative test count comes from that build, not this page.
+- A normal boot reaches login; keyboard login opens a responsive desktop. A screenshot
+  and interaction transcript supplement the serial log.
+- Repeated boot, logout/login, and shutdown/reboot trials record exact counts and any
+  failures. The same procedure can be rerun from a clean checkout and disk fixture.
+
+## 2. Make the VM a reliable work environment
+
+Work by observable failure: reproduce a problem, agree on the behavior, repair its
+owning subsystem, and keep a regression that exercises the real boundary. Changes in
+memory, scheduling, filesystem lifetime, or input require a desktop workflow as well
+as their focused tests.
+
+| Responsibility | Work to close | Acceptance evidence |
+|---|---|---|
+| Kernel and process runtime | Reliable spawn/exit/wait, pipes, signals, scheduling, syscall failure paths, and resource cleanup under repeated use. | Run foreground/background programs while the desktop responds; exercise exits, faults, cancellation and allocation failures. Surviving processes continue; process/fd/frame counts settle after cleanup. Record the workload and iteration count. |
+| Memory and paging | Keep detected RAM, allocator-managed RAM, used RAM and free RAM consistent. Expand the allocator only with the matching bitmap/refcount/reservation, mapping and address-width changes. | `/proc/meminfo`, `free` and Nyx Monitor agree for the same snapshot. Allocation pressure returns clear failures without corrupting a surviving process. A future RAM expansion must actually allocate, write and verify frames beyond the old ceiling. |
+| Storage, VFS and packages | Preserve saved data and descriptor ownership; detect incomplete reads/writes. Treat compiler success, staged output, installed binary and its manifest as separate checks. | Save/read/reboot/hash round trips; short-write, full-disk and read-failure cases; failed package builds preserve the previous executable and manifest. Failed recovery retains usable recovery files and reports the failure. Test the real mounted filesystem in addition to mocks. |
+| Input and clocks | Consistent IRQ/polling keyboard behavior, canonical input/EOF, pointer edges, button transitions, layout handling and advancing wall time. | Type, paste, edit, use Ctrl+D/C/Z, drag to every edge and back, and hold/release menu and taskbar buttons while work runs. Check the clock advances and no key/button remains latched after the interaction. |
+| Hemera desktop | Stable focus, menus, stacking, resize, workspaces, window lifetime, redraw and logout. | Repeatedly open/close, move/resize and switch applications; exercise menu hover and held buttons. Preserve focus/input routing and usable interaction during a foreground task; retain screenshots plus serial/fault logs. |
+| Erebus terminal and shell | Predictable builtins/userland dispatch, clear, redirection, pipelines, interactive input and child-status reporting. | Compare representative commands through graphical and serial entry points; stream and redirect `cat`, including EOF and failure paths; verify saved bytes and status rather than only displayed text. |
+| Mnemosyne editor and file workflow | Reliable open/edit/select/undo/save/reopen, paths with spaces, large-file boundaries and errors. | Edit and save a known document, close/reopen it, and compare exact bytes before and after reboot. An unsuccessful save is reported; editing or an application failure must not silently replace the last good file. |
+| Selene and network stack | Usable navigation, local/remote content handling, bounded parsing, timeouts and recoverable connection errors. | Load a fixed local corpus and controlled HTTP/TLS endpoints; navigate/back/reload, test malformed content and offline/time-out cases, then close/reopen. Record protocol and rendering limits instead of inferring general web compatibility. |
+| Oneiros | A coherent model-loading contract in CLI and GUI, bounded generation, usable stop/copy controls and correct cleanup. | The shipped model generates text; Copy exports the displayed bytes; stop, close and reopen remain responsive. Missing, truncated, extra-length and non-finite checkpoints are rejected by the actual loaders. Host validation and target GUI evidence are identified separately. |
+| N and N++ | Preserve the documented language contracts while extending the compiler, selfhost drivers and integration examples. | Keep compiler/checker differentials, diagnostic refusals, ownership cleanup traces and input-boundary tests. Exercise edit → compile → run inside NyxOS with exact output/status checks; identify any host-built lowering or tool still used. |
+| Accounts and configuration | Persistent user homes and settings, permissions, login/logout and useful behavior without a writable disk. | Create a user, save a file and desktop settings, log out and reboot, then verify ownership and exact contents. Report unavailable storage and failed writes; do not describe a RAM-only save as persistence. |
+| Text and accessibility | A stated encoding contract, shared clipboard behavior, keyboard navigation, readable fonts and visible focus. | Copy selected text between Oneiros, Mnemosyne and Erebus with exact byte checks, undo and size limits. Test supported accented characters separately from keyboard-layout selection; unsupported input must be explicit. |
+| Network trust | Define certificate, hostname and clock-validation policy for normal HTTPS use. | Correct trusted connections work; wrong-host, expired and unknown-root certificates fail visibly. An explicitly chosen development override must not silently become the normal trust policy. |
+| Audio and media | Qualify the existing AC97 and SB16 paths before building media controls on top of them. | Play a fixed WAV, exercise volume and stop, then repeat with no supported audio device. Keep the desktop responsive and report unavailable playback accurately. |
+| QA and integration | Define supported configurations, retain reproducible fixtures, independently review changes and prevent regressions across subsystem boundaries. | Every closed defect has a reproducer or stated reason a permanent test is unsuitable. Each integration result identifies the exact artifact, workload, expected result, actual result and remaining limits. |
+
+The end-to-end VM session is the stage gate: log in; create/edit/save/reopen a file;
+use terminal input and redirection; compile and execute C and an N program; install a
+package and exercise a failed replacement; use the browser against a controlled
+endpoint; generate/copy text in Oneiros; close the applications; reboot and verify the
+saved files and installed program. Run a recorded repetition and duration budget, with
+resource measurements at comparable idle points. Specify that budget before the run;
+do not relabel an unmeasured interactive check as a soak test.
+
+The immediate data and desktop priorities are:
+
+1. Make Mnemosyne open → save without editing preserve the original bytes, or reject
+   files it cannot represent before allowing a destructive save. Cover empty input,
+   absent final LF, CRLF, a 256-byte line and 513 lines. The current loader silently
+   discards content beyond its fixed line/document limits and removes CR; the saver
+   appends LF to every stored line.
+2. Connect existing desktop configuration to persistent per-user storage and report
+   write failures. Verify logout and reboot, not only closing and reopening a window.
+3. Complete the shared clipboard workflow across editor, terminal and Oneiros with
+   selection, bounded text, undo and exact content checks.
+
+### Visual direction and saved personalization
+
+The requested visual direction is a customized desktop in the style of the supplied
+references: tiled and floating windows, compact dark panels, colored terminals,
+legible monospace typography, a chosen wallpaper, deliberate spacing, thin borders,
+and widgets for CPU, RAM, network, media and the clock. Preserve Nyx's identity and
+make the choices coherent across Hemera, Erebus and the applications rather than
+giving each window unrelated controls or styling.
+
+This is planned work, with the VM as its first test environment. Theme, layout and
+widget choices should be user-configurable, saved and restored after logout/reboot.
+Hemera already has configuration loading/saving and numerous appearance controls;
+extend those facilities. Its current `/etc/nyx.conf` lives in the RAM filesystem,
+so an in-session save does not establish persistence across reboot.
+Widgets must use real subsystem measurements or show a clear unavailable state;
+decorative or simulated values are not evidence of working resource accounting or
+media integration. In particular, the RAM widget must retain the distinction between
+detected and managed memory.
+
+Transparency, blur and animation are optional effects. Establish and record a frame
+time, CPU and memory budget on the reference VM before accepting them; measure the
+desktop both idle and while applications work. Provide an opaque, reduced-motion
+fallback that keeps text, focus, controls and keyboard navigation clear.
+
+Acceptance includes paired screenshots of the chosen layouts, keyboard and pointer
+interaction checks, persisted settings after reboot, and measurements before/after
+effects are enabled. A wallpaper or theme screenshot alone does not establish the
+usability or performance of the desktop.
+
+## 3. Establish application isolation
+
+The built-in GUI applications currently execute in kernel context. A fault in one can
+therefore take down the desktop and the whole system. That limits what a successful VM
+work session establishes about robustness.
+
+Use the existing window syscall ABI and the phased
+[user-space GUI plan](USERSPACE_GUI.md) to migrate suitable clients incrementally.
+Keep Hemera's display/input responsibilities and the client interface explicit; avoid
+rewriting all applications simultaneously.
+
+Acceptance is fault containment: a deliberately failing client can be terminated and
+restarted while other windows, input, the compositor and saved files remain usable.
+Check buffer ownership, invalid handle behavior, event delivery, close/disconnect and
+process-exit cleanup. A working ring-3 window demo is groundwork, not completion of
+the application migration.
+
+## 4. Qualify physical hardware after the VM workflows
+
+Start from the documented [UEFI path and reference machine](REAL_HARDWARE.md), and
+record the actual machine, firmware settings, PCI IDs and boot artifact for each new
+result. Earlier hardware observations are useful starting evidence; they do not certify
+a newly built kernel or a different machine.
+
+Proceed in this order:
+
+1. Boot from removable media into the RAM-based desktop. Verify framebuffer geometry,
+   colors/rotation, clock, keyboard and a usable pointing method without relying on
+   writes to an existing system disk.
+2. Qualify required input and storage devices. Test identification and reads first;
+   perform write/readback and installation tests on an explicitly designated test disk
+   with known fixtures. Keep recovery boot media and the disk layout recorded.
+3. Prove persistent boot from the installed disk, then repeat the VM work-session
+   checklist and cold-boot/save/reopen trials on that machine.
+4. Qualify the network and audio devices needed for that machine's intended use.
+   Unsupported devices remain listed as unsupported; emulated RTL8139/SB16 results
+   do not establish support for a physical Wi-Fi or audio controller.
+
+Hardware support is accepted per configuration. USB-HID/touchpad, additional NICs,
+graphics modes and power-management work should follow a concrete target and a testable
+driver contract. Expanding the device list must not weaken the VM regression gate.
+
+## Current limits and open investigations
+
+- The physical allocator in `kernel/mm/memory.c` has a 512 MiB managed-frame ceiling.
+  Reporting detected RAM above that limit does not remove it. The paging code and frame
+  metadata must be considered together before increasing it; adding swap is a separate
+  design decision, not a correction to a misleading memory counter.
+- The current identity mapping is bounded by one page directory (1 GiB), and
+  `kernel/mm/heap.c` provides a fixed 16 MiB kernel heap. More configured VM RAM alone
+  does not enlarge either limit. Measure the exhausted pool before changing its size.
+- The built-in GUI remains in ring 0. The user-space migration is a planned robustness
+  step with existing ABI groundwork, not a completed isolation boundary.
+- Package backup/restore is an integrity improvement, not an atomic power-loss
+  transaction. The current filesystem metadata callbacks cannot distinguish every
+  physical I/O failure from absence/zero size, and whole publications do not exclude
+  concurrent writers. Persistence and recovery claims must retain those limits.
+- The reported DOOM launch crash remains an investigation until reproduced, diagnosed
+  and verified on the affected configuration. A successful unrelated GUI test does
+  not close it.
+- The hardware guide currently documents PS/2 input without USB-HID support, RTL8139
+  networking without the reference machine's AX200 Wi-Fi, a 32-bpp framebuffer
+  requirement, and installed-disk UEFI boot work still in progress. Recheck these
+  statements against a tested revision before claiming broader hardware support.
+- N++ lowers through N and C. M6.6 remains open and `FnMut` is not implemented; a
+  workbench test covers a bounded combination of implemented features. Distinguish
+  host compilation, target ELF execution, and compilation performed inside NyxOS.
+- Mnemosyne currently accepts ASCII input and has no shared clipboard handling. The
+  byte-oriented 8×16 font renderer and Spanish keymap do not establish UTF-8 support.
+- TLS certificate verification currently defaults to non-strict mode. Loading an
+  HTTPS page therefore does not establish authenticated transport under a daily-use
+  trust policy; stricter behavior needs compatibility and negative-certificate tests.
+- Rejecting NaN/Inf checkpoints is not a proof that every finite Oneiros checkpoint
+  produces numerically stable inference, nor that its generated text is correct code.
+
+## How work is accepted
+
+Each increment should name the user-visible behavior, the owning subsystem and its
+cross-subsystem dependencies, then carry only the necessary implementation and evidence.
+An independent review checks error paths and the scope of the claims. CI, host tests,
+target KATs, scripted VM integration, visual interaction and physical-machine trials
+are complementary evidence; record which ones actually ran.
+
+Before adding a command or port, check the kernel command table, `user/pkg/` and
+standalone `user/*.c` tools for an existing implementation. Prefer repairing a
+reproduced failure or completing a workflow over adding duplicate utilities. Historical
+notes are leads to verify against the current revision, not proof that a subsystem is
+complete or that an old failure still reproduces. A canceled CI run is not a passing
+run: confirm that the replacement run covers a descendant containing the change.
+
+Keep the roadmap and linked subsystem documents consistent with the evidence after
+each accepted stage. Publish commits under the agreed delivery cadence; create version
+releases only when explicitly requested. Progress is measured by closed acceptance
+criteria and a smaller list of reproducible failures, not by version counts.

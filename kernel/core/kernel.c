@@ -706,7 +706,7 @@ static int run_foreground_elf_redir(const char* path, char* const* argv, int arg
         compositor_redraw_now();
         sleep(60);
     }
-    int code = find_process((uint32_t)pid) ? kwait((uint32_t)pid) : 0;  // reap
+    int code = find_process((uint32_t)pid) ? kwait((uint32_t)pid) : -1; // missing status is a failure
     g_foreground_pid = 0;
     compositor_redraw_now();
     printf("[exec] PID %d exited (code %d)\n", pid, code);
@@ -6412,8 +6412,8 @@ static int tcc_self_ready(void) {
     return 0;                                              // build failed — caller reports it
 }
 
-static void cmd_cc(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cc [-c] [--self] [--self-libc] <in.c/.o ...> [-o <out>]\n"); return; }
+static int cc_compile(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: cc [-c] [--self] [--self-libc] <in.c/.o ...> [-o <out>]\n"); return -1; }
     int compile_only = 0;                        // -c: compile a .c to a .o, do NOT link
     int self_libc = 0;                           // --self-libc: link against a tcc-built libc
     int self_host = 0;                           // --self: compile with the self-built tcc, not /tcc.elf
@@ -6423,7 +6423,7 @@ static void cmd_cc(int argc, char** argv) {
         else if (strcmp(argv[i], "--self") == 0) self_host = 1;
     }
     if (self_libc && compile_only) {
-        printf("cc: --self-libc has no effect with -c (compile-only does not link)\n"); return;
+        printf("cc: --self-libc has no effect with -c (compile-only does not link)\n"); return -1;
     }
     // Resolve the output path and the first source first (both drive later steps).
     const char* out = 0;
@@ -6433,7 +6433,7 @@ static void cmd_cc(int argc, char** argv) {
         if (strcmp(argv[i], "--self-libc") == 0) continue;
         if (argv[i][0] != '-' && !first_src) first_src = argv[i];
     }
-    if (!first_src) { printf("cc: no input files\n"); return; }
+    if (!first_src) { printf("cc: no input files\n"); return -1; }
     char outbuf[128];
     if (!out) {                                  // default output: first input minus ".c"
         int ln = (int)strlen(first_src);         // (+ ".o" in compile-only mode)
@@ -6451,7 +6451,7 @@ static void cmd_cc(int argc, char** argv) {
     // (/mnt/tcc_self.elf, built + cached on demand) instead of the GCC-cross-built /tcc.elf.
     const char* ccpath = "/tcc.elf";
     if (self_host) {
-        if (!tcc_self_ready()) { printf("cc: --self: the self-hosted tcc is unavailable\n"); return; }
+        if (!tcc_self_ready()) { printf("cc: --self: the self-hosted tcc is unavailable\n"); return -1; }
         ccpath = "/mnt/tcc_self.elf";
     }
     // --self-libc: FIRST build the runtime from source with tcc, then link the program
@@ -6465,7 +6465,7 @@ static void cmd_cc(int argc, char** argv) {
     char libcobj[160], vlistobj[160], ltccobj[160];
     if (self_libc) {
         int ol = (int)strlen(out);
-        if (ol + 5 >= (int)sizeof(libcobj)) { printf("cc: output path too long for --self-libc\n"); return; }
+        if (ol + 5 >= (int)sizeof(libcobj)) { printf("cc: output path too long for --self-libc\n"); return -1; }
         memcpy(libcobj,  out, (size_t)ol); memcpy(libcobj  + ol, ".slo", 5);  // "<out>.slo"
         memcpy(vlistobj, out, (size_t)ol); memcpy(vlistobj + ol, ".vlo", 5);  // "<out>.vlo"
         memcpy(ltccobj,  out, (size_t)ol); memcpy(ltccobj  + ol, ".tlo", 5);  // "<out>.tlo"
@@ -6483,7 +6483,7 @@ static void cmd_cc(int argc, char** argv) {
             cav[cn] = 0;
             printf("cc: self-libc: tcc -c %s -> %s\n", srcs[p], objs[p]);
             int rc = run_foreground_elf(ccpath, cav, cn);
-            if (rc != 0) { printf("cc: self-libc build of %s failed (code %d)\n", srcs[p], rc); return; }
+            if (rc != 0) { printf("cc: self-libc build of %s failed (code %d)\n", srcs[p], rc); return rc; }
         }
     }
     // Build the compile/link argv.
@@ -6509,7 +6509,11 @@ static void cmd_cc(int argc, char** argv) {
     av[n++] = "-o"; av[n++] = (char*)out; av[n] = 0;
     printf("cc: %s (%s) -> %s\n", compile_only ? "compiling object" : "compiling",
            self_host ? "self-hosted tcc" : "tcc", out);
-    run_foreground_elf(ccpath, av, n);           // blocks until the compiler exits; prints its exit code
+    return run_foreground_elf(ccpath, av, n);           // blocks until the compiler exits; prints its exit code
+}
+
+static void cmd_cc(int argc, char** argv) {
+    (void)cc_compile(argc, argv);
 }
 
 /* Read a `key:` line's value from a recipe buffer into `out` (leading/trailing spaces
@@ -6756,23 +6760,48 @@ static void pkg_hex_encode(const uint8_t* in, int n, char* out) {   // lowercase
     for (int i = 0; i < n; i++) { out[2 * i] = H[in[i] >> 4]; out[2 * i + 1] = H[in[i] & 15]; }
     out[2 * n] = '\0';
 }
-// SHA-256 a whole VFS file into out_hex[65] (64 lowercase-hex + NUL). vfs_read has no per-fd
-// offset (it returns the file from the start), so the file is hashed in one read via a static
-// off-stack buffer — the 4 KB kernel task stack is untouched. 0 = ok, -1 = unreadable/missing,
-// -2 = larger than the hash buffer (refuse rather than hash a truncated prefix).
-static uint8_t pkg_hash_buf[262144];
-static int pkg_sha256_file(const char* path, char out_hex[65]) {
+// Mounted vfs_open can fail or return a short image despite an existing file.
+// Use backing metadata for existence and require the complete image on every read.
+static int pkg_path_exists(const char* path) {
+    mount_entry_t* mount = vfs_find_mount(path);
+    if (!mount) return vfs_stat(path, NULL, NULL) == 0;
+    if (!mount->resolve) return -1;
+    const char* sub = path + strlen(mount->mount_point);
+    return mount->resolve(*sub ? sub : "/") != 0;
+}
+
+static int pkg_file_image(const char* path, int fd, uint8_t** data, uint32_t* size) {
+    int isdir = 0;
+    *data = vfs_fdata(fd);
+    if (vfs_fstat(fd, size, &isdir) != 0 || isdir || (*size && !*data)) return 0;
+    mount_entry_t* mount = vfs_find_mount(path);
+    if (mount) {
+        const char* sub = path + strlen(mount->mount_point);
+        if (!*sub) sub = "/";
+        if (!mount->resolve || !mount->get_size || !mount->resolve(sub) ||
+            *size != mount->get_size(sub)) return 0;
+    }
+    return 1;
+}
+
+// SHA-256 the complete VFS image while its descriptor owns the data. Mounted
+// files are already loaded in full by VFS; no fixed-size copy or prefix hashing.
+static int pkg_sha256_file_checked(const char* path, char out_hex[65], int require_elf) {
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) return -1;
-    int n = vfs_read(fd, pkg_hash_buf, sizeof(pkg_hash_buf));
-    vfs_close(fd);
-    if (n < 0) return -1;
-    if (n >= (int)sizeof(pkg_hash_buf)) return -2;
+    uint32_t size = 0;
+    uint8_t* data = NULL;
+    if (!pkg_file_image(path, fd, &data, &size) ||
+        (require_elf && !elf_validate(data, size))) { vfs_close(fd); return -1; }
     sha256_ctx_t c; sha256_init(&c);
-    sha256_update(&c, pkg_hash_buf, (uint32_t)n);
+    sha256_update(&c, data, size);
     uint8_t dg[32]; sha256_final(&c, dg);
+    vfs_close(fd);
     pkg_hex_encode(dg, 32, out_hex);
     return 0;
+}
+static int pkg_sha256_file(const char* path, char out_hex[65]) {
+    return pkg_sha256_file_checked(path, out_hex, 0);
 }
 // KAT for the integrity feature: hashes real VFS files through the exact path `xbm verify` uses,
 // checking a known SHA-256 answer (validates the hex encoder + digest), that a one-byte change
@@ -6912,6 +6941,130 @@ int xbm_deps_selftest(void) {
     return 0;
 }
 
+// Compare the complete contents while the source descriptor remains open. Mounted
+// files are loaded by VFS, so this also avoids vfs_read's non-advancing file offset.
+static int xbm_file_matches(const char* path, const uint8_t* data, uint32_t size) {
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return 0;
+    uint32_t actual = 0;
+    uint8_t* bytes = NULL;
+    int same = pkg_file_image(path, fd, &bytes, &actual) && actual == size && (!size || (bytes && data));
+    if (same) for (uint32_t i = 0; i < size; i++) if (bytes[i] != data[i]) { same = 0; break; }
+    vfs_close(fd);
+    return same;
+}
+
+static int xbm_copy_checked(const char* src, const char* dst) {
+    int fd = vfs_open(src, 0, 0);
+    if (fd < 0) return -1;
+    uint32_t size = 0;
+    uint8_t* data = NULL;
+    // Installed executables/manifests are nonempty. Mounted VFS opens can return
+    // an empty image on allocation/read failure, so never treat that as a backup.
+    int ok = pkg_file_image(src, fd, &data, &size) && size && data;
+    if (ok) ok = vfs_write_file(dst, data, size) == (int)size && xbm_file_matches(dst, data, size);
+    vfs_close(fd);
+    return ok ? 0 : -1;
+}
+
+static int xbm_restore_file(const char* path, const char* backup, int existed) {
+    if (!existed) {
+        vfs_unlink(path);
+        return pkg_path_exists(path) == 0 ? 0 : -1;
+    }
+    int fd = vfs_open(backup, 0, 0);
+    if (fd < 0) return -1;
+    uint32_t size = 0;
+    uint8_t* data = NULL;
+    if (!pkg_file_image(backup, fd, &data, &size) || !size || !data) { vfs_close(fd); return -1; }
+    int same = xbm_file_matches(path, data, size);
+    vfs_close(fd);
+    return same ? 0 : xbm_copy_checked(backup, path);
+}
+
+// The VFS mounted-file rename is copy+unlink, not an atomic replacement. Prepare
+// verified backups BEFORE changing either installed file, check each complete
+// write by reading it back, and restore both on failure. If recovery itself fails,
+// keep the backups for manual recovery; this is not a power-loss transaction.
+// All three temporary names belong to the caller and must initially be absent.
+// 0 = installed, -1 = failed with previous state preserved, -2 = recovery failed.
+static int xbm_publish(const char* stage, const char* out, const char* manifest,
+                       const char hex[65], const char* backup, const char* oldmanifest) {
+    int had_bin = pkg_path_exists(out);
+    int had_manifest = pkg_path_exists(manifest);
+    if (had_bin < 0 || had_manifest < 0) return -1;
+    if (had_bin && xbm_copy_checked(out, backup) != 0) goto prepare_failed;
+    if (had_manifest && xbm_copy_checked(manifest, oldmanifest) != 0) goto prepare_failed;
+    char installed_hex[65];
+    if (xbm_copy_checked(stage, out) != 0 ||
+        pkg_sha256_file(out, installed_hex) != 0 || strcmp(installed_hex, hex) != 0 ||
+        vfs_write_file(manifest, hex, 64) != 64 ||
+        !xbm_file_matches(manifest, (const uint8_t*)hex, 64)) {
+        int bin_ok = xbm_restore_file(out, backup, had_bin) == 0;
+        int manifest_ok = xbm_restore_file(manifest, oldmanifest, had_manifest) == 0;
+        if (!bin_ok || !manifest_ok) return -2;
+        goto prepare_failed;
+    }
+    vfs_unlink(backup);
+    vfs_unlink(oldmanifest);
+    return 0;
+prepare_failed:
+    vfs_unlink(backup);
+    vfs_unlink(oldmanifest);
+    return -1;
+}
+
+typedef struct {
+    char source[160], out[128], stage[128], backup[128], manifest[160], oldmanifest[160];
+} xbm_install_paths_t;
+
+static int xbm_temp_paths(xbm_install_paths_t* paths, const char* name) {
+    static unsigned int serial;
+    for (int attempt = 0; attempt < 128; attempt++) {
+        unsigned int id = ++serial;
+        snprintf(paths->stage, sizeof(paths->stage), "/mnt/bin/.xbm-%u.new", id);
+        snprintf(paths->backup, sizeof(paths->backup), "/mnt/bin/.xbm-%u.old", id);
+        snprintf(paths->oldmanifest, sizeof(paths->oldmanifest), "/usr/pkg/%s/.xbm-%u.old", name, id);
+        if (strcmp(paths->stage, paths->out) != 0 && strcmp(paths->backup, paths->out) != 0 &&
+            strcmp(paths->oldmanifest, paths->source) != 0 &&
+            pkg_path_exists(paths->stage) == 0 && pkg_path_exists(paths->backup) == 0 &&
+            pkg_path_exists(paths->oldmanifest) == 0) return 0;
+    }
+    return -1;
+}
+
+// The real VFS exercises publication and rollback, including the read-only
+// manifest case after the executable has already been replaced.
+static int xbm_install_selftest(void) {
+    const char* stage = "/tmp/xbmkat-new";
+    const char* out = "/tmp/xbmkat-bin";
+    const char* manifest = "/tmp/xbmkat-sha";
+    const char* backup = "/tmp/xbmkat-old";
+    const char* oldmanifest = "/tmp/xbmkat-oldsha";
+    char hex[65];
+    int rc = 0;
+    if (vfs_write_file(stage, "new", 3) != 3 || vfs_write_file(out, "old", 3) != 3 ||
+        vfs_write_file(manifest, "old manifest", 12) != 12) { rc = 1; goto done; }
+    if (pkg_sha256_file(stage, hex) != 0 || vfs_chmod(manifest, 0444) != 0) { rc = 2; goto done; }
+    if (xbm_publish(stage, out, manifest, hex, backup, oldmanifest) != -1) { rc = 3; goto done; }
+    if (!xbm_file_matches(out, (const uint8_t*)"old", 3) ||
+        !xbm_file_matches(manifest, (const uint8_t*)"old manifest", 12)) { rc = 4; goto done; }
+    if (vfs_stat(backup, NULL, NULL) == 0 || vfs_stat(oldmanifest, NULL, NULL) == 0) { rc = 5; goto done; }
+    vfs_chmod(manifest, 0644);
+    if (xbm_publish(stage, out, manifest, hex, backup, oldmanifest) != 0) { rc = 6; goto done; }
+    if (!xbm_file_matches(out, (const uint8_t*)"new", 3) ||
+        !xbm_file_matches(manifest, (const uint8_t*)hex, 64)) { rc = 7; goto done; }
+    vfs_unlink(out); vfs_unlink(manifest);
+    if (xbm_publish(stage, out, manifest, hex, backup, oldmanifest) != 0) { rc = 8; goto done; }
+    if (!xbm_file_matches(out, (const uint8_t*)"new", 3) ||
+        !xbm_file_matches(manifest, (const uint8_t*)hex, 64)) rc = 9;
+done:
+    vfs_chmod(manifest, 0644);
+    vfs_unlink(stage); vfs_unlink(out); vfs_unlink(manifest);
+    vfs_unlink(backup); vfs_unlink(oldmanifest);
+    return rc;
+}
+
 // Build + install ONE package (no dependency handling): read its recipe, optionally fetch a
 // remote `url:` source, compile it with the in-OS `cc`, and record a SHA-256 manifest. Returns 0
 // on success, -1 on any failure. `xbm install` calls this once per resolved dependency, in order.
@@ -6939,24 +7092,40 @@ static int xbm_install_one(const char* name, const char* prog) {
         printf("%s: fetched source -> %s\n", prog, srcpath);
     }
     vfs_mkdir("/mnt/bin", 0755);
-    char cmd[256], outp[128];
-    snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
-    snprintf(cmd, sizeof(cmd), "cc /usr/pkg/%s/%s -o %s", name, source, outp);
-    printf("%s: building %s (%s) ...\n", prog, name, source);
-    execute_command(cmd);
-    int ofd = vfs_open(outp, 0, 0);
-    if (ofd < 0) { printf("%s: build of '%s' failed\n", prog, name); return -1; }
-    vfs_close(ofd);
-    char hex[65];
-    if (pkg_sha256_file(outp, hex) == 0) {
-        char mpath[160];
-        snprintf(mpath, sizeof(mpath), "/usr/pkg/%s/sha256", name);
-        vfs_write_file(mpath, hex, 64);
-        printf("%s: installed %s -> %s (run it: %s; sha256 %c%c%c%c%c%c%c%c...)\n",
-               prog, name, outp, bin, hex[0],hex[1],hex[2],hex[3],hex[4],hex[5],hex[6],hex[7]);
-    } else {
-        printf("%s: installed %s -> %s (run it: %s)\n", prog, name, outp, bin);
+    // Keep path storage off the 4 KB task stack while cc runs in the foreground.
+    xbm_install_paths_t* paths = (xbm_install_paths_t*)kmalloc(sizeof(*paths));
+    if (!paths) { printf("%s: out of memory installing '%s'\n", prog, name); return -1; }
+    snprintf(paths->source, sizeof(paths->source), "/usr/pkg/%s/%s", name, source);
+    snprintf(paths->out, sizeof(paths->out), "/mnt/bin/%s", bin);
+    snprintf(paths->manifest, sizeof(paths->manifest), "/usr/pkg/%s/sha256", name);
+    if (xbm_temp_paths(paths, name) != 0) {
+        printf("%s: no temporary path available for '%s'\n", prog, name);
+        kfree(paths); return -1;
     }
+    char* av[] = { "cc", paths->source, "-o", paths->stage, NULL };
+    printf("%s: building %s (%s) ...\n", prog, name, source);
+    int rc = cc_compile(4, av);
+    if (rc != 0) {
+        printf("%s: build of '%s' failed (code %d); previous installation unchanged\n", prog, name, rc);
+        vfs_unlink(paths->stage); kfree(paths); return -1;
+    }
+    char hex[65];
+    if (pkg_sha256_file_checked(paths->stage, hex, 1) != 0) {
+        printf("%s: build of '%s' produced an invalid or unreadable ELF; previous installation unchanged\n", prog, name);
+        vfs_unlink(paths->stage); kfree(paths); return -1;
+    }
+    rc = xbm_publish(paths->stage, paths->out, paths->manifest, hex, paths->backup, paths->oldmanifest);
+    if (rc != 0) {
+        printf("%s: install of '%s' failed%s\n", prog, name, rc == -1 ? "; previous installation unchanged" : "; recovery failed");
+        if (rc == -2) {
+            printf("%s: recovery files retained: %s %s %s\n", prog, paths->backup, paths->oldmanifest, paths->stage);
+        } else vfs_unlink(paths->stage);
+        kfree(paths); return -1;
+    }
+    vfs_unlink(paths->stage);
+    printf("%s: installed %s -> %s (run it: %s; sha256 %c%c%c%c%c%c%c%c...)\n",
+           prog, name, paths->out, bin, hex[0],hex[1],hex[2],hex[3],hex[4],hex[5],hex[6],hex[7]);
+    kfree(paths);
     return 0;
 }
 
@@ -11116,6 +11285,7 @@ static void run_selftests(void) {
         {"json-fmt",     json_fmt_selftest},
         {"pkg-hash",     pkg_hash_selftest},
         {"xbm-name",     xbm_name_selftest},
+        {"xbm-install",  xbm_install_selftest},
         {"xbm-wire",     xbm_fetch_wire_selftest},
         {"xbm-redirect", xbm_redirect_selftest},
         {"ppm",          ppm_selftest},

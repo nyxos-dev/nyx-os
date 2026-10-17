@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/nyxos-dev/nyx-os/releases/tag/v6.5.0-LTS"><img src="https://img.shields.io/badge/release-v6.5.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.5.192-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.5.193-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -19,9 +19,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml/badge.svg?branch=master" alt="Build kernel" /></a>
+  <a href="https://github.com/nyxos-dev/nyx-os/actions/workflows/build.yml"><img src="https://github.com/nyxos-dev/nyx-os/actions/workflows/build.yml/badge.svg?branch=master" alt="Build kernel" /></a>
   &nbsp;
-  <a href="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" /></a>
+  <a href="https://github.com/nyxos-dev/nyx-os/actions/workflows/codeql.yml"><img src="https://github.com/nyxos-dev/nyx-os/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" /></a>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
   &nbsp;
   <a href="https://nyxos.cc"><img src="https://img.shields.io/badge/website-nyxos.cc-825AD2?style=flat&logo=githubpages&logoColor=white" /></a>
   &nbsp;
-  <a href="https://github.com/kazah-png/nyx-os/wiki"><img src="https://img.shields.io/badge/wiki-online-800080?style=flat&logo=github&logoColor=white" /></a>
+  <a href="https://github.com/nyxos-dev/nyx-os/wiki"><img src="https://img.shields.io/badge/wiki-online-800080?style=flat&logo=github&logoColor=white" /></a>
   &nbsp;
   <a href="https://nyxos.cc/support.html"><img src="https://img.shields.io/badge/sponsor-%E2%99%A5-EA4AAA?style=flat&logo=githubsponsors&logoColor=white" /></a>
 </p>
@@ -39,6 +39,11 @@
 ## About
 
 **NyxOS** is a from-scratch x86_64 operating system written in C and x86_64 Assembly, with no external libraries. It boots via Multiboot (GRUB) into long mode with 4-level paging and full user/kernel isolation, and provides a preemptive multitasking kernel, a ring-3 POSIX-style userspace, a real TCP/IP network stack, a windowed desktop, and an in-OS C compiler that builds — and rebuilds itself — entirely inside the running system.
+
+Development targets a dependable daily workspace in a documented VM first, then
+qualified physical hardware. The [daily-use roadmap](docs/DAILY_USE.md) defines
+workflow, data-integrity, language and desktop-personalization acceptance criteria,
+with the current limits kept separate from planned work.
 
 <div align="center">
   <img src="media/gui.png?v=7" alt="NyxOS desktop running nyxfetch in the terminal" width="700" />
@@ -69,7 +74,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.5.192 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.5.193 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768
@@ -185,7 +190,7 @@ NyxOS has a family of sibling ports in **17 languages** — and every one boots.
 **Prerequisites:** an `x86_64-elf` cross-toolchain (or host GCC with `-m64`), `nasm` ≥ 2.14, GNU make, and QEMU ≥ 8.0.
 
 ```bash
-git clone https://github.com/kazah-png/nyx-os.git
+git clone https://github.com/nyxos-dev/nyx-os.git
 cd nyx-os
 make -C kernel                 # Linux / WSL
 ```
@@ -274,7 +279,7 @@ domain and second-hand x86 boxes to test on real metal.
 [GitHub Sponsors](https://github.com/sponsors/kazah-png) · [Ko-fi](https://ko-fi.com/nyxos) · [Open Collective](https://opencollective.com/NyxOSdev) (public ledger) — details at **[nyxos.cc/support](https://nyxos.cc/support.html)**.
 
 The free help is worth more: boot the ISO on a machine you don't care about and
-[open an issue](https://github.com/kazah-png/nyx-os/issues) with the serial log of where it stopped.
+[open an issue](https://github.com/nyxos-dev/nyx-os/issues) with the serial log of where it stopped.
 
 ---
 
