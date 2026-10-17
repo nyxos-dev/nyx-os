@@ -39,6 +39,9 @@ jobs:
       - name: Test N selfhost checker arguments
         run: python3 lang/selfhost/tests/test_check_cli.py
 
+      - name: Test N selfhost input limits and I/O failures
+        run: python3 lang/selfhost/tests/test_driver_io.py --corpus
+
       - name: Test Oneiros CLI text output and model validation
         run: python3 tools/test_oneiros_cli.py
 

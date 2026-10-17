@@ -1624,15 +1624,46 @@ fn main() -> i64 {
                                            // names a target (v0.23 argv)
     fd := sys_open(path.ptr as *u8, 0, 0);
     if fd < 0 {
+        if arg_count() > 1 {
+            put("nparse: cannot open {path}\n");
+            return 1;
+        }
         put("(no parse target - skipped)\n");
         return 0;
     }
-    buf := sys_sbrk(262144) as *u8;        // 256K: nparse.n is 150K
+    // The source allocation and the accepted input limit are both 256 KiB.
+    memory := sys_sbrk(262144);
+    if memory < 0 {
+        sys_close(fd);
+        put("nparse: cannot allocate input buffer\n");
+        return 1;
+    }
+    buf := memory as *u8;
+    limit := 262144;
     mut total := 0;
-    mut r := 1;
-    while r > 0 {
-        r = sys_read(fd, (buf as addr + total as addr) as *u8, 16384);
-        if r > 0 { total = total + r; }
+    mut reading := true;
+    while reading {
+        mut count := limit - total;
+        if count > 16384 { count = 16384; }
+        mut target := (buf as addr + total as addr) as *u8;
+        // At the exact limit, probe EOF using one byte INSIDE the buffer.
+        // An extra byte may overwrite buf[0] only on the rejected path.
+        if count == 0 { target = buf; count = 1; }
+        r := sys_read(fd, target, count as isize);
+        if r < 0 {
+            sys_close(fd);
+            put("nparse: cannot read {path}\n");
+            return 1;
+        }
+        if r == 0 { reading = false; }
+        else {
+            if total == limit {
+                sys_close(fd);
+                put("nparse: input exceeds {limit} bytes: {path}\n");
+                return 1;
+            }
+            total = total + r;
+        }
     }
     sys_close(fd);
     if total < 1 { return 0; }

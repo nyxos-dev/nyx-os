@@ -6,6 +6,49 @@ toy": **`lex.n` → `parse.n` → `check.n` → `gen.n`** — each of ncc's
 passes rewritten as a real N program, compiled by ncc, and held to
 ncc's actual behavior **differentially**.
 
+## Input paths and bounded reads
+
+All four drivers accept a source path as their first argument:
+`nlex file.n`, `nparse file.n`, `ncheck file.n`, `ngen file.n`. Relative
+paths and quoted paths containing spaces work. Further arguments remain
+ignored for compatibility. An explicit path that cannot be opened returns
+1 and names the tool and path; it never falls back to another file.
+
+With no argument, each driver keeps its `/tmp/n_<tool>_target.n` convention
+(`lex`, `parse`, `check`, or `gen`). If that fallback cannot be opened, the
+historical skip message and exit status 0 remain unchanged. This includes
+ngen's historical `(no check target - skipped)` wording. Empty files still
+produce no output and return 0.
+
+The accepted source limit is **262144 bytes (256 KiB), inclusive**, for all
+four tools. Reads are capped to the remaining capacity and accept short
+reads; at the exact limit a one-byte EOF probe uses an existing byte of the
+buffer. An extra byte, a read error (even after receiving valid data), or a
+failed initial buffer allocation closes the descriptor and returns 1,
+without parsing or emitting partial compiler output. Input diagnostics use
+stdout, like the tools' existing diagnostics. Lex/parse retain their 256 KiB
+allocation; check/gen retain 512 KiB, leaving the second half available for
+the synthesized names appended after the source. Check/gen therefore enforce
+a smaller source limit than their previous nominal 512 KiB buffer size;
+their old read loop was unbounded and left no guaranteed space for names.
+This bounds source input;
+it does not enlarge or audit the parser's other fixed arenas and tables.
+
+The reproducible Linux x86_64/WSL fence is:
+
+```sh
+python3 lang/selfhost/tests/test_driver_io.py --corpus
+```
+
+It builds all four N sources through ncc, checks explicit and fallback
+paths, empty files, boundary sizes, short reads, and failures after data or
+at allocation. A temporary instrumented host shim asserts read-buffer
+bounds and descriptor closure; the checked-in runtime is unchanged.
+`--corpus` compares tokens, AST, diagnostics and generated C with ncc over
+the N examples and all four selfhost sources, plus the checker rejection
+corpus. Comparisons are byte-for-byte. Use `CC` to select the C compiler or
+`--sources /path/to/older/selfhost` to demonstrate the pre-fix failures.
+
 ## lex.n — the lexer (rung 1: the stream)
 
 `lex.n` is ncc's `next_token`, in N: the whitespace/comment skip
@@ -96,8 +139,9 @@ keep each other honest.
 
 The checker accepts `ncheck file.n`, including relative paths and quoted
 paths containing spaces. With no argument it still reads
-`/tmp/n_check_target.n`; an absent target keeps the existing skip message
-and successful exit. Diagnostic text remains filename-free so the
+`/tmp/n_check_target.n`; an unavailable fallback keeps the existing skip
+message and successful exit. An unavailable explicit path returns 1, as
+described above. Language diagnostics remain filename-free so the
 differential contract below is unchanged.
 
 To build and exercise the real checker on Linux x86_64 (including WSL):

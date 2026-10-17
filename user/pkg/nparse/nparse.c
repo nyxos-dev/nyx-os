@@ -2354,15 +2354,64 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     }
     nyx_i64 fd = sys_open((nyx_u8*)(((nyx_u8*)path.ptr)), 0, 0);
     if ((fd < 0)) {
+        if ((nyx_arg_count() > 1)) {
+            char __b0[256];
+            nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"nparse: cannot open ", 20});
+            __nyx_fmt_str(&__s0, __b0, 256, path);
+            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"\n", 1});
+            put(__s0);
+            return 1;
+        }
         put(((nyx_str){"(no parse target - skipped)\n", 28}));
         return 0;
     }
-    nyx_u8* buf = (nyx_u8*)(sys_sbrk(262144));
+    nyx_i64 memory = sys_sbrk(262144);
+    if ((memory < 0)) {
+        sys_close(fd);
+        put(((nyx_str){"nparse: cannot allocate input buffer\n", 37}));
+        return 1;
+    }
+    nyx_u8* buf = (nyx_u8*)(memory);
+    nyx_i64 limit = 262144;
     nyx_i64 total = 0;
-    nyx_i64 r = 1;
-    while ((r > 0)) {
-        r = sys_read(fd, (nyx_u8*)(((nyx_addr)(buf) + (nyx_addr)(total))), 16384);
-        if ((r > 0)) {
+    nyx_bool reading = 1;
+    while (reading) {
+        nyx_i64 count = (limit - total);
+        if ((count > 16384)) {
+            count = 16384;
+        }
+        nyx_u8* target = (nyx_u8*)(((nyx_addr)(buf) + (nyx_addr)(total)));
+        if ((count == 0)) {
+            target = buf;
+            count = 1;
+        }
+        nyx_i64 r = sys_read(fd, target, (nyx_isize)(count));
+        if ((r < 0)) {
+            sys_close(fd);
+            char __b1[256];
+            nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){"nparse: cannot read ", 20});
+            __nyx_fmt_str(&__s1, __b1, 256, path);
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){"\n", 1});
+            put(__s1);
+            return 1;
+        }
+        if ((r == 0)) {
+            reading = 0;
+        } else {
+            if ((total == limit)) {
+                sys_close(fd);
+                char __b2[256];
+                nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+                __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){"nparse: input exceeds ", 22});
+                __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(limit));
+                __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){" bytes: ", 8});
+                __nyx_fmt_str(&__s2, __b2, 256, path);
+                __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){"\n", 1});
+                put(__s2);
+                return 1;
+            }
             total = (total + r);
         }
     }

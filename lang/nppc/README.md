@@ -57,8 +57,12 @@ python3 lang/nppc/tests/test_workbench.py --examples
 emitters and compares their host execution (normalizing only hello's pid).
 The generated workbench ELF has also run inside NyxOS 6.5.190 under QEMU:
 its 301-byte trace matched the oracle on the console and through file
-redirection, with exit status 0. That check used host-built transpilers and
-the target runtime; compiling this program inside NyxOS remains unverified.
+redirection, with exit status 0. A further QEMU check on NyxOS 6.5.191
+installed `ncc` and `ngen` from their packages, used both inside NyxOS to
+compile the lowered 7,852-byte N source, and linked both outputs with the
+in-OS `cc`. Both emitted C files matched the host reference byte-for-byte;
+both executables returned 0 with the exact 301-byte trace. N++ to N lowering
+still ran on the host for this check.
 M6.6 remains open: this is a documented combination of implemented
 features, not an N++ compiler written in N++, nor a claim to exercise every
 milestone. See the coverage and limits in

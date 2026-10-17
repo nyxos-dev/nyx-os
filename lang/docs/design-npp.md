@@ -507,8 +507,11 @@ because `release 11` is missing. The packaged `ncc` source and generated
 The generated ELF also ran inside NyxOS 6.5.190 under QEMU using the target
 runtime and `crt0` build documented in the ncc README. Its 301-byte trace
 matched the oracle both on the console and through file redirection, with
-exit status 0 and no kernel fault. The transpilers ran on the host for this
-check; compiling the workbench inside NyxOS remains unverified.
+exit status 0 and no kernel fault. In a further NyxOS 6.5.191 QEMU check,
+freshly installed `ncc` and `ngen` packages compiled the lowered 7,852-byte
+N source inside the OS. Both generated C files matched the host reference;
+the in-OS `cc` linked both, and both executions returned 0 with the exact
+301-byte trace and no kernel fault. N++ to N lowering remained a host step.
 
 **M6.6 remains open.** This checkpoint does not exercise every historical
 sub-rung (for example nested lambdas and indexed closure fields retain their
