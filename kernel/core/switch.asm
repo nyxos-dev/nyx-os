@@ -85,3 +85,5 @@ create_task_stack:
     mov qword [rax - 128], 0    ; rax
     lea rax, [rax - 128]
     ret
+
+section .note.GNU-stack noalloc noexec nowrite progbits

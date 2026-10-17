@@ -5,6 +5,7 @@
 CC = gcc
 AS = nasm
 LD = ld
+OBJCOPY = objcopy
 
 CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra -Wshadow \
          -nostdlib -nostartfiles -nodefaultlibs \
@@ -666,8 +667,9 @@ FORCE:
 trampoline.bin: trampoline.asm
 	$(AS) -f bin -o $@ $<
 
-trampoline.o: trampoline.bin
+trampoline.o: trampoline.bin makefile
 	$(LD) -r -b binary -m elf_x86_64 -o $@ $<
+	$(OBJCOPY) --add-section .note.GNU-stack=/dev/null --set-section-flags .note.GNU-stack=noload,readonly $@
 
 # Persistent storage: create a fresh empty ext2 disk for /mnt. Boot NyxOS with
 # `-hda ext2-test.img` and files written under /mnt survive reboots (it auto-mounts at

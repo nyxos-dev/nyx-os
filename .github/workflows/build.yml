@@ -51,17 +51,15 @@ jobs:
           python3 tools/test_stdin_canonical.py
           python3 tools/test_keyboard_control.py
 
-      - name: Report compiler warnings
+      - name: Test RTC sampling and ELF stack metadata
+        run: python3 tools/test_build_contract.py
+
+      - name: Require a warning-free build
         run: |
-          # Informational (does NOT fail the build): the kernel is compiled with
-          # -Wall -Wextra -Wshadow; this surfaces any warnings (the vendored user/
-          # tree is excluded) in the run summary. It is not a hard gate because the
-          # warning set differs across GCC versions and the tree is not yet clean on
-          # every one — promoting this to a gate is a tracked follow-up.
-          warns=$(grep -E ': warning:' build.log | grep -vE '(^|/)user/' || true)
-          n=$(printf '%s\n' "$warns" | grep -c ': warning:' || true)
+          warns=$(grep -E '(^|[[:space:]])warning:' build.log || true)
+          n=$(printf '%s\n' "$warns" | grep -Ec '(^|[[:space:]])warning:' || true)
           {
-            echo "### Kernel compiler warnings: ${n}"
+            echo "### Build warnings: ${n}"
             if [ -n "$warns" ]; then
               echo '```'
               printf '%s\n' "$warns"
@@ -71,6 +69,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' "$warns"
+          test "$n" -eq 0
 
       - name: Build the bootable ISOs
         run: |

@@ -36,3 +36,5 @@ _start:
 
 section .data
 msg: db "[spin] ring-3 process alive (preempted; GUI keeps running)", 10, 0
+
+section .note.GNU-stack noalloc noexec nowrite progbits

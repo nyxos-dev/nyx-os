@@ -64,7 +64,7 @@ void rtc_read_time(rtc_time_t* t) {
 
     // Read all registers atomically (retry if UIP was set during read)
     int tries = 3;
-    while (tries--) {
+    do {
         // Bounded wait for the update-in-progress flag to clear (normally < 2 ms). Unbounded
         // here could hang the boot on real hardware whose RTC never clears UIP as expected.
         for (int w = 0; w < 1000000 && rtc_is_update_in_progress(); w++);
@@ -78,7 +78,7 @@ void rtc_read_time(rtc_time_t* t) {
 
         // If UIP was still clear during entire read, we're good
         if (!rtc_is_update_in_progress()) break;
-    }
+    } while (--tries);
 
     rtc_decode(t, second, minute, hour, day, month, year,
                (reg_b & 0x04) != 0, (reg_b & 0x02) != 0);

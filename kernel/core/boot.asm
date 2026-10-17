@@ -174,3 +174,5 @@ gdt64:
     dq 0x0020FA0000000000 ; user code 64
     dq 0x0000F20000000000 ; user data
 gdt64_end:
+
+section .note.GNU-stack noalloc noexec nowrite progbits

@@ -36,3 +36,5 @@ __sigreturn:
     mov rax, 18     ; SYS_SIGRETURN
     syscall
     hlt             ; unreachable: the kernel iretq's back to the interrupted RIP
+
+section .note.GNU-stack noalloc noexec nowrite progbits

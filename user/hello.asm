@@ -29,3 +29,5 @@ section .data
 
 hello_msg:  db "Hello from x86_64 ELF on NyxOS!", 10, 0
 second_msg: db "This is ring 3 user mode!", 10, 0
+
+section .note.GNU-stack noalloc noexec nowrite progbits

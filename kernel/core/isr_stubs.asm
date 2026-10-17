@@ -495,3 +495,5 @@ tlb_ipi_stub:
 global ap_spurious_stub
 ap_spurious_stub:
     iretq
+
+section .note.GNU-stack noalloc noexec nowrite progbits

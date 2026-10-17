@@ -32,3 +32,5 @@ _start:
 section .data
 path: db "/init.elf", 0
 msg:  db "[fdleak] opened /init.elf and exiting WITHOUT closing it", 10, 0
+
+section .note.GNU-stack noalloc noexec nowrite progbits
