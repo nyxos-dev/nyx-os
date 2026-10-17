@@ -104,6 +104,54 @@ static void forward(const Params *p, Scratch *s, const unsigned char *tok){
 }
 
 /* ---- model load from the initramfs ----------------------------------------- */
+/* Validate the same exact ONEIROS4 payload accepted by nyxgen. Read float
+ * encodings as integers: this needs neither aligned loads nor the float ABI,
+ * and NaN/Inf weights must never reach the compositor's forward pass. */
+static int ow_model_valid(const uint8_t *data, uint32_t size){
+    if (!data || size != 8+24+sizeof(Params)) return 0;
+    static const char magic[8]={'O','N','E','I','R','O','S','4'};
+    for (int i=0;i<8;i++) if (data[i]!=(uint8_t)magic[i]) return 0;
+    int32_t dims[6]; memmove(dims, data+8, sizeof(dims));
+    if (dims[0]!=OG_V||dims[1]!=OG_E||dims[2]!=OG_B||dims[3]!=OG_HID||dims[4]!=OG_NH||dims[5]!=OG_FF)
+        return 0;
+    for (uint32_t offset=32;offset<size;offset+=sizeof(uint32_t)){
+        uint32_t bits; memmove(&bits, data+offset, sizeof(bits));
+        if ((bits&0x7F800000u)==0x7F800000u) return 0;
+    }
+    return 1;
+}
+
+int oneiros_model_selftest(void){
+    const uint32_t size=32+sizeof(Params);
+    if (ow_model_valid(NULL, size)) return 1;
+    uint8_t *data=(uint8_t*)kmalloc(size);
+    if (!data) return 2;
+    memset_asm(data, 0, size);
+    memmove(data, "ONEIROS4", 8);
+    const int32_t dims[6]={OG_V,OG_E,OG_B,OG_HID,OG_NH,OG_FF};
+    memmove(data+8, dims, sizeof(dims));
+    int result=0;
+    if (!ow_model_valid(data, size)) { result=3; goto done; }
+    if (ow_model_valid(data, size-1) || ow_model_valid(data, size+1)) { result=4; goto done; }
+    data[0]='X';
+    if (ow_model_valid(data, size)) { result=5; goto done; }
+    data[0]='O'; data[8]=0xFF;
+    if (ow_model_valid(data, size)) { result=6; goto done; }
+    memmove(data+8, dims, sizeof(dims));
+    const uint32_t offsets[3]={32,32+sizeof(Params)/2,size-4};
+    const uint32_t invalid[3]={0x7FC00000u,0x7F800000u,0xFF800000u};
+    const uint32_t zero=0;
+    for (int i=0;i<3;i++){
+        memmove(data+offsets[i], &invalid[i], sizeof(uint32_t));
+        if (ow_model_valid(data, size)) { result=7+i; goto done; }
+        memmove(data+offsets[i], &zero, sizeof(zero));
+    }
+    if (!ow_model_valid(data, size)) result=10;
+done:
+    kfree(data);
+    return result;
+}
+
 /* Read via vfs_fdata (a direct pointer to the memory-backed initramfs file), the
  * way the other in-kernel apps read files -- NOT sequential vfs_read, whose offset
  * doesn't advance for these fds. `data` is valid only until vfs_close, so the
@@ -113,12 +161,7 @@ static Params* load_model(void){
     if (fd<0) return NULL;
     uint32_t size=vfs_fsize(fd);
     uint8_t *data=vfs_fdata(fd);
-    if (!data || size < 8+24+sizeof(Params)){ vfs_close(fd); return NULL; }
-    static const char MG[8]={'O','N','E','I','R','O','S','4'};   /* no libc memcmp in the kernel */
-    for (int i=0;i<8;i++) if (data[i]!=(uint8_t)MG[i]){ vfs_close(fd); return NULL; }
-    int32_t dims[6]; memmove(dims, data+8, sizeof(dims));
-    if (dims[0]!=OG_V||dims[1]!=OG_E||dims[2]!=OG_B||dims[3]!=OG_HID||dims[4]!=OG_NH||dims[5]!=OG_FF){
-        vfs_close(fd); return NULL; }
+    if (!ow_model_valid(data, size)){ vfs_close(fd); return NULL; }
     Params *p=(Params*)kmalloc(sizeof(Params));
     if (!p){ vfs_close(fd); return NULL; }
     memmove(p, data+8+24, sizeof(Params));
