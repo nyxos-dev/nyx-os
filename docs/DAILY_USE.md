@@ -75,11 +75,17 @@ do not relabel an unmeasured interactive check as a soak test.
 
 The immediate data and desktop priorities are:
 
-1. Make Mnemosyne open → save without editing preserve the original bytes, or reject
-   files it cannot represent before allowing a destructive save. Cover empty input,
-   absent final LF, CRLF, a 256-byte line and 513 lines. The current loader silently
-   discards content beyond its fixed line/document limits and removes CR; the saver
-   appends LF to every stored line.
+1. Mnemosyne's bounded text I/O repair is implemented for development version
+   6.5.194; host and target GUI checks pass, while reboot acceptance remains open. The host regression
+   passes 76 byte-exact, boundary and failure cases against the actual editor
+   functions. Empty files, final LF present/absent and uniform CRLF round-trip;
+   unrepresentable files and incomplete mounted images are rejected before replacing
+   the document. The model allows 255 bytes per row and 512 rows, counting a final
+   empty row. See [EDITOR.md](EDITOR.md) for the complete contract and remaining
+   limits. A four-CPU QEMU session verified exact saved bytes, rejection with the
+   edited document preserved, Ctrl+A/replacement and PS/2 Ctrl+Z. Close the broader
+   persistence gate only after save/reopen/reboot checks; disk extraction after a
+   single session does not establish that gate. Failed writes are not atomic.
 2. Connect existing desktop configuration to persistent per-user storage and report
    write failures. Verify logout and reboot, not only closing and reopening a window.
 3. Complete the shared clipboard workflow across editor, terminal and Oneiros with
@@ -181,8 +187,11 @@ driver contract. Expanding the device list must not weaken the VM regression gat
 - N++ lowers through N and C. M6.6 remains open and `FnMut` is not implemented; a
   workbench test covers a bounded combination of implemented features. Distinguish
   host compilation, target ELF execution, and compilation performed inside NyxOS.
-- Mnemosyne currently accepts ASCII input and has no shared clipboard handling. The
-  byte-oriented 8×16 font renderer and Spanish keymap do not establish UTF-8 support.
+- Mnemosyne accepts ASCII keyboard input and has no shared clipboard handling. Its
+  exact text I/O contract preserves supported bytes but does not add UTF-8 editing;
+  the byte-oriented 8×16 font renderer and Spanish keymap do not establish Unicode
+  support. [EDITOR.md](EDITOR.md) documents row/path limits, unsupported formats,
+  failed-open preservation and the remaining non-atomic save limitation.
 - TLS certificate verification currently defaults to non-strict mode. Loading an
   HTTPS page therefore does not establish authenticated transport under a daily-use
   trust policy; stricter behavior needs compatibility and negative-certificate tests.

@@ -1,0 +1,144 @@
+# Mnemosyne: text files, editing and I/O limits
+
+Mnemosyne is the built-in text editor. Its development-version 6.5.194 I/O repair
+preserves the bytes of files within the contract below and rejects files that it
+cannot represent before replacing the current document. Host and target GUI checks
+pass; a save/reboot acceptance session remains to be completed. This page
+does not declare the editor or the wider desktop ready for daily use.
+
+Implementation: [editor_win.c](../kernel/gui/apps/editor_win.c) and
+[editor_win.h](../kernel/gui/apps/editor_win.h). The broader acceptance plan is
+[DAILY_USE.md](DAILY_USE.md).
+
+## File representation
+
+The document stores at most **512 rows**, each with at most **255 content bytes**.
+A line separator creates another row, including an empty row after a final
+separator. Separators do not consume the content bytes of a row.
+
+| Input | Rows stored | Accepted |
+|---|---:|---|
+| Empty file | 1 | Yes |
+| 511 lines, no final separator | 511 | Yes |
+| 511 lines, final separator present | 512 | Yes |
+| 512 lines, no final separator | 512 | Yes |
+| 512 lines, final separator present | 513 | No |
+| 513 lines, either EOF form | At least 513 | No |
+
+Files may use LF or uniform CRLF. Open and Save preserve that choice, empty files,
+and the presence or absence of a final separator. Save writes separators only
+between rows; it does not add a final LF. A file with no separator uses LF when
+the user inserts a new line. Edits, selection replacement and undo retain the
+document's separator style. The maximum representable image is 131,582 bytes:
+512 rows of 255 bytes with CRLF between them.
+
+Open rejects a row or document beyond these limits, embedded NUL, isolated CR,
+and mixed LF/CRLF. Other non-NUL content bytes are preserved without transcoding.
+This is a byte-oriented model: columns count bytes, keyboard insertion supports
+printable ASCII, and the bitmap renderer does not provide Unicode-aware editing.
+The Spanish keyboard layout is not a claim of UTF-8 support.
+
+## Open, paths and Save
+
+The file manager can open a selected file in Mnemosyne. The shell command
+`open /mnt/example.txt` also opens an editor window. Ctrl+O reloads the current
+filename. It is not a file-selection dialog.
+
+The normalized absolute filename must fit in **63 bytes**. Paths too long for
+the VFS's intermediate path buffer are rejected before normalization, even when
+removing `..` could produce a shorter result. A supported relative name becomes
+an absolute name so a later change of working directory cannot redirect Save.
+VFS symbolic links in any path component are rejected on Open and Save: relative
+symlink targets currently depend on the VFS working directory. `/proc` and `/dev`
+are unsupported because their generated or stream data cannot be checked through
+the regular-file image interface.
+
+Open validates the full file image before changing text, filename, cursor,
+selection, scroll position, modified state or undo history. A failed open changes
+only the status message. Continuing to edit and save afterwards operates on the
+previous document; rejection does not merely suppress one Save operation.
+
+For mounted files, the editor compares the materialized image with independent
+backing-file size metadata. It rejects a prefix or an empty image caused by a
+nonempty file's failed read/allocation. It also rejects directories, failed
+descriptors, unavailable metadata callbacks and nonempty images without data.
+
+Ctrl+S writes the current filename. A new unnamed document defaults to
+`untitled.txt` in the login home, or `/home` when no login home is set. The name
+must pass the same path checks before any write. Whether that home is persistent
+depends on the mounted storage; a RAM-filesystem write does not survive reboot.
+There is currently no Save As dialog.
+
+Save serializes the complete model into a heap buffer. Allocation failure makes
+no write and reports an error. A short or negative write reports failure and keeps
+the buffer marked modified; it never reports `Saved`. **Save is not an atomic
+filesystem replacement:** a write failure may already have changed on-disk bytes.
+The present VFS cannot guarantee retention of the last good disk version on every
+allocation, media or power-loss failure.
+
+Backing size callbacks have no distinct error result for every metadata failure;
+zero can also mean an empty file. These checks do not detect a same-size concurrent
+replacement, exclude concurrent writers, or compensate for a filesystem reporting
+success after a physical I/O failure.
+
+## Selection, undo and keyboard routing
+
+Mouse dragging selects text and Ctrl+A selects the whole document. Printable input
+replaces a selection; Backspace or Delete removes it. A replacement is one undo
+step. The existing undo stack retains up to 16 snapshots and restores selection
+and line-ending style along with the text. If allocating a snapshot fails, the
+edit still occurs without a new undo entry. Shared clipboard copy/paste is not
+implemented in Mnemosyne.
+
+Ctrl+Z reaches the focused client when no user process is registered as the global
+foreground process. Mnemosyne uses it for undo. When a foreground process exists,
+the keyboard driver keeps sending SIGTSTP to that process and consumes the key;
+it does not undo editor text even if the editor is focused. This is a global
+foreground rule, not per-window process routing. Ctrl+C and Ctrl+D retain their
+existing behavior. PS/2 Ctrl+Z was verified in the target editor sequence below.
+
+## Evidence and acceptance
+
+On Linux or WSL:
+
+```sh
+python3 tools/test_editor_io.py
+```
+
+The runner includes the real editor functions and real VFS lexical path normalizer,
+with a simulated VFS and fault-injecting allocator. Its **76 cases pass** against
+the repaired editor. The same cases fail against the preceding implementation.
+Fixtures and output files are compared byte for byte; allocation guard bytes and
+descriptor/allocation counts are checked after each run.
+
+Coverage includes empty files, both separator styles and EOF forms, 254/255/256-byte
+rows, 511/512/513-line boundaries, maximum-size files, malformed input, partial and
+failed file images, paths and symlinks, editing after a rejected open, selection,
+undo, edit limits, allocation failures and short/error writes. These are host
+results; they do not prove physical-key delivery, compositor behavior or storage
+durability.
+
+A four-CPU QEMU VM with 5 GiB configured RAM and a disposable EXT2 disk exercised
+the real Terminal `open` command and Mnemosyne. The test replaced backing files
+with a sentinel after loading them, then used Ctrl+S and extracted the disk after
+closing the VM. Exact output matched LF, CRLF, empty files, both styles without a
+final separator and the maximum 131,582-byte image. This checks actual Save, not
+merely an unchanged input file.
+
+Two rejected reloads visibly reported the 255-byte row and 512-row limits while
+preserving the edited document. Ctrl+A, selection replacement and two PS/2 Ctrl+Z
+events restored the original CRLF bytes. Saved intermediate selection/undo states
+were also compared exactly. The desktop remained responsive; no panic, page fault
+or general-protection fault appeared in the serial log. All test VMs were closed.
+
+The first run lost focus/input in a scripted interaction; its four completed
+outputs were verified and only the remaining cases were repeated with more widely
+spaced input. This does not establish a fix for general input/focus timing. Mixed
+LF/CRLF, bare CR and NUL rejection have host evidence only. Disk extraction after
+the session does not establish reboot behavior, power-loss safety or a long-running
+daily-use session; those acceptance checks remain open.
+
+The tested kernel SHA-256 is
+`61217372e8491b18f97f3419133c86ea33747368c23cb8c9240d31e451c105ea`;
+the isolated ISO SHA-256 is
+`e1ce956295c08caa8eed358d63e0d153db21ba98d29ac1de11d82c1f2e9d7886`.

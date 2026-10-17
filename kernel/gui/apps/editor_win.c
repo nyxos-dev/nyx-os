@@ -79,94 +79,176 @@ editor_win_t* editor_create_ctx(void) {
     return ed;
 }
 
+// Every separator creates a row, including an empty final row. 512 rows of
+// 255 bytes separated by CRLF are the largest image this model can represent.
+#define EDITOR_MAX_BYTES (EDITOR_MAX_LINES * (EDITOR_LINE_LEN - 1) + (EDITOR_MAX_LINES - 1) * 2)
+
+// vfs_realpath uses a fixed MAX_PATH scratch buffer and can truncate. Bound its
+// unnormalised input first, then require the complete absolute name to fit the
+// document. Absolute names without VFS symlinks keep Save independent of CWD.
+static int editor_path(editor_win_t* ed, const char* path, char out[MAX_PATH]) {
+    if (!path || !*path) {
+        snprintf(ed->status, sizeof(ed->status), "File error: empty path");
+        return 0;
+    }
+    size_t len = strlen(path);
+    if (len >= MAX_PATH || (path[0] != '/' && strlen(vfs_getcwd()) + 1 + len >= MAX_PATH)) {
+        snprintf(ed->status, sizeof(ed->status), "File error: path too long");
+        return 0;
+    }
+    vfs_realpath(path, out, MAX_PATH);
+    if (strlen(out) >= sizeof(ed->filename)) {
+        snprintf(ed->status, sizeof(ed->status), "File error: path exceeds %d bytes", (int)sizeof(ed->filename) - 1);
+        return 0;
+    }
+    // VFS resolves relative symlink targets against the current CWD. Its
+    // lexical realpath does not resolve them, so reject any linked component
+    // on both Open and Save rather than risking a different target later.
+    for (int i = 1; ; i++) {
+        if (out[i] && out[i] != '/') continue;
+        char end = out[i], target[1];
+        out[i] = 0;
+        int linked = vfs_readlink(out, target, sizeof(target)) >= 0;
+        out[i] = end;
+        if (linked) {
+            snprintf(ed->status, sizeof(ed->status), "File error: symbolic links are unsupported");
+            return 0;
+        }
+        if (!end) break;
+    }
+    // /proc and /dev expose generated/stream data rather than the regular file
+    // image used below. Their fsize/fdata pair cannot prove a complete read.
+    if ((!strncmp(out, "/proc", 5) && (!out[5] || out[5] == '/')) ||
+        (!strncmp(out, "/dev", 4) && (!out[4] || out[4] == '/'))) {
+        snprintf(ed->status, sizeof(ed->status), "File error: regular files only");
+        return 0;
+    }
+    return 1;
+}
+
 static void editor_save(editor_win_t* ed) {
-    // A never-named buffer saves into the logged-in user's persistent home
-    // (/mnt/home/<user> on the ext2 disk when a disk is mounted) so a new note
-    // survives a reboot -- the old default was the ephemeral RAM path /home/user/.
-    char defbuf[128];
+    // New files retain the persistent-home default, but a name that cannot be
+    // stored intact must never be written using a silently shortened path.
+    char defbuf[128], filename[MAX_PATH];
     snprintf(defbuf, sizeof(defbuf), "%s/untitled.txt", g_login_home[0] ? g_login_home : "/home");
-    char* filename = ed->filename[0] ? ed->filename : defbuf;
-    // 512 * 256 = 128 KB. This used to be a STACK array, and kernel task stacks
-    // are kmalloc(4096) — 4 KB. Every single Save overflowed the kernel stack by
-    // a factor of thirty-two, straight through whatever happened to live below
-    // it. On the heap it is just a large allocation.
-    char* buf = (char*)kmalloc(EDITOR_MAX_LINES * EDITOR_LINE_LEN);
-    if (!buf) return;
-    const int bufsz = EDITOR_MAX_LINES * EDITOR_LINE_LEN;
+    if (!editor_path(ed, ed->filename[0] ? ed->filename : defbuf, filename)) return;
+    int bytes = (ed->line_count - 1) * (ed->crlf ? 2 : 1);
+    for (int i = 0; i < ed->line_count; i++) bytes += (int)strlen(ed->lines[i]);
+    // Even an empty file gets a valid allocation for VFS; all text stays on the
+    // heap because a full document is much larger than the kernel task stack.
+    char* buf = (char*)kmalloc((size_t)bytes + 1);
+    if (!buf) {
+        snprintf(ed->status, sizeof(ed->status), "Save failed: out of memory");
+        return;
+    }
     int pos = 0;
-    for (int i = 0; i < ed->line_count && pos < bufsz - 2; i++) {
-        int len = strlen(ed->lines[i]);
-        if (pos + len + 1 >= bufsz) break;
+    for (int i = 0; i < ed->line_count; i++) {
+        int len = (int)strlen(ed->lines[i]);
         memcpy_asm(buf + pos, ed->lines[i], len);
         pos += len;
-        buf[pos++] = '\n';
+        if (i + 1 < ed->line_count) {
+            if (ed->crlf) buf[pos++] = '\r';
+            buf[pos++] = '\n';
+        }
     }
     buf[pos] = '\0';
-    // vfs_write_file returns the number of bytes written on success (== pos here) and
-    // a negative value on failure; it does NOT return 0 on success, so the old `== 0`
-    // check reported every non-empty save as "Save failed" even though it was written.
-    if (vfs_write_file(filename, buf, pos) == pos) {
+    // A short or failed write must stay visible. VFS does not offer an atomic
+    // replace here, so a physical write failure may already have changed disk.
+    int written = vfs_write_file(filename, buf, (uint32_t)pos);
+    if (written == pos) {
         ed->modified = 0;
-        if (!ed->filename[0]) strncpy(ed->filename, filename, sizeof(ed->filename) - 1);
+        strcpy(ed->filename, filename);
         snprintf(ed->status, sizeof(ed->status), "Saved: %s (%d bytes)", filename, pos);
     } else {
-        snprintf(ed->status, sizeof(ed->status), "Save failed: %s", filename);
+        ed->modified = 1;     // disk may now contain only a prefix of this buffer
+        snprintf(ed->status, sizeof(ed->status), "Save failed: wrote %d of %d bytes", written, pos);
     }
     kfree(buf);
 }
 
 static void editor_open(editor_win_t* ed, const char* path) {
-    editor_clear_undo(ed);                          // a different file: old snapshots no longer apply
-    editor_clear_selection(ed);
-    ed->cursor_x = 0; ed->cursor_y = 0;
-    ed->scroll_x = 0; ed->scroll_y = 0;
-    ed->modified = 0;
-    strncpy(ed->filename, path, sizeof(ed->filename) - 1);
-    int fd = vfs_open(path, 0, 0);
-    if (fd < 0) {
-        ed->line_count = 1;
-        ed->lines[0][0] = '\0';
-        ed->cursor_x = 0; ed->cursor_y = 0;
-        ed->scroll_x = 0; ed->scroll_y = 0;
-        ed->modified = 0;
-        snprintf(ed->status, sizeof(ed->status), "New: %s", path);
-        return;
-    }
-    uint32_t size = vfs_fsize(fd);
-    uint8_t* data = vfs_fdata(fd);
-    if (!data || size == 0) {
-        vfs_close(fd);
-        ed->line_count = 1;
-        ed->lines[0][0] = '\0';
-        snprintf(ed->status, sizeof(ed->status), "Empty: %s", path);
-        return;
-    }
-    int line = 0, col = 0;
-    for (uint32_t i = 0; i < size && line < EDITOR_MAX_LINES; i++) {
-        if (data[i] == '\n') {
-            ed->lines[line][col] = '\0';
-            line++; col = 0;
-            if (line < EDITOR_MAX_LINES) ed->lines[line][0] = '\0';
-        } else if (data[i] != '\r') {
-            if (col < EDITOR_LINE_LEN - 1) {
-                ed->lines[line][col++] = data[i];
-                ed->lines[line][col] = '\0';
-            }
+    char filename[MAX_PATH];
+    if (!editor_path(ed, path, filename)) return;
+    mount_entry_t* mount = vfs_find_mount(filename);
+    const char* sub = mount ? filename + strlen(mount->mount_point) : NULL;
+    uint32_t expected = 0;
+    if (mount) {
+        if (!*sub) sub = "/";
+        if (!mount->resolve || !mount->get_size || !mount->resolve(sub)) {
+            snprintf(ed->status, sizeof(ed->status), "Open failed: cannot verify backing file");
+            return;
+        }
+        expected = mount->get_size(sub);
+        if (expected > EDITOR_MAX_BYTES) {
+            snprintf(ed->status, sizeof(ed->status), "Open failed: document exceeds editor capacity");
+            return;
         }
     }
-    if (line < EDITOR_MAX_LINES && (col > 0 || line == 0))
-        ed->lines[line][col] = '\0';
-    // A file with >= EDITOR_MAX_LINES newlines makes the load loop stop with line ==
-    // EDITOR_MAX_LINES, so `line + 1` would set line_count one past the lines[] array.
-    // line_count bounds cursor movement and gates editor_insert_char, so that lets the
-    // cursor reach row EDITOR_MAX_LINES and read/write ed->lines[EDITOR_MAX_LINES] — which
-    // aliases line_count and overruns the struct (a heap OOB). Clamp, like editor_newline.
-    ed->line_count = (line < EDITOR_MAX_LINES) ? line + 1 : EDITOR_MAX_LINES;
+    int fd = vfs_open(filename, 0, 0);
+    if (fd < 0) {
+        snprintf(ed->status, sizeof(ed->status), "Open failed: file unavailable");
+        return;
+    }
+    uint32_t size = 0;
+    int isdir = 0;
+    uint8_t* data = vfs_fdata(fd);
+    // Mounted open may return a prefix, or size=0 after OOM/read failure.
+    // fstat alone sees that prefix too; compare with independent backing size.
+    if (vfs_fstat(fd, &size, &isdir) != 0 || isdir || (size && !data) ||
+        (mount && (size != expected || !mount->resolve(sub) || size != mount->get_size(sub)))) {
+        snprintf(ed->status, sizeof(ed->status), "Open failed: incomplete or invalid file image");
+        vfs_close(fd);
+        return;
+    }
+    if (size > EDITOR_MAX_BYTES) {
+        snprintf(ed->status, sizeof(ed->status), "Open failed: document exceeds editor capacity");
+        vfs_close(fd);
+        return;
+    }
+    // Validate without touching the current text, filename, selection or undo.
+    // NUL, bare CR and mixed LF/CRLF cannot round-trip through this text model.
+    int line = 0, col = 0, eol = 0;
+    const char* error = NULL;
+    for (uint32_t i = 0; i < size; i++) {
+        uint8_t c = data[i];
+        if (!c) { error = "NUL bytes are unsupported"; break; }
+        if (c == '\r' || c == '\n') {
+            int kind = c == '\r' ? 2 : 1;
+            if (kind == 2 && (i + 1 >= size || data[++i] != '\n')) {
+                error = "bare CR is unsupported"; break;
+            }
+            if (eol && eol != kind) { error = "mixed LF/CRLF is unsupported"; break; }
+            eol = kind;
+            if (++line >= EDITOR_MAX_LINES) { error = "more than 512 rows (final empty row counts)"; break; }
+            col = 0;
+        } else if (++col >= EDITOR_LINE_LEN) {
+            error = "line exceeds 255 bytes"; break;
+        }
+    }
+    if (error) {
+        snprintf(ed->status, sizeof(ed->status), "Open failed: %s", error);
+        vfs_close(fd);
+        return;
+    }
+    // Commit only the validated image. No allocations or fallible reads remain.
+    editor_clear_undo(ed);
+    editor_clear_selection(ed);
+    ed->line_count = line + 1;
+    ed->crlf = eol == 2;
+    line = 0; col = 0;
+    for (uint32_t i = 0; i < size; i++) {
+        if (data[i] == '\r') continue;
+        if (data[i] == '\n') { ed->lines[line++][col] = '\0'; col = 0; }
+        else ed->lines[line][col++] = (char)data[i];
+    }
+    ed->lines[line][col] = '\0';
+    strcpy(ed->filename, filename);
     vfs_close(fd);
     ed->cursor_x = 0; ed->cursor_y = 0;
     ed->scroll_x = 0; ed->scroll_y = 0;
+    ed->find_active = 0; ed->repl_active = 0; ed->goto_active = 0;
     ed->modified = 0;
-    snprintf(ed->status, sizeof(ed->status), "Opened: %s (%u bytes)", path, size);
+    snprintf(ed->status, sizeof(ed->status), "Opened: %s (%u bytes)", filename, size);
 }
 
 // Public entry point: load `path` into this editor context. Used by the file
@@ -631,6 +713,7 @@ static void editor_push_undo(editor_win_t* ed) {
     ed->undo[ed->undo_n].anchor_x = ed->selection_x;
     ed->undo[ed->undo_n].anchor_y = ed->selection_y;
     ed->undo[ed->undo_n].selected = ed->selection_active;
+    ed->undo[ed->undo_n].crlf = ed->crlf;
     ed->undo_n++;
 }
 
@@ -639,6 +722,7 @@ static void editor_undo_pop(editor_win_t* ed) {
     if (ed->undo_n == 0) { snprintf(ed->status, sizeof(ed->status), "Nothing to undo"); return; }
     editor_undo_t* u = &ed->undo[--ed->undo_n];
     ed->line_count = (u->line_count < 1) ? 1 : u->line_count;
+    ed->crlf = u->crlf;
     memcpy_asm(ed->lines, u->text, u->line_count * EDITOR_LINE_LEN);
     ed->cursor_y = u->cy; ed->cursor_x = u->cx;
     ed->selection_x = u->anchor_x; ed->selection_y = u->anchor_y;

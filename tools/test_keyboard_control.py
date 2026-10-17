@@ -4,6 +4,7 @@
 Linux x86_64 or WSL only. Checks shared Ctrl translation and signal delivery after
 unlocking; it does not simulate IRQ scheduling or test physical PS/2 hardware.
 """
+import argparse
 import os
 from pathlib import Path
 import platform
@@ -22,7 +23,8 @@ static void test_unlock(spinlock_t* lock, uint64_t flags);
 #define inb test_inb
 #define spin_lock_irqsave test_lock
 #define spin_unlock_irqrestore test_unlock
-#include "@ROOT@/kernel/drivers/input/keyboard.c"
+#include "@SOURCE@"
+uint32_t g_foreground_pid;
 
 static int ready, bad_lock, signal_count, last_signal;
 static uint8_t scancode;
@@ -51,8 +53,9 @@ static int key(uint8_t sc, int irq) {
     return (unsigned char)getchar_poll();
 }
 #define CHECK(x) do { if (!(x)) { printf("FAIL line %d\n", __LINE__); return 1; } } while (0)
-static int sequence(int ctrl_irq, int char_irq) {
+static int sequence(int ctrl_irq, int char_irq, int foreground) {
     signal_count = 0; last_signal = 0;
+    g_foreground_pid = foreground ? 42 : 0;
     CHECK(key(0x1D, ctrl_irq) == 0);           /* Ctrl down */
     CHECK(key(0x20, char_irq) == 4);           /* Ctrl-D */
     CHECK(signal_count == 0);
@@ -61,13 +64,13 @@ static int sequence(int ctrl_irq, int char_irq) {
     CHECK(key(0xAA, ctrl_irq) == 0);           /* Shift up */
     CHECK(key(0x2E, char_irq) == 0);           /* Ctrl-C is a signal, not input */
     CHECK(signal_count == 1 && last_signal == SIGINT);
-    CHECK(key(0x2C, char_irq) == 0);           /* Ctrl-Z likewise */
-    CHECK(signal_count == 2 && last_signal == SIGTSTP);
+    CHECK(key(0x2C, char_irq) == (foreground ? 0 : 26)); /* Ctrl-Z: job signal or client Undo */
+    CHECK(signal_count == 1 + foreground && last_signal == (foreground ? SIGTSTP : SIGINT));
     CHECK(key(0x18, char_irq) == 15);          /* Ctrl-O */
     CHECK(key(0x2D, char_irq) == 24);          /* Ctrl-X */
     CHECK(key(0x9D, ctrl_irq) == 0);           /* Ctrl up */
     CHECK(key(0x20, char_irq) == 'd');
-    CHECK(signal_count == 2 && !bad_lock && !kbd_lock.locked);
+    CHECK(signal_count == 1 + foreground && !bad_lock && !kbd_lock.locked);
     return 0;
 }
 int main(void) {
@@ -77,24 +80,29 @@ int main(void) {
         keyboard_layout = layout;
         for (int ctrl_irq = 0; ctrl_irq < 2; ctrl_irq++)
             for (int char_irq = 0; char_irq < 2; char_irq++)
-                CHECK(sequence(ctrl_irq, char_irq) == 0);
+                for (int foreground = 0; foreground < 2; foreground++)
+                    CHECK(sequence(ctrl_irq, char_irq, foreground) == 0);
     }
-    printf("OK: US/ES Ctrl keys through IRQ, polling and mixed paths; signals after unlock\n");
+    printf("OK: US/ES Ctrl keys through IRQ, polling and mixed paths; Ctrl-Z Undo/job signal; signals after unlock\n");
     return 0;
 }
 '''
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source', type=Path, default=ROOT / 'kernel/drivers/input/keyboard.c')
+    args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64"):
         raise SystemExit("Run this test on Linux x86_64 or WSL")
     cc = shlex.split(os.environ.get("CC", "cc"))
     with tempfile.TemporaryDirectory(prefix="nyx-keyboard-") as temporary:
         work = Path(temporary)
         source = work / "keyboard_test.c"
-        source.write_text(HARNESS.replace("@ROOT@", ROOT.as_posix()), encoding="utf-8")
+        source.write_text(HARNESS.replace("@ROOT@", ROOT.as_posix()).replace("@SOURCE@", args.source.resolve().as_posix()), encoding="utf-8")
         flags = ["-std=gnu99", "-O2", "-ffreestanding", "-Wall", "-Wextra", "-Wshadow", "-Werror",
-                 "-ffunction-sections", "-fdata-sections", "-no-pie", "-Wl,--gc-sections"]
+                 "-ffunction-sections", "-fdata-sections", "-no-pie", "-Wl,--gc-sections",
+                 "-I", str(ROOT / "kernel/drivers/input")]
         for command in ([*cc, *flags, str(source), "-o", str(work / "keyboard_test")],
                         [str(work / "keyboard_test")]):
             result = subprocess.run(command, capture_output=True, text=True, timeout=30)

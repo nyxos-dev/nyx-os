@@ -9,11 +9,12 @@
 #define EDITOR_UNDO_N   16          // undo depth (snapshots kept before mutating edits)
 
 // One undo snapshot: a heap copy of the used lines (line_count * EDITOR_LINE_LEN bytes) + cursor.
-typedef struct { char* text; int line_count, cx, cy, anchor_x, anchor_y, selected; } editor_undo_t;
+typedef struct { char* text; int line_count, cx, cy, anchor_x, anchor_y, selected, crlf; } editor_undo_t;
 
 typedef struct {
     char lines[EDITOR_MAX_LINES][EDITOR_LINE_LEN];
     int line_count;
+    int crlf;                     // separators between rows: 0 = LF (new files), 1 = CRLF
     int cursor_x, cursor_y;
     int scroll_x, scroll_y;
     int selection_x, selection_y;   // fixed anchor; the cursor is the moving end
