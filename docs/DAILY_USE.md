@@ -124,6 +124,11 @@ The immediate data and desktop priorities are:
     glyph and nested-table contracts, handles rendering allocation failure and
     adds the suite to CI. [SELENE_MEMORY.md](SELENE_MEMORY.md) distinguishes this
     test maintenance from renderer changes and documents mutation/failure checks.
+11. Development version 6.5.205 checks allocation results in all four N-written
+    drivers and regenerates the installed emitters. A rejected state or scratch
+    allocation exits with an error instead of dereferencing the failed result.
+    [selfhost/README.md](../lang/selfhost/README.md) records the checks and the
+    remaining fixed-arena bounds and demand-paging limitations.
 
 ### Visual direction and saved personalization
 

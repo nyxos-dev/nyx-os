@@ -21,6 +21,7 @@ static inline nyx_i64 sys_sbrk(nyx_i64 incr) {
     return (nyx_i64)__nyx_syscall6(7, (nyx_i64)incr, 0, 0, 0, 0, 0);
 }
 
+nyx_i64 arena_alloc(nyx_i64 bytes);
 void put_bytes(nyx_u8* p, nyx_i64 len);
 void put(nyx_str s);
 nyx_bool is_idc(nyx_i64 b);
@@ -39,6 +40,16 @@ nyx_i64 scan_string(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 cont);
 nyx_i64 next_kind(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 void dump_tok(nyx_u8* p, nyx_i64* st, nyx_i64 k);
 nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv);
+
+nyx_i64 arena_alloc(nyx_i64 bytes) {
+    nyx_i64 memory = sys_sbrk(bytes);
+    if ((memory <= 0)) {
+        nyx_str error = ((nyx_str){"nlex: out of memory\n", 20});
+        write(2, (nyx_u8*)(((nyx_u8*)error.ptr)), (nyx_isize)(error.len));
+        sys_exit(1);
+    }
+    return memory;
+}
 
 void put_bytes(nyx_u8* p, nyx_i64 len) {
     nyx_i64 sent = 0;
@@ -578,7 +589,7 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
         return 0;
     }
     nyx_i64 memory = sys_sbrk(262144);
-    if ((memory < 0)) {
+    if ((memory <= 0)) {
         sys_close(fd);
         put(((nyx_str){"nlex: cannot allocate input buffer\n", 35}));
         return 1;
@@ -630,7 +641,7 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     if ((total < 1)) {
         return 0;
     }
-    nyx_i64* st = (nyx_i64*)(sys_sbrk(256));
+    nyx_i64* st = (nyx_i64*)(arena_alloc(256));
     st[0] = 0;
     st[1] = 1;
     st[2] = -(1);

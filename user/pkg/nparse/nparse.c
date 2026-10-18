@@ -28,6 +28,7 @@ static inline nyx_i64 sys_sbrk(nyx_i64 incr) {
     return (nyx_i64)__nyx_syscall6(7, (nyx_i64)incr, 0, 0, 0, 0, 0);
 }
 
+nyx_i64 arena_alloc(nyx_i64 bytes);
 void put_bytes(nyx_u8* p, nyx_i64 len);
 void put(nyx_str s);
 void put_span(nyx_u8* p, nyx_i64 s, nyx_i64 l);
@@ -88,6 +89,16 @@ void pfn(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 caps, nyx_i64* ps);
 void pimpl(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64* ps);
 void pass_items(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 which, nyx_i64* ps);
 nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv);
+
+nyx_i64 arena_alloc(nyx_i64 bytes) {
+    nyx_i64 memory = sys_sbrk(bytes);
+    if ((memory <= 0)) {
+        nyx_str error = ((nyx_str){"nparse: out of memory\n", 22});
+        write(2, (nyx_u8*)(((nyx_u8*)error.ptr)), (nyx_isize)(error.len));
+        sys_exit(1);
+    }
+    return memory;
+}
 
 void put_bytes(nyx_u8* p, nyx_i64 len) {
     nyx_i64 sent = 0;
@@ -807,7 +818,7 @@ void pexpr(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
 }
 
 void pinterp(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
-    nyx_i64* fr = (nyx_i64*)(sys_sbrk(2048));
+    nyx_i64* fr = (nyx_i64*)(arena_alloc(2048));
     nyx_i64 nf = 0;
     fr[0] = 0;
     fr[1] = st[26];
@@ -972,7 +983,7 @@ void pprimary(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
         adv(p, n, st);
         if ((ck(st, 39) && (st[32] == 0))) {
             adv(p, n, st);
-            nyx_i64* fs = (nyx_i64*)(sys_sbrk(256));
+            nyx_i64* fs = (nyx_i64*)(arena_alloc(256));
             nyx_i64 na = 0;
             nyx_bool more = !(ck(st, 40));
             while (more) {
@@ -1042,7 +1053,7 @@ void ppostfix(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
         adv(p, n, st);
         if ((ck(st, 39) && (st[32] == 0))) {
             adv(p, n, st);
-            nyx_i64* fns = (nyx_i64*)(sys_sbrk(256));
+            nyx_i64* fns = (nyx_i64*)(arena_alloc(256));
             nyx_i64 na = 0;
             nyx_bool more = !(ck(st, 40));
             while (more) {
@@ -1425,7 +1436,7 @@ void pmatch(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 exprarms, nyx_i64 mt, nyx
         return;
     }
     adv(p, n, st);
-    nyx_i64* bs = (nyx_i64*)(sys_sbrk(512));
+    nyx_i64* bs = (nyx_i64*)(arena_alloc(512));
     nyx_i64 na = 0;
     nyx_bool more = !(ck(st, 40));
     while (more) {
@@ -2386,7 +2397,7 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
         return 0;
     }
     nyx_i64 memory = sys_sbrk(262144);
-    if ((memory < 0)) {
+    if ((memory <= 0)) {
         sys_close(fd);
         put(((nyx_str){"nparse: cannot allocate input buffer\n", 37}));
         return 1;
@@ -2438,11 +2449,11 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     if ((total < 1)) {
         return 0;
     }
-    nyx_i64* st = (nyx_i64*)(sys_sbrk(512));
-    nyx_i64* ps = (nyx_i64*)(sys_sbrk(1024));
-    st[44] = sys_sbrk(18432);
+    nyx_i64* st = (nyx_i64*)(arena_alloc(512));
+    nyx_i64* ps = (nyx_i64*)(arena_alloc(1024));
+    st[44] = arena_alloc(18432);
     st[45] = 0;
-    st[46] = sys_sbrk(2304);
+    st[46] = arena_alloc(2304);
     st[47] = 0;
     st[0] = 0;
     st[1] = 1;

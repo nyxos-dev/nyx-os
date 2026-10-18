@@ -49,6 +49,38 @@ the N examples and all four selfhost sources, plus the checker rejection
 corpus. Comparisons are byte-for-byte. Use `CC` to select the C compiler or
 `--sources /path/to/older/selfhost` to demonstrate the pre-fix failures.
 
+## Allocation failures (NyxOS 6.5.205)
+
+The four N-written drivers check every initialization and scratch `sys_sbrk`
+result before using it as an address. A negative or null result terminates with
+status 1 and one best-effort `n<tool>: out of memory` message on stderr. Reporting
+the error does not allocate, and a failed diagnostic write cannot prevent exit.
+The initial source-buffer failure retains its existing stdout diagnostic and
+closes the input descriptor. The installable emitters are regenerated from N.
+
+Run `python3 lang/selfhost/tests/test_allocations.py` on Linux x86_64/WSL. Across
+eight valid inputs, the runner observes 539 allocations and fails each in turn
+with -1, -12, null, and a broken stderr path: 2,188 checks pass, including normal
+output after the injection point. The same runner detects 2,060 failures in the
+6.5.204 sources. The input/corpus and output suites also pass: 33 valid sources,
+78 diagnostic refusals and 52 output/package checks retain their contracts.
+
+The final GCC 14 build has no warnings, passes 229 kernel tests and reaches the
+login screen with four CPUs. In a separate one-CPU, 512 MiB QEMU session,
+test-only host-built drivers replace selected input/state/final-initialization
+requests with 1 GiB requests: the real kernel rejects them, each driver reports
+the error and exits 1, and fresh normal runs succeed. This tests rejection by
+the heap-address limit, not physical-memory exhaustion. The production packages
+are uninstrumented: fresh installation, 18 exact input/output cases, four real
+output failures and both in-OS Workbench compilations still pass. Both executables
+produce the same 301-byte trace; N++ lowering remains on the host. QEMU exits
+without kernel fault markers. No new GUI or physical-hardware claim is made.
+
+This checks allocation results, not capacities within the fixed arenas. Those
+tables still need separate bounds work. The NyxOS heap is demand-paged: accepting
+`sbrk` does not guarantee that a later page fault can allocate a physical frame.
+Already-emitted output is not rolled back, and redirected files remain non-atomic.
+
 ## Output progress and failures (NyxOS 6.5.201)
 
 All four N-written drivers send strings and source spans through `put_bytes`.

@@ -28,6 +28,7 @@ static inline nyx_i64 sys_sbrk(nyx_i64 incr) {
     return (nyx_i64)__nyx_syscall6(7, (nyx_i64)incr, 0, 0, 0, 0, 0);
 }
 
+nyx_i64 arena_alloc(nyx_i64 bytes);
 void put_bytes(nyx_u8* p, nyx_i64 len);
 void put(nyx_str s);
 void put_span(nyx_u8* p, nyx_i64 s, nyx_i64 l);
@@ -186,6 +187,16 @@ void eenum(nyx_u8* p, nyx_i64* st, nyx_i64 i);
 void elayouts(nyx_u8* p, nyx_i64* st);
 void egen(nyx_u8* p, nyx_i64* st, nyx_str path);
 nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv);
+
+nyx_i64 arena_alloc(nyx_i64 bytes) {
+    nyx_i64 memory = sys_sbrk(bytes);
+    if ((memory <= 0)) {
+        nyx_str error = ((nyx_str){"ngen: out of memory\n", 20});
+        write(2, (nyx_u8*)(((nyx_u8*)error.ptr)), (nyx_isize)(error.len));
+        sys_exit(1);
+    }
+    return memory;
+}
 
 void put_bytes(nyx_u8* p, nyx_i64 len) {
     nyx_i64 sent = 0;
@@ -2096,7 +2107,7 @@ nyx_i64 pexpr(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
 }
 
 nyx_i64 pinterp(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
-    nyx_i64* hx = (nyx_i64*)(sys_sbrk(2048));
+    nyx_i64* hx = (nyx_i64*)(arena_alloc(2048));
     nyx_i64 nh = 0;
     nyx_i64 ln = st[25];
     hx[0] = st[26];
@@ -2257,7 +2268,7 @@ nyx_i64 pprimary(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
         adv(p, n, st);
         if ((ck(st, 39) && (st[32] == 0))) {
             adv(p, n, st);
-            nyx_i64* vx = (nyx_i64*)(sys_sbrk(768));
+            nyx_i64* vx = (nyx_i64*)(arena_alloc(768));
             nyx_i64 na = 0;
             nyx_bool more = !(ck(st, 40));
             while (more) {
@@ -2319,7 +2330,7 @@ nyx_i64 ppostfix(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
         adv(p, n, st);
         if ((ck(st, 39) && (st[32] == 0))) {
             adv(p, n, st);
-            nyx_i64* vx = (nyx_i64*)(sys_sbrk(768));
+            nyx_i64* vx = (nyx_i64*)(arena_alloc(768));
             nyx_i64 na = 0;
             nyx_bool more = !(ck(st, 40));
             while (more) {
@@ -2391,7 +2402,7 @@ nyx_i64 ppostfix_tail(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 h0) {
         if (ck(st, 37)) {
             nyx_i64 ln = st[25];
             adv(p, n, st);
-            nyx_i64* ax = (nyx_i64*)(sys_sbrk(512));
+            nyx_i64* ax = (nyx_i64*)(arena_alloc(512));
             nyx_i64 na = 0;
             nyx_bool more = !(ck(st, 38));
             while (more) {
@@ -2439,7 +2450,7 @@ nyx_i64 pfield_or_call(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 base, nyx_i64 
         nyx_i64 ln = st[25];
         nyx_i64 fld = nnew(st, 7, base, 0, 0, ln, fs, fl);
         adv(p, n, st);
-        nyx_i64* ax = (nyx_i64*)(sys_sbrk(512));
+        nyx_i64* ax = (nyx_i64*)(arena_alloc(512));
         nyx_i64 na = 0;
         nyx_bool more = !(ck(st, 38));
         while (more) {
@@ -2723,8 +2734,8 @@ nyx_i64 pmatch(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 exprarms, nyx_i64 mt, 
         return 0;
     }
     adv(p, n, st);
-    nyx_i64* bs = (nyx_i64*)(sys_sbrk(2048));
-    nyx_i64* ar = (nyx_i64*)(sys_sbrk(1024));
+    nyx_i64* bs = (nyx_i64*)(arena_alloc(2048));
+    nyx_i64* ar = (nyx_i64*)(arena_alloc(1024));
     nyx_i64 na = 0;
     nyx_i64 btop = 0;
     nyx_bool more = !(ck(st, 40));
@@ -3237,7 +3248,7 @@ void penum(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64* ps) {
         return;
     }
     adv(p, n, st);
-    nyx_i64* vx = (nyx_i64*)(sys_sbrk(1024));
+    nyx_i64* vx = (nyx_i64*)(arena_alloc(1024));
     nyx_i64 nv = 0;
     nyx_bool more = !(ck(st, 40));
     while (more) {
@@ -4541,7 +4552,7 @@ void ctry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 form) {
         nyx_i64 orr = al[((ea[((oe * 4) + 3)] + (ovi * 4)) + 3)];
         okty = ((T){.pt = al[(orr + 2)], .us = al[(orr + 3)], .s = al[(orr + 4)], .l = al[(orr + 5)]});
     }
-    nyx_i64* err_states = (nyx_i64*)(sys_sbrk(((st[40] + 1) * 8)));
+    nyx_i64* err_states = (nyx_i64*)(arena_alloc(((st[40] + 1) * 8)));
     nyx_i64* va_err = (nyx_i64*)(st[39]);
     nyx_i64 err_index = 0;
     while ((err_index < st[40])) {
@@ -4622,7 +4633,7 @@ void ctry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 form) {
         }
     }
     nyx_i64* va = (nyx_i64*)(st[39]);
-    nyx_i64* states = (nyx_i64*)(sys_sbrk(((st[40] + 1) * 8)));
+    nyx_i64* states = (nyx_i64*)(arena_alloc(((st[40] + 1) * 8)));
     nyx_i64 j = 0;
     while ((j < st[40])) {
         states[j] = va[((j * 10) + 8)];
@@ -4891,7 +4902,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     if ((k == 25)) {
         cexpr(p, st, nd[((i * 8) + 1)]);
         nyx_i64 n0 = st[40];
-        nyx_i64* sb = (nyx_i64*)(sys_sbrk((((n0 * 2) + 1) * 8)));
+        nyx_i64* sb = (nyx_i64*)(arena_alloc((((n0 * 2) + 1) * 8)));
         nyx_i64* va7 = (nyx_i64*)(st[39]);
         nyx_i64 j = 0;
         while ((j < n0)) {
@@ -6882,7 +6893,7 @@ void gdrops(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 d) {
 
 void gtry_cleanup(nyx_u8* p, nyx_i64* st, nyx_i64 d) {
     nyx_i64* va = (nyx_i64*)(st[39]);
-    nyx_i64* states = (nyx_i64*)(sys_sbrk(((st[40] + 1) * 8)));
+    nyx_i64* states = (nyx_i64*)(arena_alloc(((st[40] + 1) * 8)));
     nyx_i64 j = 0;
     while ((j < st[40])) {
         states[j] = va[((j * 10) + 8)];
@@ -7040,7 +7051,7 @@ void gstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d) {
     if ((k == 25)) {
         gpre(p, st, nd[((i * 8) + 1)], d);
         nyx_i64 n0 = st[40];
-        nyx_i64* sb = (nyx_i64*)(sys_sbrk((((n0 * 2) + 1) * 8)));
+        nyx_i64* sb = (nyx_i64*)(arena_alloc((((n0 * 2) + 1) * 8)));
         nyx_i64* va7 = (nyx_i64*)(st[39]);
         nyx_i64 j = 0;
         while ((j < n0)) {
@@ -7631,7 +7642,7 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
         return 0;
     }
     nyx_i64 memory = sys_sbrk(524288);
-    if ((memory < 0)) {
+    if ((memory <= 0)) {
         sys_close(fd);
         put(((nyx_str){"ngen: cannot allocate input buffer\n", 35}));
         return 1;
@@ -7689,35 +7700,35 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
         buf[(total + z2)] = ((nyx_u8*)inb.ptr)[z2];
         z2 = (z2 + 1);
     }
-    nyx_i64* st = (nyx_i64*)(sys_sbrk(1024));
-    nyx_i64* ps = (nyx_i64*)(sys_sbrk(1024));
-    st[33] = sys_sbrk(4194304);
+    nyx_i64* st = (nyx_i64*)(arena_alloc(1024));
+    nyx_i64* ps = (nyx_i64*)(arena_alloc(1024));
+    st[33] = arena_alloc(4194304);
     st[34] = 1;
-    st[35] = sys_sbrk(1048576);
+    st[35] = arena_alloc(1048576);
     st[36] = 0;
-    st[37] = sys_sbrk(16384);
+    st[37] = arena_alloc(16384);
     st[38] = 0;
-    st[39] = sys_sbrk(32768);
+    st[39] = arena_alloc(32768);
     st[40] = 0;
     st[41] = 0;
     st[42] = 0;
     st[43] = 0;
     st[44] = total;
-    st[49] = sys_sbrk(8192);
-    st[58] = sys_sbrk(256);
+    st[49] = arena_alloc(8192);
+    st[58] = arena_alloc(256);
     st[59] = 0;
     st[50] = 0;
-    st[51] = sys_sbrk(8192);
+    st[51] = arena_alloc(8192);
     st[52] = 0;
-    st[53] = sys_sbrk(8192);
+    st[53] = arena_alloc(8192);
     st[54] = 0;
-    st[64] = sys_sbrk(18432);
+    st[64] = arena_alloc(18432);
     st[65] = 0;
-    st[66] = sys_sbrk(2304);
+    st[66] = arena_alloc(2304);
     st[67] = 0;
     st[68] = (total + 37);
     st[69] = 0;
-    st[70] = sys_sbrk(1024);
+    st[70] = arena_alloc(1024);
     st[71] = 0;
     nyx_i64* nil0 = (nyx_i64*)(st[33]);
     nyx_i64 z = 0;

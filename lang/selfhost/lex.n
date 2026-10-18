@@ -36,6 +36,18 @@ extern syscall {
 }
 
 #[caps(syscall)]
+fn arena_alloc(bytes: i64) -> i64 {
+    memory := sys_sbrk(bytes);
+    if memory <= 0 {
+        // Do not allocate while reporting allocation failure.
+        error := "nlex: out of memory\n";
+        write(2, error.ptr as #[user] *u8, error.len as isize);
+        sys_exit(1);
+    }
+    return memory;
+}
+
+#[caps(syscall)]
 fn put_bytes(p: *u8, len: i64) {
     mut sent := 0;
     while sent < len {
@@ -411,7 +423,7 @@ fn main() -> i64 {
     }
     // The source allocation and the accepted input limit are both 256 KiB.
     memory := sys_sbrk(262144);
-    if memory < 0 {
+    if memory <= 0 {
         sys_close(fd);
         put("nlex: cannot allocate input buffer\n");
         return 1;
@@ -445,7 +457,7 @@ fn main() -> i64 {
     }
     sys_close(fd);
     if total < 1 { return 0; }
-    st := sys_sbrk(256) as *i64;
+    st := arena_alloc(256) as *i64;
     st[0] = 0;                             // pos
     st[1] = 1;                             // line
     st[2] = -1;                            // itop: no holes open

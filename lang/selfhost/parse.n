@@ -66,6 +66,18 @@ extern syscall {
 }
 
 #[caps(syscall)]
+fn arena_alloc(bytes: i64) -> i64 {
+    memory := sys_sbrk(bytes);
+    if memory <= 0 {
+        // Do not allocate while reporting allocation failure.
+        error := "nparse: out of memory\n";
+        write(2, error.ptr as #[user] *u8, error.len as isize);
+        sys_exit(1);
+    }
+    return memory;
+}
+
+#[caps(syscall)]
 fn put_bytes(p: *u8, len: i64) {
     mut sent := 0;
     while sent < len {
@@ -608,7 +620,7 @@ fn pexpr(p: *u8, n: i64, st: *i64) {
 // remembered in a fresh arena and printed on the E 3 line.
 #[caps(syscall)]
 fn pinterp(p: *u8, n: i64, st: *i64) {
-    fr := sys_sbrk(2048) as *i64;          // frag records, 4 words each
+    fr := arena_alloc(2048) as *i64;          // frag records, 4 words each
     mut nf := 0;
     fr[0] = 0; fr[1] = st[26];             // the HEAD text: #tlen
     nf = 1;
@@ -720,7 +732,7 @@ fn pprimary(p: *u8, n: i64, st: *i64) {
         adv(p, n, st);
         if ck(st, 39) && st[32] == 0 {     // struct literal
             adv(p, n, st);
-            fs := sys_sbrk(256) as *i64;   // field-name spans, 2 words each
+            fs := arena_alloc(256) as *i64;   // field-name spans, 2 words each
             mut na := 0;
             mut more := !ck(st, 40);
             while more {
@@ -779,7 +791,7 @@ fn ppostfix(p: *u8, n: i64, st: *i64) {
         adv(p, n, st);                     // the field name
         if ck(st, 39) && st[32] == 0 {     // Enum.Variant{ ... }
             adv(p, n, st);
-            fns := sys_sbrk(256) as *i64;
+            fns := arena_alloc(256) as *i64;
             mut na := 0;
             mut more := !ck(st, 40);
             while more {
@@ -1030,7 +1042,7 @@ fn pmatch(p: *u8, n: i64, st: *i64, exprarms: i64, mt: i64, ns2: i64, nl2: i64, 
     st[32] = 0;
     if !ck(st, 39) { perr(st); return; }
     adv(p, n, st);
-    bs := sys_sbrk(512) as *i64;           // bind spans, 8 x 2 per arm
+    bs := arena_alloc(512) as *i64;           // bind spans, 8 x 2 per arm
     mut na := 0;
     mut more := !ck(st, 40);
     while more {
@@ -1650,7 +1662,7 @@ fn main() -> i64 {
     }
     // The source allocation and the accepted input limit are both 256 KiB.
     memory := sys_sbrk(262144);
-    if memory < 0 {
+    if memory <= 0 {
         sys_close(fd);
         put("nparse: cannot allocate input buffer\n");
         return 1;
@@ -1684,11 +1696,11 @@ fn main() -> i64 {
     }
     sys_close(fd);
     if total < 1 { return 0; }
-    st := sys_sbrk(512) as *i64;
-    ps := sys_sbrk(1024) as *i64;          // the fields/params arena
-    st[44] = sys_sbrk(18432);              // fn-type table, 32 x 72 words
+    st := arena_alloc(512) as *i64;
+    ps := arena_alloc(1024) as *i64;          // the fields/params arena
+    st[44] = arena_alloc(18432);              // fn-type table, 32 x 72 words
     st[45] = 0;                            // ... and its count (v0.24)
-    st[46] = sys_sbrk(2304);               // fn-type parse scratch, 4 deep
+    st[46] = arena_alloc(2304);               // fn-type parse scratch, 4 deep
     st[47] = 0;
     st[0] = 0;                             // the numbering pass: intern
     st[1] = 1;                             // every fn type in source order
