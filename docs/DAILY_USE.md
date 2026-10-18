@@ -134,6 +134,10 @@ The immediate data and desktop priorities are:
     pixels are retained. The decoder section in [ARCHITECTURE.md](ARCHITECTURE.md)
     describes the host regression; browser memory budgets and blocking network
     operations remain separate work.
+13. Development version 6.5.207 exposes the existing terminal palettes in the
+    Wallpaper panel. Users can change and save the palette with immediate visual
+    feedback. [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) documents per-user persistence,
+    failure notices and Reset behaviour.
 
 ### Visual direction and saved personalization
 

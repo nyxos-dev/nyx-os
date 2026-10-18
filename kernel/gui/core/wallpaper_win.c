@@ -1,6 +1,7 @@
 #include "../../core/kernel.h"
 #include "compositor.h"
 #include "wallpaper_win.h"
+#include "../apps/terminal_win.h"
 #include "../../drivers/video/font.h"
 #include "theme.h"                 // THEME_ACCENT — the runtime UI accent, for cohesive highlights
 
@@ -117,9 +118,18 @@ int wallpaper_color_from_name(const char* name) {
 static const char* wg_labels[5] = { "Off", "BR", "BL", "TR", "TL" };
 static const int   wg_pos[5]    = {  -1,    0,    1,    2,    3  };
 
-// "Reset to defaults" button (below the Panel row): restores the seeded rice —
+#define WP_TERM_OY   456
+#define WP_TERM_BX   96
+#define WP_TERM_BW   104
+#define WP_TERM_BH   26
+#define WP_TERM_GAP  8
+#define WP_TERM_X(i) (WP_TERM_BX + (i) * (WP_TERM_BW + WP_TERM_GAP))
+static const char* term_labels[2] = { "Classic", "Nightfall" };
+static const char* term_names[2] = { "classic", "nightfall" };
+
+// "Reset to defaults" button (below the Terminal row): restores the seeded rice —
 // Nightfall wallpaper, Morado accent, panel on in the bottom-right — and persists it.
-#define WP_RST_OY  456
+#define WP_RST_OY  490
 #define WP_RST_X   16
 #define WP_RST_W   168
 #define WP_RST_H   26
@@ -349,6 +359,23 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
                          sel ? fb_rgb(255, 255, 255) : fb_rgb(200, 200, 210), fill);
     }
 
+    font_draw_string(cx + 12, cy + WP_TERM_OY + (WP_TERM_BH - FONT_HEIGHT) / 2,
+                     "Terminal:", fb_rgb(230, 230, 240), bg);
+    for (int i = 0; i < 2; i++) {
+        int x = cx + WP_TERM_X(i), y = cy + WP_TERM_OY;
+        int sel = strcmp(terminal_palette_name(), term_names[i]) == 0;
+        uint32_t fill = sel ? THEME_ACCENT : fb_rgb(48, 48, 58);
+        uint32_t fr = sel ? fb_rgb(255, 255, 255) : fb_rgb(80, 80, 92);
+        fb_fill_rect(x, y, WP_TERM_BW, WP_TERM_BH, fill);
+        fb_fill_rect(x, y, WP_TERM_BW, 1, fr);
+        fb_fill_rect(x, y + WP_TERM_BH - 1, WP_TERM_BW, 1, fr);
+        fb_fill_rect(x, y, 1, WP_TERM_BH, fr);
+        fb_fill_rect(x + WP_TERM_BW - 1, y, 1, WP_TERM_BH, fr);
+        int nlen = (int)strlen(term_labels[i]) * FONT_WIDTH;
+        font_draw_string(x + (WP_TERM_BW - nlen) / 2, y + (WP_TERM_BH - FONT_HEIGHT) / 2,
+                         term_labels[i], sel ? fb_rgb(255, 255, 255) : fb_rgb(200, 200, 210), fill);
+    }
+
     // --- Reset button: one click back to the seeded defaults ------------------
     {
         int x = cx + WP_RST_X, y = cy + WP_RST_OY;
@@ -366,7 +393,6 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
 }
 
 void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
-    (void)btn;
     int cx = win->x, cy = win->y + TITLE_H;   // content origin (matches draw)
 
     // Style grid hit-test (4 per row, 2 rows).
@@ -402,6 +428,15 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
             if (wg_pos[i] < 0) g_widget_on = 0;
             else { g_widget_on = 1; g_widget_pos = wg_pos[i]; }
             save_nyx_config();                // persist; the compositor repaints on this click
+            return;
+        }
+    }
+
+    if (btn == 1) for (int i = 0; i < 2; i++) {
+        int x = cx + WP_TERM_X(i), y = cy + WP_TERM_OY;
+        if (mx >= x && mx < x + WP_TERM_BW && my >= y && my < y + WP_TERM_BH) {
+            terminal_set_palette(term_names[i]);
+            save_nyx_config();
             return;
         }
     }

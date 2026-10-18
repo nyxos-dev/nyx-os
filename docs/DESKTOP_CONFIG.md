@@ -22,6 +22,18 @@ and saves that complete result for the current user.
 
 ## Terminal palette
 
+From development version 6.5.207, open the desktop context menu's **Wallpaper**
+panel and choose **Classic** or **Nightfall** in its **Terminal** row. The active
+choice is highlighted. A left click updates open terminals and saves through the
+existing per-user configuration path. The panel retains its 400×520 content size;
+the Reset button moves below the new row and still restores all desktop defaults.
+Other wallpaper, accent and panel choices remain unchanged when selecting a palette.
+
+If saving fails, the live palette still changes and the existing failure notice
+appears. Clicking the selected choice again retries saving. Disk, RAM-only and
+failure notices retain their existing meanings; this adds no new configuration
+key or output-rendering effects.
+
 Set `terminal_palette = nightfall` in your home `nyx.conf`, then log out and
 back in to load it. This solid dark palette changes Erebus's 16 display colours,
 canvas, input line and cursor together. ANSI foreground/background indices,
@@ -64,6 +76,20 @@ and compares it with the serialized settings before announcing success. Mounted
 readback uses the filesystem callbacks rather than a cached VFS file handle.
 
 ## Verification and limits
+
+Development version 6.5.207 adds 234 host configuration checks covering the
+picker's drawing bounds, translated click boundaries, both choices, failed-save
+retry and existing account/reset contracts. The 229 ASan/UBSan terminal-renderer
+checks still pass. GCC 14 builds without warnings; QEMU passes 229 kernel tests
+and reaches login with four CPUs.
+
+A separate one-CPU GUI trial confirms both buttons and Reset fit the panel,
+selection recolours an already-open terminal, commands and window dragging work,
+and the selected key preserves the other user preferences on an EXT2 disk.
+A cold boot restores Nightfall. Reset restores Classic and the desktop defaults;
+the extracted file and a further cold boot confirm that result. Failure injection,
+RAM-only notifications and account isolation in this increment are host evidence.
+These checks add no performance, soak or physical-hardware qualification.
 
 `python3 tools/test_desktop_config.py` runs the actual configuration and picker
 functions with a host VFS that injects write, read, size, directory and missing

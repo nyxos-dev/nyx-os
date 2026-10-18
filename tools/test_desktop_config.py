@@ -83,6 +83,21 @@ mount_entry_t* vfs_find_mount(const char* path) {
     return !strncmp(path, "/mnt/", 5) ? &mount : NULL;
 }
 static int checks;
+static uint32_t draw_x, draw_y, palette_fills[2];
+static int outside_draw, palette_labels;
+void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    if (x < draw_x || y < draw_y || x + w > draw_x + 400 || y + h > draw_y + 520) outside_draw++;
+    for (int i = 0; i < 2; i++)
+        if (x == draw_x + WP_TERM_X(i) && y == draw_y + WP_TERM_OY && w == WP_TERM_BW && h == WP_TERM_BH)
+            palette_fills[i] = color;
+}
+void font_draw_string(uint32_t x, uint32_t y, const char* text, uint32_t fg, uint32_t bg) {
+    (void)fg; (void)bg;
+    if (x < draw_x || y < draw_y || x + strlen(text) * FONT_WIDTH > draw_x + 400 || y + FONT_HEIGHT > draw_y + 520)
+        outside_draw++;
+    if (y == draw_y + WP_TERM_OY + (WP_TERM_BH - FONT_HEIGHT) / 2 &&
+        (!strcmp(text, "Classic") || !strcmp(text, "Nightfall"))) palette_labels++;
+}
 #define CHECK(expr) do { checks++; if (!(expr)) { puts("FAIL: " #expr); return 1; } } while (0)
 static const char* message(void) { return toasts[0].body; }
 static void clear_message(void) { for (int i = 0; i < NOTIFY_MAX; i++) toasts[i].used = 0; }
@@ -125,6 +140,40 @@ int main(void) {
     strcpy(g_login_home, "/mnt/home/alice"); apply_nyx_config();
     CHECK(wallpaper_base_color() == 0x123456 && !g_widget_on && g_panel_tint == 42);
     window_t win = { .x = 0, .y = 0 };
+    win.x = 37; win.y = 29;
+    int tx = win.x + WP_TERM_X(1), ty = win.y + TITLE_H + WP_TERM_OY;
+    int saved_writes = writes;
+    wallpaper_win_click(&win, tx, ty, 2);
+    CHECK(writes == saved_writes && !strcmp(terminal_palette_name(), "classic"));
+    const int missed[][2] = {{-1,0},{WP_TERM_BW,0},{0,-1},{0,WP_TERM_BH}};
+    for (int i = 0; i < 4; i++) {
+        wallpaper_win_click(&win, tx + missed[i][0], ty + missed[i][1], 1);
+        CHECK(writes == saved_writes && !strcmp(terminal_palette_name(), "classic"));
+    }
+    clear_message(); wallpaper_win_click(&win, tx, ty, 1);
+    CHECK(writes == saved_writes + 1 && !strcmp(terminal_palette_name(), "nightfall"));
+    CHECK(strstr(alice, "terminal_palette = nightfall\n") && !strcmp(message(), "Saved in your home on disk"));
+    CHECK(wallpaper_base_color() == 0x123456 && !g_widget_on && g_gaps == 8 && g_panel_tint == 42);
+    draw_x = win.x; draw_y = win.y + TITLE_H;
+    wallpaper_win_draw(&win, draw_x, draw_y, 400, 520);
+    CHECK(!outside_draw && palette_labels == 2 && palette_fills[1] == THEME_ACCENT && palette_fills[0] == fb_rgb(48,48,58));
+    reset_nyx_config(); apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "nightfall"));
+    wallpaper_win_click(&win, win.x + WP_TERM_X(0) + WP_TERM_BW - 1, ty + WP_TERM_BH - 1, 1);
+    CHECK(!strcmp(terminal_palette_name(), "classic") && strstr(alice, "terminal_palette = classic\n"));
+    palette_labels = 0;
+    wallpaper_win_draw(&win, draw_x, draw_y, 400, 520);
+    CHECK(!outside_draw && palette_labels == 2 && palette_fills[0] == THEME_ACCENT && palette_fills[1] == fb_rgb(48,48,58));
+    fault = 1; clear_message(); wallpaper_win_click(&win, tx, ty, 1);
+    CHECK(!strcmp(terminal_palette_name(), "nightfall") && strstr(message(), "failed"));
+    CHECK(strstr(alice, "terminal_palette = classic\n"));
+    fault = 0; clear_message(); wallpaper_win_click(&win, tx, ty, 1);
+    CHECK(strstr(alice, "terminal_palette = nightfall\n") && !strcmp(message(), "Saved in your home on disk"));
+    strcpy(g_login_home, "/home/alice"); clear_message();
+    wallpaper_win_click(&win, win.x + WP_TERM_X(0), ty, 1);
+    CHECK(!strcmp(terminal_palette_name(), "classic") && !strcmp(message(), "Saved in RAM; lost on reboot"));
+    strcpy(g_login_home, "/mnt/home/alice");
+    win.x = 0; win.y = 0;
     wallpaper_win_click(&win, WP_OX + WP_SW + WP_GAP + 1, TITLE_H + WP_OY + 1, 1);
     CHECK(!wallpaper_is_rgb_override() && wallpaper_base_color() == wallpaper_color_rgb(1));
     CHECK(strstr(alice, "accent = Azul\n"));
