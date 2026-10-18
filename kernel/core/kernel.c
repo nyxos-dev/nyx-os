@@ -305,6 +305,7 @@ extern int editor_goto_selftest(void);      // gui/apps/editor_win.c — Ctrl+G 
 extern int editor_selection_selftest(void);
 extern int oneiros_text_selftest(void);
 extern int oneiros_model_selftest(void);
+extern int oneiros_inference_selftest(void);
 extern int mouse_bounds_selftest(void);
 extern int stdin_line_selftest(void);
 extern int kbd_control_selftest(void);
@@ -11342,6 +11343,7 @@ static void run_selftests(void) {
         {"editor-select", editor_selection_selftest},
         {"oneiros-text", oneiros_text_selftest},
         {"oneiros-model", oneiros_model_selftest},
+        {"oneiros-inference", oneiros_inference_selftest},
         {"mouse-bounds", mouse_bounds_selftest},
         {"win-focus",    window_focus_selftest}, {"selene-start", selene_start_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},

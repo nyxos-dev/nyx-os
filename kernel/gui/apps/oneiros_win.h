@@ -25,5 +25,6 @@ int  oneiros_win_tick(window_t* win);
 void oneiros_win_close(window_t* win);
 int  oneiros_text_selftest(void);
 int  oneiros_model_selftest(void);
+int  oneiros_inference_selftest(void);
 
 #endif /* ONEIROS_WIN_H_INCLUDED */

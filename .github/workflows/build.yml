@@ -57,6 +57,9 @@ jobs:
       - name: Test Oneiros CLI text output and model validation
         run: python3 tools/test_oneiros_cli.py
 
+      - name: Test Oneiros numerical inference and recovery
+        run: python3 tools/test_oneiros_inference.py
+
       - name: Test Oneiros desktop model loading
         run: python3 tools/test_oneiros_model.py
 

@@ -55,11 +55,13 @@ typedef struct {
 } Scratch;
 
 /* ---- own float math as inline macros (no float returns; kernel is -mno-sse) --- */
+#define K_FINITE(X) __extension__({ union { float f; uint32_t u; } _v; _v.f=(X); (_v.u&0x7F800000u)!=0x7F800000u; })
+
 #define K_SQRTF(X) __extension__({ float _x=(X); float _g; \
     if (_x<=0.0f) _g=0.0f; else { _g=_x; for (int _i=0;_i<24;_i++) _g=0.5f*(_g+_x/_g); } _g; })
 
 #define K_EXPF(X) __extension__({ float _x=(X); float _e; \
-    if (_x>88.0f) _e=3.0e38f; else if (_x<-88.0f) _e=0.0f; else { \
+    if (_x!=_x) _e=_x; else if (_x>88.0f) _e=3.0e38f; else if (_x<-88.0f) _e=0.0f; else { \
         int _n=(int)(_x*1.44269504f+(_x>=0?0.5f:-0.5f)); float _r=_x-(float)_n*0.6931471805f; \
         float _p=1.0f+_r*(1.0f+_r*(0.5f+_r*(0.16666667f+_r*(0.041666668f+_r*0.008333334f)))); \
         union { float f; int32_t i; } _u; _u.i=(int32_t)((_n+127)<<23); _e=_p*_u.f; } _e; })
@@ -76,7 +78,8 @@ static void rms(const float *x, const float *g, float *y){
 
 /* one forward pass over the B-token context -> s->probs (temperature-softmaxed,
  * temperature read from s->temp). softmax(logits/T) is exactly temperature sampling. */
-static void forward(const Params *p, Scratch *s, const unsigned char *tok){
+static int forward(const Params *p, Scratch *s, const unsigned char *tok){
+    if (!(s->temp>0.0f) || !K_FINITE(s->temp)) return 0;
     const int L=OG_B-1; const float scale=1.0f/K_SQRTF((float)OG_DH);
     for (int t=0;t<OG_B;t++) for (int d=0;d<OG_D;d++) s->xt[t][d]=p->C[(int)tok[t]*OG_D+d]+p->P[t*OG_D+d];
     for (int t=0;t<OG_B;t++) rms(s->xt[t], p->ga, s->xn[t]);
@@ -85,8 +88,9 @@ static void forward(const Params *p, Scratch *s, const unsigned char *tok){
         for (int b=0;b<OG_D;b++){ ks+=p->Wk[a*OG_D+b]*s->xn[t][b]; vs+=p->Wv[a*OG_D+b]*s->xn[t][b]; }
         s->k[t][a]=ks; s->v[t][a]=vs; }
     for (int h=0;h<OG_NH;h++){ int o=h*OG_DH; float mx=-1e30f;
-        for (int t=0;t<OG_B;t++){ float acc=0; for (int i=0;i<OG_DH;i++) acc+=s->q[o+i]*s->k[t][o+i]; acc*=scale; s->asc[t]=acc; if (acc>mx) mx=acc; }
+        for (int t=0;t<OG_B;t++){ float acc=0; for (int i=0;i<OG_DH;i++) acc+=s->q[o+i]*s->k[t][o+i]; acc*=scale; if (!K_FINITE(acc)) return 0; s->asc[t]=acc; if (acc>mx) mx=acc; }
         float sum=0; for (int t=0;t<OG_B;t++){ float e=K_EXPF(s->asc[t]-mx); s->att[h][t]=e; sum+=e; }
+        if (!(sum>0.0f) || !K_FINITE(sum)) return 0;
         for (int t=0;t<OG_B;t++) s->att[h][t]/=sum;
         for (int i=0;i<OG_DH;i++){ float c=0; for (int t=0;t<OG_B;t++) c+=s->att[h][t]*s->v[t][o+i]; s->cx[o+i]=c; }
     }
@@ -96,11 +100,35 @@ static void forward(const Params *p, Scratch *s, const unsigned char *tok){
     for (int j=0;j<OG_FF;j++){ float acc=p->bf1[j]; for (int d=0;d<OG_D;d++) acc+=p->Wf1[j*OG_D+d]*s->rn[d]; s->g[j]=acc; }
     for (int d=0;d<OG_D;d++){ float acc=p->bf2[d]; for (int j=0;j<OG_FF;j++){ float r=s->g[j]>0?s->g[j]:0; acc+=p->Wf2[d*OG_FF+j]*r; } s->r2[d]=s->r1[d]+acc; }
     rms(s->r2, p->gh, s->rh);
-    for (int m=0;m<OG_HID;m++){ float z=p->bh[m]; for (int d=0;d<OG_D;d++) z+=p->Wh[m*OG_D+d]*s->rh[d]; s->hid[m]=K_TANHF(z); }
+    for (int m=0;m<OG_HID;m++){ float z=p->bh[m]; for (int d=0;d<OG_D;d++) z+=p->Wh[m*OG_D+d]*s->rh[d]; if (!K_FINITE(z)) return 0; s->hid[m]=K_TANHF(z); }
     float it=1.0f/s->temp, mx=-1e30f;
-    for (int c=0;c<OG_V;c++){ float z=p->bout[c]; for (int m=0;m<OG_HID;m++) z+=p->Wout[c*OG_HID+m]*s->hid[m]; z*=it; s->probs[c]=z; if (z>mx) mx=z; }
+    for (int c=0;c<OG_V;c++){ float z=p->bout[c]; for (int m=0;m<OG_HID;m++) z+=p->Wout[c*OG_HID+m]*s->hid[m]; z*=it; if (!K_FINITE(z)) return 0; s->probs[c]=z; if (z>mx) mx=z; }
     float sm=0; for (int c=0;c<OG_V;c++){ s->probs[c]=K_EXPF(s->probs[c]-mx); sm+=s->probs[c]; }
+    if (!(sm>0.0f) || !K_FINITE(sm)) return 0;
     for (int c=0;c<OG_V;c++) s->probs[c]/=sm;
+    return 1;
+}
+
+int oneiros_inference_selftest(void){
+    Params *p=(Params*)kmalloc(sizeof(Params));
+    Scratch *s=(Scratch*)kmalloc(sizeof(Scratch));
+    if (!p || !s){ kfree(p); kfree(s); return 1; }
+    unsigned char tok[OG_B];
+    memset_asm(tok, 0, sizeof(tok));
+    memset_asm(p, 0, sizeof(*p));
+    s->temp=0.7f;
+    int result=0;
+    if (!forward(p,s,tok)){ result=2; goto done; }
+    for (int i=0;i<OG_V;i++) if (s->probs[i]!=1.0f/OG_V){ result=3; goto done; }
+    const uint32_t bits=0x7F7FFFFFu;
+    for (size_t i=0;i<sizeof(*p);i+=sizeof(bits)) memmove((uint8_t*)p+i,&bits,sizeof(bits));
+    if (forward(p,s,tok)){ result=4; goto done; }
+    memset_asm(p, 0, sizeof(*p));
+    if (!forward(p,s,tok)){ result=5; goto done; }
+    s->temp=0;
+    if (forward(p,s,tok)) result=6;
+done:
+    kfree(s); kfree(p); return result;
 }
 
 /* ---- model load from the initramfs ----------------------------------------- */
@@ -187,7 +215,7 @@ struct oneiros_win {
     int      out_len;
     int      copied_len;
     unsigned char ctx[OG_B];
-    int      generating, want, done;
+    int      generating, want, done, numeric_error;
     float    temp;
     uint64_t rng;
 };
@@ -270,13 +298,15 @@ static void ow_start(oneiros_win_t *o){
     memmove(o->out, o->seed, n); o->out[n]=0; o->out_len=n;
     o->copied_len=0;
     for (int t=0;t<OG_B;t++){ int idx=o->seed_len-OG_B+t; o->ctx[t]=(idx>=0)?(unsigned char)o->seed[idx]:(unsigned char)' '; }
-    o->want=OW_GEN_N; o->done=0; o->generating=1;
+    o->want=OW_GEN_N; o->done=0; o->generating=1; o->numeric_error=0;
     o->rng ^= (uint64_t)get_ticks()*0x2545F4914F6CDD1DULL + 0x9E3779B97F4A7C15ULL;
 }
 
 static void ow_gen_one(oneiros_win_t *o){
     o->sc->temp=o->temp;
-    forward(o->model, o->sc, o->ctx);            /* s->probs = normalized (temperature applied) */
+    if (!forward(o->model, o->sc, o->ctx)){
+        o->numeric_error=1; o->generating=0; return;
+    }
     int nx=ow_sample_text(o->sc->probs, ow_rnd(o));
     if (o->out_len<OW_OUT_MAX-1){ o->out[o->out_len++]=(char)nx; o->out[o->out_len]=0; }
     memmove(o->ctx, o->ctx+1, OG_B-1); o->ctx[OG_B-1]=(unsigned char)nx;
@@ -286,7 +316,7 @@ static void ow_gen_one(oneiros_win_t *o){
 int oneiros_win_tick(window_t *win){
     oneiros_win_t *o=(oneiros_win_t*)win->reserved;
     if (!o || !o->generating) return 0;
-    for (int i=0;i<OW_STEPS && o->done<o->want;i++) ow_gen_one(o);
+    for (int i=0;i<OW_STEPS && o->generating && o->done<o->want;i++) ow_gen_one(o);
     if (o->done>=o->want) o->generating=0;
     return 1;
 }
@@ -407,6 +437,7 @@ void oneiros_win_draw(window_t *win, int cx, int cy, uint32_t cw, uint32_t ch){
     {
         char st[64];
         if (!o->loaded)          snprintf(st, sizeof(st), "no model");
+        else if (o->numeric_error) snprintf(st, sizeof(st), "numeric error; try another model");
         else if (o->generating && o->copied_len)
                                 snprintf(st, sizeof(st), "dreaming %d/%d; copied %d chars", o->done, o->want, o->copied_len);
         else if (o->generating)  snprintf(st, sizeof(st), "dreaming  %d/%d", o->done, o->want);
@@ -424,7 +455,7 @@ void oneiros_win_click(window_t *win, int mx, int my, int btn){
     Layout L; ow_layout(win->x, WIN_CLIENT_Y(win), (int)win->w, (int)win->h, &L);
     if (ow_hit(L.dream,mx,my))  { ow_start(o); return; }
     if (ow_hit(L.stop,mx,my))   { o->generating=0; return; }
-    if (ow_hit(L.clear,mx,my))  { o->out_len=0; o->out[0]=0; o->generating=0; o->done=0; o->copied_len=0; return; }
+    if (ow_hit(L.clear,mx,my))  { o->out_len=0; o->out[0]=0; o->generating=0; o->done=0; o->copied_len=0; o->numeric_error=0; return; }
     if (ow_hit(L.copy,mx,my))   {
         if (o->out_len>0){ clipboard_set(o->out, (uint32_t)o->out_len); o->copied_len=o->out_len; }
         return;

@@ -59,6 +59,7 @@ typedef struct {
 
 /* own float math (no libm) */
 static float k_expf(float x){
+    if (x!=x) return x;
     if (x>88.0f) return 3.0e38f;
     if (x<-88.0f) return 0.0f;
     const float LOG2E=1.44269504f, LN2=0.6931471805f;
@@ -112,7 +113,7 @@ static void rms(const float *x, const float *g, float *y){
     for(int i=0;i<D;i++) y[i]=g[i]*x[i]*irms;
 }
 
-static void forward(const Params *p, const unsigned char *tok, float *probs){
+static int forward(const Params *p, const unsigned char *tok, float *probs){
     const int L=B-1; const float scale=1.0f/k_sqrtf((float)DH);
     float xt[B][D], xn[B][D], q[D], k[B][D], v[B][D], att[NH][B];
     float ctx[D], attn[D], r1[D], rn[D], g[FF], r2[D], rh[D], hid[HID];
@@ -123,8 +124,9 @@ static void forward(const Params *p, const unsigned char *tok, float *probs){
         for (int b=0;b<D;b++){ ks+=p->Wk[a*D+b]*xn[t][b]; vs+=p->Wv[a*D+b]*xn[t][b]; }
         k[t][a]=ks; v[t][a]=vs; }
     for (int h=0;h<NH;h++){ int o=h*DH; float sc[B],mx=-1e30f;
-        for (int t=0;t<B;t++){ float s=0; for(int i=0;i<DH;i++) s+=q[o+i]*k[t][o+i]; s*=scale; sc[t]=s; if(s>mx)mx=s; }
+        for (int t=0;t<B;t++){ float s=0; for(int i=0;i<DH;i++) s+=q[o+i]*k[t][o+i]; s*=scale; if (!finite_float(s)) return 0; sc[t]=s; if(s>mx)mx=s; }
         float sum=0; for(int t=0;t<B;t++){ float e=k_expf(sc[t]-mx); att[h][t]=e; sum+=e; }
+        if (!(sum>0.0f) || !finite_float(sum)) return 0;
         for (int t=0;t<B;t++) att[h][t]/=sum;
         for (int i=0;i<DH;i++){ float c=0; for(int t=0;t<B;t++) c+=att[h][t]*v[t][o+i]; ctx[o+i]=c; }
     }
@@ -134,11 +136,13 @@ static void forward(const Params *p, const unsigned char *tok, float *probs){
     for (int j=0;j<FF;j++){ float s=p->bf1[j]; for(int d=0;d<D;d++) s+=p->Wf1[j*D+d]*rn[d]; g[j]=s; }
     for (int d=0;d<D;d++){ float s=p->bf2[d]; for(int j=0;j<FF;j++){ float r=g[j]>0?g[j]:0; s+=p->Wf2[d*FF+j]*r; } r2[d]=r1[d]+s; }
     rms(r2, p->gh, rh);
-    for (int m=0;m<HID;m++){ float z=p->bh[m]; for(int d=0;d<D;d++) z+=p->Wh[m*D+d]*rh[d]; hid[m]=k_tanhf(z); }
+    for (int m=0;m<HID;m++){ float z=p->bh[m]; for(int d=0;d<D;d++) z+=p->Wh[m*D+d]*rh[d]; if (!finite_float(z)) return 0; hid[m]=k_tanhf(z); }
     float mx=-1e30f;
-    for (int c=0;c<V;c++){ float z=p->bout[c]; for(int m=0;m<HID;m++) z+=p->Wout[c*HID+m]*hid[m]; probs[c]=z; if(z>mx)mx=z; }
+    for (int c=0;c<V;c++){ float z=p->bout[c]; for(int m=0;m<HID;m++) z+=p->Wout[c*HID+m]*hid[m]; if (!finite_float(z)) return 0; probs[c]=z; if(z>mx)mx=z; }
     float s=0; for(int c=0;c<V;c++){ probs[c]=k_expf(probs[c]-mx); s+=probs[c]; }
+    if (!(s>0.0f) || !finite_float(s)) return 0;
     for (int c=0;c<V;c++) probs[c]/=s;
+    return 1;
 }
 
 static int load_ckpt(const char *path, Params *p){
@@ -188,7 +192,10 @@ int main(int argc, char **argv){
     rng ^= (u64)time(NULL)*0x2545F4914F6CDD1DULL;    /* host: wall-clock seed */
 #endif
     for (int i=0;i<nout;i++){
-        forward(p,ctx,probs);
+        if (!forward(p,ctx,probs)){
+            fprintf(stderr,"nyxgen: numerical inference failure\n");
+            free(probs); free(p); return 1;
+        }
         float mx=-1e30f; for(int c=0;c<V;c++){ float lp=k_logf(probs[c]+1e-12f); probs[c]=lp; if(lp>mx)mx=lp; }
         /* Subtract before dividing: tiny positive temperatures may underflow a
          * non-max weight, but cannot turn the maximum into infinity-infinity. */

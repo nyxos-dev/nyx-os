@@ -139,6 +139,45 @@ The immediate data and desktop priorities are:
     feedback. [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) documents per-user persistence,
     failure notices and Reset behaviour.
 
+### Oneiros numerical failure handling (6.5.208)
+
+The desktop and `nyxgen` check attention scores, hidden activations, output logits
+and normalization totals before consuming their results. Non-finite scores or
+invalid totals stop generation. The custom exponential also avoids converting
+NaN to an integer. Finite checkpoint validation remains a separate format gate.
+
+The window shows `numeric error; try another model` and preserves the already
+produced text. Clear removes the error and output; Dream retries with the loaded
+model. To use another checkpoint, replace the model file and reopen the window.
+`nyxgen` writes `numerical inference failure` to stderr, frees its buffers and
+exits with code 1. It may already have printed the seed or a valid prefix, so a
+redirected output must not be treated as complete after that failure.
+
+`python3 tools/test_oneiros_inference.py` runs 19 host scenarios under ASan/UBSan:
+normal distributions, finite extreme models, output overflow, GUI stop/clear/retry,
+prefix preservation and CLI failure/cleanup. With `--compare-ref 7c02874`, six
+additional comparisons show the previous undefined conversion and byte-identical
+valid probability vectors for the shipped and zero models. Existing CLI and
+20 loader cases pass. The kernel uses the no-SSE ABI and heap-backed scratch;
+its new `oneiros-inference` self-test covers refusal and recovery. The build has
+zero GCC 14 warnings, passes 230 kernel tests and reaches four-CPU login.
+
+The target trial compiles and installs `nyxgen` through `xbm` inside NyxOS.
+The distributed checkpoint produces text and exit 0; the finite extreme model
+produces the numerical error and exit 1; restoring the original checkpoint
+returns to successful generation. In the GUI, the same extreme model shows the
+error without appending an invalid token; Clear removes it and Dream retries.
+Reopening the window after restoring the distributed checkpoint resumes text
+generation and completes its 240-token run; window dragging remains responsive.
+The initial automated reopening typed into the terminal instead of
+launching the app; it was repeated through the visible Start menu.
+This trial uses QEMU with four CPUs, 5 GiB configured RAM and a private EXT2 disk;
+the existing allocator limits still apply.
+
+This is bounded failure handling, not a proof of accurate inference for every
+finite model. There is no general model-quality, long-running performance or
+hardware qualification. Floating-point exception traps remain outside this work.
+
 ### Visual direction and saved personalization
 
 The requested visual direction is a customized desktop in the style of the supplied
@@ -244,8 +283,9 @@ driver contract. Expanding the device list must not weaken the VM regression gat
 - TLS certificate verification currently defaults to non-strict mode. Loading an
   HTTPS page therefore does not establish authenticated transport under a daily-use
   trust policy; stricter behavior needs compatibility and negative-certificate tests.
-- Rejecting NaN/Inf checkpoints is not a proof that every finite Oneiros checkpoint
-  produces numerically stable inference, nor that its generated text is correct code.
+- Development 6.5.208 rejects invalid Oneiros inference scores and normalization
+  totals explicitly. This is not a proof that every finite checkpoint is numerically
+  stable, nor that generated text is correct code; see the bounded checks above.
 
 ## How work is accepted
 
