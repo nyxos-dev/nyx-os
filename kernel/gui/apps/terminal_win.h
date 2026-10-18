@@ -69,6 +69,8 @@ typedef struct {
 #define TERM_DEFAULT_COLOR (VGA_LIGHT_GREY | (VGA_BLACK << 4))   // light-grey on black
 
 terminal_win_t* terminal_create_ctx(void);
+void terminal_set_palette(const char* name);
+const char* terminal_palette_name(void);
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void terminal_win_key(window_t* win, int key);
 int terminal_capture_putchar(int c);

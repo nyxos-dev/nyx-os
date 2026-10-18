@@ -13,11 +13,44 @@ Changes take effect immediately even if saving fails.
 
 Supported keys remain `wallpaper`, `accent`, `scheme`, `widget`, `widget_pos`,
 `clock`, `icons`, `gaps`, `border`, `border_inactive`, `panel_tint`, `rounding`,
-`shadow`, `title_align` and `wallpaper_dim`. Saving writes all resolved settings;
+`shadow`, `title_align`, `wallpaper_dim` and (from 6.5.202) `terminal_palette`.
+Saving writes all resolved settings;
 the `scheme` alias becomes explicit wallpaper/accent values. Unknown keys and
 comments are not preserved. Named palette choices clear an earlier hexadecimal
 accent override. Reset restores every supported setting to its compiled default
 and saves that complete result for the current user.
+
+## Terminal palette
+
+Set `terminal_palette = nightfall` in your home `nyx.conf`, then log out and
+back in to load it. This solid dark palette changes Erebus's 16 display colours,
+canvas, input line and cursor together. ANSI foreground/background indices,
+reverse video and stored scrollback attributes retain their meanings. The
+default `terminal_palette = classic` preserves the previous VGA colours and
+green input line. Unknown names leave the preceding default/system setting
+unchanged. Both names are case-sensitive.
+
+The Wallpaper picker preserves this setting when saving other changes; Reset
+sets it to `classic`. The palette is shared by GUI terminals in the current
+desktop session, not the serial console or separate TTY framebuffer. It adds
+no transparency, blur, background allocation or animation. Choosing arbitrary
+ANSI foreground/background pairs can still produce low-contrast text; this
+setting is not a per-application accessibility override.
+
+`python3 tools/test_terminal_palette.py` exercises the actual ANSI state and
+renderer against a recording host framebuffer under ASan/UBSan. It checks both
+palettes, all 16 foreground/background selections, canvas and cursor inversion;
+the desktop-config suite checks load/save/reset and account isolation.
+
+For 6.5.202, 229 renderer checks and 218 configuration checks passed on the
+host. The warning-free kernel passed 229 KATs and a four-CPU login. A one-CPU,
+512 MiB QEMU desktop with a private EXT2 disk showed `nightfall`, ran terminal
+commands and moved the terminal window. Saving a different wallpaper accent
+preserved the palette key; disk extraction and a cold boot confirmed it. Reset
+changed the open terminal to `classic`, saved that value and retained it through
+another cold boot. Native `ls.elf` directory colours also rendered in both palettes.
+Account isolation and the complete ANSI colour matrix are host-test evidence;
+these bounded trials do not establish a performance or long-running guarantee.
 
 Numeric values retain their existing decimal-prefix interpretation and caps:
 gaps 64 pixels, panel tint 100 percent, rounding 14 pixels and wallpaper dimming

@@ -112,6 +112,10 @@ The immediate data and desktop priorities are:
    completed; failed or zero-progress writes terminate with error. The contract
    and evidence are in [selfhost/README.md](../lang/selfhost/README.md). Accepted
    output prefixes are not rolled back, and redirected files remain non-atomic.
+8. Development version 6.5.202 adds the optional `nightfall` Erebus palette through
+   the existing per-user configuration. ANSI cell attributes retain their meanings;
+   saving other desktop settings preserves the choice and Reset restores `classic`.
+   See [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) for configuration and verification.
 
 ### Visual direction and saved personalization
 

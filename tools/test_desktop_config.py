@@ -87,6 +87,24 @@ static int checks;
 static const char* message(void) { return toasts[0].body; }
 static void clear_message(void) { for (int i = 0; i < NOTIFY_MAX; i++) toasts[i].used = 0; }
 int main(void) {
+    strcpy(system_config, "terminal_palette = nightfall\n");
+    apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "nightfall"));
+    strcpy(alice, "terminal_palette = classic\n"); apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "classic"));
+    strcpy(alice, "terminal_palette = unknown\n"); apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "nightfall"));
+    clear_message(); save_nyx_config();
+    CHECK(strstr(alice, "terminal_palette = nightfall\n"));
+    reset_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "classic"));
+    apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "nightfall"));
+    system_config[0] = 0;
+    strcpy(g_login_home, "/mnt/home/bob"); apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "classic"));
+    strcpy(g_login_home, "/mnt/home/alice"); apply_nyx_config();
+    CHECK(!strcmp(terminal_palette_name(), "nightfall"));
     strcpy(system_config, "wallpaper = Plano\naccent = Azul\ngaps = 8\n");
     strcpy(alice, "accent = #123456\nwidget = off\nclock = 12h\nicons = on\nrounding = 0\nshadow = off\ntitle_align = center\npanel_tint = 42\nwallpaper_dim = 30\nborder = Rojo\nborder_inactive = Verde\n");
     apply_nyx_config();
@@ -115,6 +133,8 @@ int main(void) {
     CHECK(!wallpaper_is_rgb_override() && wallpaper_style() == WP_STYLE_NIGHTFALL);
     CHECK(wallpaper_base_color() == wallpaper_color_rgb(0) && g_gaps == 0 && !g_border_color);
     CHECK(g_widget_on && g_corner_radius == WIN_RADIUS && g_shadows && !g_panel_tint && !g_title_center && !g_wallpaper_dim);
+    CHECK(!strcmp(terminal_palette_name(), "classic"));
+    CHECK(strstr(alice, "terminal_palette = classic\n"));
     for (int i = 1; i <= 10; i++) {
         fault = i; clear_message(); save_nyx_config();
         CHECK(strstr(message(), "failed") != NULL);
@@ -171,7 +191,8 @@ def main():
         harness.write_text(HARNESS.replace('@ROOT@', ROOT.as_posix()).replace('@COMPOSITOR@', compositor.as_posix()).replace('@PARSER@', source[start:end]))
         command = ['gcc', '-std=gnu99', '-O0', '-ffreestanding', '-Wall', '-Wextra', '-Werror',
                    '-ffunction-sections', '-fdata-sections', '-no-pie', '-Wl,--gc-sections',
-                   '-I', str(ROOT / 'kernel/gui/core'), str(harness), '-o', str(directory / 'test')]
+                   '-I', str(ROOT / 'kernel/gui/core'), str(harness),
+                   str(ROOT / 'kernel/gui/apps/terminal_win.c'), '-o', str(directory / 'test')]
         built = subprocess.run(command, capture_output=True, text=True, timeout=60)
         if built.returncode:
             raise RuntimeError(built.stdout + built.stderr)

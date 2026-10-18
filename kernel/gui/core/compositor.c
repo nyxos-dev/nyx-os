@@ -4146,6 +4146,7 @@ int scheme_selftest(void) {
 }
 
 void reset_nyx_config(void) {
+    terminal_set_palette("classic");
     wallpaper_set_style(WP_STYLE_NIGHTFALL);
     wallpaper_set_color(0);
     theme_set_accent(wallpaper_base_color());
@@ -4196,6 +4197,8 @@ static int read_nyx_config(const char* path, char* buf, int cap) {
 
 static void apply_config_text(const char* buf) {
     char val[64];
+    if (nyxconf_get(buf, "terminal_palette", val, sizeof val))
+        terminal_set_palette(val);
     if (nyxconf_get(buf, "wallpaper", val, sizeof val)) {
         int s = wallpaper_style_from_name(val);
         if (s >= 0) wallpaper_set_style(s);
@@ -4314,7 +4317,8 @@ void save_nyx_config(void) {
         "rounding = %d\n"
         "shadow = %s\n"
         "title_align = %s\n"
-        "wallpaper_dim = %d\n",
+        "wallpaper_dim = %d\n"
+        "terminal_palette = %s\n",
         wallpaper_style_name(wallpaper_style()),
         acc,
         g_widget_on ? "on" : "off",
@@ -4327,7 +4331,7 @@ void save_nyx_config(void) {
         g_corner_radius,
         g_shadows ? "on" : "off",
         g_title_center ? "center" : "left",
-        g_wallpaper_dim);
+        g_wallpaper_dim, terminal_palette_name());
     char path[96], check[640];
     if (n <= 0 || n >= (int)sizeof buf || !user_config_path(path, sizeof path)) {
         notify_push("Desktop settings", "Could not save your settings");

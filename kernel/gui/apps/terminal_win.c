@@ -125,8 +125,30 @@ memset_asm(term->lines[idx], ' ', TERM_COLS);
     if (term->scroll_offset > 0) term->scroll_offset++;
 }
 
-// A VGA color index (0-15) -> RGB, for both foreground and background cells.
+static int terminal_nightfall;
+
+void terminal_set_palette(const char* name) {
+    if (!name) return;
+    if (!strcmp(name, "classic")) terminal_nightfall = 0;
+    else if (!strcmp(name, "nightfall")) terminal_nightfall = 1;
+}
+
+const char* terminal_palette_name(void) {
+    return terminal_nightfall ? "nightfall" : "classic";
+}
+
+// Preserve VGA/ANSI indices in stored cells; only their displayed RGB changes.
 static uint32_t vga_to_rgb(uint8_t idx) {
+    static const uint8_t nightfall[16][3] = {
+        {24, 24, 37}, {137, 180, 250}, {166, 227, 161}, {148, 226, 213},
+        {243, 139, 168}, {203, 166, 247}, {249, 226, 175}, {205, 214, 244},
+        {108, 112, 134}, {180, 208, 255}, {195, 245, 190}, {180, 245, 235},
+        {255, 177, 195}, {226, 199, 255}, {255, 240, 205}, {239, 241, 255}
+    };
+    if (terminal_nightfall) {
+        const uint8_t* rgb = nightfall[idx & 0x0F];
+        return fb_rgb(rgb[0], rgb[1], rgb[2]);
+    }
     switch (idx & 0x0F) {
         case 0:  return fb_rgb(0,0,0);
         case 1:  return fb_rgb(0,0,170);
@@ -358,7 +380,9 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
 
-    fb_fill_rect(cx, cy, cw, ch, fb_rgb(0,0,0));
+    uint32_t canvas = vga_to_rgb(VGA_BLACK);
+    uint32_t input_fg = terminal_nightfall ? vga_to_rgb(VGA_LIGHT_GREEN) : fb_rgb(0,255,0);
+    fb_fill_rect(cx, cy, cw, ch, canvas);
 
     uint32_t char_w = FONT_WIDTH;
     uint32_t char_h = FONT_HEIGHT;
@@ -413,8 +437,8 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
         full_line[fl] = '\0';
 
         for (int c = 0; c < cols && full_line[c]; c++) {
-            uint32_t fg = (c == cursor_draw) ? fb_rgb(0,0,0) : fb_rgb(0,255,0);
-            uint32_t bg = (c == cursor_draw) ? fb_rgb(0,255,0) : fb_rgb(0,0,0);
+            uint32_t fg = (c == cursor_draw) ? canvas : input_fg;
+            uint32_t bg = (c == cursor_draw) ? input_fg : canvas;
             font_draw_char(cx + c * char_w, y, full_line[c], fg, bg);
         }
     }
