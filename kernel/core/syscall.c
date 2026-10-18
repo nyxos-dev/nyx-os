@@ -77,6 +77,26 @@ static int user_str_ok(uint64_t ptr) {
     return ptr >= USER_SPACE_MIN && ptr < USER_SPACE_END;
 }
 
+static int64_t syscall_seek_position(uint32_t base, int64_t offset) {
+    // Check before addition: offset may be INT64_MIN/MAX, while fd positions are u32.
+    const int64_t max_position = (uint32_t)-1;
+    if (offset < -(int64_t)base || offset > max_position - base) return -1;
+    return (int64_t)base + offset;
+}
+
+int syscall_seek_selftest(void) {
+    if (syscall_seek_position(0, 0) != 0) return 1;
+    if (syscall_seek_position(0, 0xffffffffLL) != 0xffffffffLL) return 2;
+    if (syscall_seek_position(0, 0x100000000LL) != -1) return 3;
+    if (syscall_seek_position(0xffffffffu, 1) != -1) return 4;
+    if (syscall_seek_position(0xffffffffu, -0xffffffffLL) != 0) return 5;
+    if (syscall_seek_position(17, -18) != -1) return 6;
+    if (syscall_seek_position(17, -17) != 0) return 7;
+    if (syscall_seek_position(17, 0x7fffffffffffffffLL) != -1) return 8;
+    if (syscall_seek_position(17, -0x7fffffffffffffffLL - 1) != -1) return 9;
+    return 0;
+}
+
 /* KAT for the syscall pointer/length validators — the security boundary that stops
  * a ring-3 process from handing the kernel a kernel address as a syscall buffer (an
  * arbitrary kernel read/write / info-leak primitive). Nothing else exercises this
@@ -930,12 +950,12 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (internal & (UFD_PIPE_FLAG | UFD_SOCK_FLAG)) return -1;   // not seekable
             uint32_t* off = ufd_offset_of((int)a1);
             if (!off) return -1;
-            int64_t offset = (int64_t)a2, noff;
-            int whence = (int)a3;
-            if (whence == 0)      noff = offset;
-            else if (whence == 1) noff = (int64_t)*off + offset;
-            else if (whence == 2) { int sz = vfs_fsize(internal); noff = (int64_t)(sz > 0 ? sz : 0) + offset; }
+            uint32_t base;
+            if (a3 == 0) base = 0;
+            else if (a3 == 1) base = *off;
+            else if (a3 == 2) base = vfs_fsize(internal);
             else return -1;
+            int64_t noff = syscall_seek_position(base, (int64_t)a2);
             if (noff < 0) return -1;
             *off = (uint32_t)noff;
             return (int64_t)*off;

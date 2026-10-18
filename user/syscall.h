@@ -702,7 +702,9 @@ static inline int fstat(int fd, struct stat* st) {
     return (int)syscall2(SYS_FSTAT, fd, (long)st);
 }
 /* lseek(fd, offset, whence): reposition the fd's read/write offset; SEEK_SET/CUR/
- * END. Returns the new absolute offset, or -1 (e.g. a pipe/socket isn't seekable). */
+ * END. Positions fit uint32_t; out-of-range results return -1 without moving.
+ * Returns the new absolute offset, or -1 (e.g. a pipe/socket isn't seekable).
+ * Seeking beyond EOF does not grow a file or bypass VFS write-size limits. */
 static inline long lseek(int fd, long offset, int whence) {
     return syscall3(SYS_LSEEK, fd, offset, whence);
 }

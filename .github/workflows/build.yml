@@ -72,6 +72,9 @@ jobs:
       - name: Test memory reporting and free options
         run: python3 tools/test_memory_reporting.py
 
+      - name: Test lseek bounds and failed-position preservation
+        run: python3 tools/test_lseek.py
+
       - name: Test cat streaming and canonical terminal input
         run: |
           python3 tools/test_cat.py

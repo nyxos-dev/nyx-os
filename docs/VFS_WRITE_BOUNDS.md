@@ -1,4 +1,4 @@
-# VFS write bounds
+# VFS write and seek bounds
 
 Development version 6.5.198 rejects file writes that cannot be represented by the
 VFS's signed `int` size and byte-count results. `VFS_MAX_FILE_SIZE` is
@@ -54,7 +54,48 @@ new N or N++ language feature.
 ## Remaining limits
 
 These checks do not establish concurrent-writer safety, atomic mounted writes,
-physical storage reliability or power-loss recovery. General `lseek` range and
-signed-arithmetic handling remain a separate audit; the repaired write path rejects
-unrepresentable resulting writes. This increment does not expand memory capacity,
+physical storage reliability or power-loss recovery. The 6.5.198 write change did
+not repair `lseek`; the 6.5.200 follow-up below adds its range checks. The write
+path rejects unrepresentable resulting writes. These changes do not expand memory capacity,
 provide sparse physical allocation or qualify a complete daily-use session.
+
+## Seek positions (6.5.200)
+
+Descriptor positions are stored as `uint32_t`, independently of the smaller signed
+write-result bound. `SYS_LSEEK` accepts positions from **0 through 4,294,967,295**.
+Seeking beyond EOF changes only the position: it does not allocate, extend the file
+or make a subsequent out-of-range write valid.
+
+The syscall validates the signed relative offset before adding it to the base for
+`SEEK_SET`, `SEEK_CUR` or `SEEK_END`. Negative or unrepresentable results return
+`-1` and leave the previous position unchanged. Invalid `whence` values, including
+high bits supplied through a raw syscall, also fail without moving. `SEEK_END`
+uses the unsigned VFS size directly, avoiding the old conversion through signed
+`int`. Existing pipe/socket refusal is unchanged.
+
+Previously, seeking to 4 GiB succeeded with position zero after truncation to
+32 bits. Adding a large positive signed offset to the current position or size
+could overflow `int64_t`. The host baseline reproduces both the wrong position and
+a signed-overflow diagnostic from UndefinedBehaviorSanitizer.
+
+`python3 tools/test_lseek.py` executes the real syscall branch with mocked
+descriptor lookup and VFS size, comparing the result against 128-bit arithmetic.
+All **1,162 assertions** pass with address/undefined-behavior sanitizers. Coverage
+includes both signed extremes, the full unsigned position range, every origin,
+invalid origins, missing descriptors/offsets, pipes/sockets, unchanged rejected
+positions and unsigned `SEEK_END` sizes. Large size metadata is simulated; no
+multi-gigabyte file is allocated for this test.
+
+The final GCC 14 build has no warnings, passes 229 QEMU kernel tests including
+`seek-offset`, and reaches login with four CPUs. In a separate one-CPU, 512 MiB
+QEMU run, a ring-3 program tests failed and successful seeks on RAM and a disposable
+EXT2 disk, relative writes, close/reopen and pipe refusal. Disk extraction matches
+`KEXY`, eight zero bytes and `END` exactly (15 bytes). The existing in-OS libc suite
+reports `ALL PASS`, including buffered `fseek`/`ftell`. All test VMs were closed.
+There are no GUI or hardware validation claims for this increment.
+
+`vfs_fsize` returns zero for some invalid/non-file states and has no separate error
+channel; this change does not resolve that ambiguity. Concurrent descriptor or
+file changes, descriptor alias semantics, device seek policy and storage durability
+remain separate work. Source: `kernel/core/syscall.c`, `kernel/fs/vfs.c` and
+`user/syscall.h`.

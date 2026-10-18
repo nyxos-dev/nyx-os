@@ -103,6 +103,10 @@ The immediate data and desktop priorities are:
    limits, allocation-failure preservation and host/target evidence. Terminal
    output selection, per-login clipboard isolation and per-window job routing
    remain acceptance work.
+6. Development version 6.5.200 checks `lseek` arithmetic before adding or narrowing
+   offsets. Invalid results preserve the descriptor position; valid positions
+   still use the existing unsigned 32-bit range. Host, kernel and ring-3 RAM/EXT2
+   evidence is recorded in [VFS_WRITE_BOUNDS.md](VFS_WRITE_BOUNDS.md).
 
 ### Visual direction and saved personalization
 
