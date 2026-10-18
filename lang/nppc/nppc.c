@@ -3193,8 +3193,11 @@ int main(int argc, char** argv) {
 
     FILE* out = fopen(argv[3], "wb");
     if (!out) die("nppc: cannot open '%s' for writing", argv[3]);
-    fwrite(final, 1, strlen(final), out);
-    fclose(out);
+    size_t output_size = strlen(final);
+    size_t written = fwrite(final, 1, output_size, out);
+    int failed = written != output_size || ferror(out);
+    if (fclose(out) != 0) failed = 1;
+    if (failed) die("nppc: write error on '%s'", argv[3]);
 
     fprintf(stderr, "nppc: OK — %d token(s), %d generic(s), %d instantiation(s), %d lambda(s) -> %s\n",
             NTOK - 1, NGS, NINST, NLAMBDA, argv[3]);

@@ -23,6 +23,14 @@ printing exactly what its host run prints — see *verified three ways* in
 
 ## Build and use
 
+Since NyxOS 6.5.195, the bootstrap driver checks the emitted byte count,
+stream error state and close result before printing `OK`. Output failures
+exit with status 1 and name the destination. The Linux/WSL regression
+`python3 tools/test_n_output.py` covers short writes, sticky errors,
+close failures and `/dev/full`, alongside successful output. Output files
+are still opened directly: a failed compilation write can leave a partial
+file, and atomic replacement remains future work.
+
 ```
 gcc -O2 -Wall -Wextra -o nppc lang/nppc/nppc.c
 ./nppc program.npp -o program.n

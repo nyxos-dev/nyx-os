@@ -25,6 +25,23 @@ ncc input.n --tokens       # dump the token stream: one "kind line" per token
 ncc input.n --ast          # dump the parsed tree, postorder, one node per line
 ```
 
+Since NyxOS 6.5.195, file output and all three stdout modes check the
+stream error state and close/flush result before reporting success. A
+reported output error exits with status 1 and identifies the destination;
+an earlier buffered-write failure is retained even if closing succeeds.
+`python3 tools/test_n_output.py` (from the repository root, on Linux/WSL)
+covers short writes, sticky errors, close/flush failures and `/dev/full`
+for the bootstrap N/N++ drivers. This does not provide atomic replacement
+or detect storage errors that the underlying filesystem fails to report.
+The self-hosted N emitters still need equivalent output checks.
+
+Target verification on 6.5.195 installed `ncc` with `xbm` in QEMU: writing
+to a RAM directory failed with status 1 after opening, without `OK`.
+Workbench still compiled and ran through the in-OS C compiler; generated
+C, its 301-byte trace, tokens and AST matched host references byte for
+byte. Close/flush fault injection is host evidence, not a target disk-full
+or power-loss test.
+
 `--tokens` exists for differential testing: it prints the lexer's exact
 output (token-kind number and source line, `T_EOF` included) so an
 independent lexer — the planned `lex.n`, N's lexer written in N — can be

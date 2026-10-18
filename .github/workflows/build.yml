@@ -42,6 +42,9 @@ jobs:
       - name: Test N selfhost input limits and I/O failures
         run: python3 lang/selfhost/tests/test_driver_io.py --corpus
 
+      - name: Test N and N++ bootstrap output errors
+        run: python3 tools/test_n_output.py
+
       - name: Test Oneiros CLI text output and model validation
         run: python3 tools/test_oneiros_cli.py
 

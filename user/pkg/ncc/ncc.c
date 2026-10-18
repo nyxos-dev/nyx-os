@@ -3447,143 +3447,152 @@ static void ast_expr(const Expr* e);
 static void ast_block(const Block* b);
 
 static void ast_ty(Ty t) {
-    printf(" %d:%d:%s", t.ptrs, t.is_user, t.name ? t.name : "-");
+    fprintf(stdout, " %d:%d:%s", t.ptrs, t.is_user, t.name ? t.name : "-");
 }
 
 static void ast_expr(const Expr* e) {
-    if (!e) { printf("nil\n"); return; }
+    if (!e) { fprintf(stdout, "nil\n"); return; }
     switch (e->k) {
-        case E_INT:  printf("E 0 %ld\n", (long)e->ival); return;
-        case E_BOOL: printf("E 1 %ld\n", (long)e->ival); return;
-        case E_STR:  printf("E 2 #%d\n", e->slen); return;
+        case E_INT:  fprintf(stdout, "E 0 %ld\n", (long)e->ival); return;
+        case E_BOOL: fprintf(stdout, "E 1 %ld\n", (long)e->ival); return;
+        case E_STR:  fprintf(stdout, "E 2 #%d\n", e->slen); return;
         case E_INTERP:
             for (int i = 0; i < e->nfrags; i++)
                 if (e->frags[i].e) ast_expr(e->frags[i].e);
-            printf("E 3 %d", e->nfrags);
+            fprintf(stdout, "E 3 %d", e->nfrags);
             for (int i = 0; i < e->nfrags; i++) {
                 if (e->frags[i].e)
-                    printf(" @%d.%d.%d", e->frags[i].fmt, e->frags[i].width, e->frags[i].zero);
+                    fprintf(stdout, " @%d.%d.%d", e->frags[i].fmt, e->frags[i].width, e->frags[i].zero);
                 else
-                    printf(" #%d", e->frags[i].tlen);
+                    fprintf(stdout, " #%d", e->frags[i].tlen);
             }
-            printf("\n");
+            fprintf(stdout, "\n");
             return;
-        case E_PATH: printf("E 4 %s\n", e->name); return;
+        case E_PATH: fprintf(stdout, "E 4 %s\n", e->name); return;
         case E_CALL:
             ast_expr(e->callee);
             for (int i = 0; i < e->nargs; i++) ast_expr(e->args[i]);
-            printf("E 5 %d\n", e->nargs);
+            fprintf(stdout, "E 5 %d\n", e->nargs);
             return;
-        case E_FIELD: ast_expr(e->base); printf("E 6 %s\n", e->field); return;
-        case E_UN: ast_expr(e->r); printf("E 7 %s\n", e->op); return;
-        case E_BIN: ast_expr(e->l); ast_expr(e->r); printf("E 8 %s\n", e->op); return;
-        case E_CAST: ast_expr(e->l); printf("E 9"); ast_ty(e->cast_to); printf("\n"); return;
+        case E_FIELD: ast_expr(e->base); fprintf(stdout, "E 6 %s\n", e->field); return;
+        case E_UN: ast_expr(e->r); fprintf(stdout, "E 7 %s\n", e->op); return;
+        case E_BIN: ast_expr(e->l); ast_expr(e->r); fprintf(stdout, "E 8 %s\n", e->op); return;
+        case E_CAST: ast_expr(e->l); fprintf(stdout, "E 9"); ast_ty(e->cast_to); fprintf(stdout, "\n"); return;
         case E_SLIT:
             for (int i = 0; i < e->nargs; i++) ast_expr(e->args[i]);
-            printf("E 10 %d %s", e->nargs, e->name);
-            for (int i = 0; i < e->nargs; i++) printf(" %s", e->snames[i]);
-            printf("\n");
+            fprintf(stdout, "E 10 %d %s", e->nargs, e->name);
+            for (int i = 0; i < e->nargs; i++) fprintf(stdout, " %s", e->snames[i]);
+            fprintf(stdout, "\n");
             return;
         case E_ELIT:
             for (int i = 0; i < e->nargs; i++) ast_expr(e->args[i]);
-            printf("E 11 %d %s %s", e->nargs, e->name, e->field);
-            for (int i = 0; i < e->nargs; i++) printf(" %s", e->snames ? e->snames[i] : "-");
-            printf("\n");
+            fprintf(stdout, "E 11 %d %s %s", e->nargs, e->name, e->field);
+            for (int i = 0; i < e->nargs; i++) fprintf(stdout, " %s", e->snames ? e->snames[i] : "-");
+            fprintf(stdout, "\n");
             return;
-        case E_INDEX: ast_expr(e->l); ast_expr(e->r); printf("E 12\n"); return;
+        case E_INDEX: ast_expr(e->l); ast_expr(e->r); fprintf(stdout, "E 12\n"); return;
     }
 }
 
 static void ast_stmt(const Stmt* s) {
     switch (s->k) {
-        case S_LET: ast_expr(s->e); printf("S 0 %d %d %s\n", s->is_mut, s->is_try, s->name); return;
-        case S_ASSIGN: ast_expr(s->lhs); ast_expr(s->e); printf("S 1 %d %s\n", s->is_try, s->aop ? s->aop : "="); return;
-        case S_RET: ast_expr(s->e); printf("S 2 %d\n", s->is_try); return;
-        case S_EXPR: ast_expr(s->e); printf("S 3 %d\n", s->is_try); return;
-        case S_WHILE: ast_expr(s->cond); ast_block(s->body); printf("S 4\n"); return;
+        case S_LET: ast_expr(s->e); fprintf(stdout, "S 0 %d %d %s\n", s->is_mut, s->is_try, s->name); return;
+        case S_ASSIGN: ast_expr(s->lhs); ast_expr(s->e); fprintf(stdout, "S 1 %d %s\n", s->is_try, s->aop ? s->aop : "="); return;
+        case S_RET: ast_expr(s->e); fprintf(stdout, "S 2 %d\n", s->is_try); return;
+        case S_EXPR: ast_expr(s->e); fprintf(stdout, "S 3 %d\n", s->is_try); return;
+        case S_WHILE: ast_expr(s->cond); ast_block(s->body); fprintf(stdout, "S 4\n"); return;
         case S_IF:
             ast_expr(s->cond); ast_block(s->body);
             if (s->els) ast_block(s->els);
-            printf("S 5 %d\n", s->els ? 1 : 0);
+            fprintf(stdout, "S 5 %d\n", s->els ? 1 : 0);
             return;
-        case S_BREAK: printf("S 6\n"); return;
-        case S_CONT: printf("S 7\n"); return;
-        case S_DEFER: ast_expr(s->e); printf("S 8\n"); return;
+        case S_BREAK: fprintf(stdout, "S 6\n"); return;
+        case S_CONT: fprintf(stdout, "S 7\n"); return;
+        case S_DEFER: ast_expr(s->e); fprintf(stdout, "S 8\n"); return;
         case S_MATCH:
             if (s->mtarget == MT_ASSIGN) ast_expr(s->lhs);
             ast_expr(s->e);
             for (int i = 0; i < s->narms; i++) {
                 if (s->arms[i].body) ast_block(s->arms[i].body);
                 else ast_expr(s->arms[i].val);
-                printf("A %s %d", s->arms[i].variant, s->arms[i].nbinds);
-                for (int j = 0; j < s->arms[i].nbinds; j++) printf(" %s", s->arms[i].binds[j]);
-                printf(" %d\n", s->arms[i].body ? 0 : 1);
+                fprintf(stdout, "A %s %d", s->arms[i].variant, s->arms[i].nbinds);
+                for (int j = 0; j < s->arms[i].nbinds; j++) fprintf(stdout, " %s", s->arms[i].binds[j]);
+                fprintf(stdout, " %d\n", s->arms[i].body ? 0 : 1);
             }
-            printf("S 9 %d %d %s %s\n", s->narms, s->mtarget,
+            fprintf(stdout, "S 9 %d %d %s %s\n", s->narms, s->mtarget,
                    s->name ? s->name : "-", s->aop ? s->aop : "-");
             return;
-        case S_FOR: ast_expr(s->e); ast_expr(s->cond); ast_block(s->body); printf("S 10 %s\n", s->name); return;
+        case S_FOR: ast_expr(s->e); ast_expr(s->cond); ast_block(s->body); fprintf(stdout, "S 10 %s\n", s->name); return;
     }
 }
 
 static void ast_block(const Block* b) {
-    if (!b) { printf("nil\n"); return; }
+    if (!b) { fprintf(stdout, "nil\n"); return; }
     for (int i = 0; i < b->n; i++) ast_stmt(b->st[i]);
     if (b->tail) ast_expr(b->tail);
-    printf("B %d %d\n", b->n, b->tail ? 1 : 0);
+    fprintf(stdout, "B %d %d\n", b->n, b->tail ? 1 : 0);
 }
 
 static void ast_program(void) {
     for (int i = 0; i < NSTRUCTS; i++) {
-        printf("D %s %d %s %d", STRUCTS[i].name, STRUCTS[i].is_own,
+        fprintf(stdout, "D %s %d %s %d", STRUCTS[i].name, STRUCTS[i].is_own,
                STRUCTS[i].drop_fn ? STRUCTS[i].drop_fn : "-", STRUCTS[i].nf);
         for (int j = 0; j < STRUCTS[i].nf; j++) {
-            printf(" %s", STRUCTS[i].fs[j].name);
+            fprintf(stdout, " %s", STRUCTS[i].fs[j].name);
             ast_ty(STRUCTS[i].fs[j].ty);
         }
-        printf("\n");
+        fprintf(stdout, "\n");
     }
     for (int i = 0; i < NENUMS; i++) {
         for (int j = 0; j < ENUMS[i].nv; j++) {
-            printf("V %s %d", ENUMS[i].vs[j].name, ENUMS[i].vs[j].nf);
+            fprintf(stdout, "V %s %d", ENUMS[i].vs[j].name, ENUMS[i].vs[j].nf);
             for (int q = 0; q < ENUMS[i].vs[j].nf; q++) {
-                printf(" %s", ENUMS[i].vs[j].fs[q].name);
+                fprintf(stdout, " %s", ENUMS[i].vs[j].fs[q].name);
                 ast_ty(ENUMS[i].vs[j].fs[q].ty);
             }
-            printf("\n");
+            fprintf(stdout, "\n");
         }
-        printf("U %s %d\n", ENUMS[i].name, ENUMS[i].nv);
+        fprintf(stdout, "U %s %d\n", ENUMS[i].name, ENUMS[i].nv);
     }
     for (int i = 0; i < NXFN; i++) {
-        printf("X %s %ld %d %d", XFNS[i].name, (long)XFNS[i].num, XFNS[i].caps, XFNS[i].np);
+        fprintf(stdout, "X %s %ld %d %d", XFNS[i].name, (long)XFNS[i].num, XFNS[i].caps, XFNS[i].np);
         for (int j = 0; j < XFNS[i].np; j++) {
-            printf(" %s", XFNS[i].ps[j].name);
+            fprintf(stdout, " %s", XFNS[i].ps[j].name);
             ast_ty(XFNS[i].ps[j].ty);
         }
         ast_ty(XFNS[i].ret);
-        printf("\n");
+        fprintf(stdout, "\n");
     }
     for (int i = 0; i < NFN; i++) {
         ast_block(FNS[i].body);
-        printf("F %s %d %d", FNS[i].name, FNS[i].caps, FNS[i].np);
+        fprintf(stdout, "F %s %d %d", FNS[i].name, FNS[i].caps, FNS[i].np);
         for (int j = 0; j < FNS[i].np; j++) {
-            printf(" %s", FNS[i].ps[j].name);
+            fprintf(stdout, " %s", FNS[i].ps[j].name);
             ast_ty(FNS[i].ps[j].ty);
         }
         ast_ty(FNS[i].ret);
-        printf("\n");
+        fprintf(stdout, "\n");
     }
     for (int i = 0; i < NMETHODS; i++) {
         ast_block(METHODS[i].body);
-        printf("M %s %s %d", METHODS[i].type, METHODS[i].name, METHODS[i].np);
+        fprintf(stdout, "M %s %s %d", METHODS[i].type, METHODS[i].name, METHODS[i].np);
         for (int j = 0; j < METHODS[i].np; j++) {
-            printf(" %s", METHODS[i].ps[j].name);
+            fprintf(stdout, " %s", METHODS[i].ps[j].name);
             ast_ty(METHODS[i].ps[j].ty);
         }
         ast_ty(METHODS[i].ret);
-        printf("\n");
+        fprintf(stdout, "\n");
     }
-    printf(".\n");
+    fprintf(stdout, ".\n");
+}
+
+static void finish_output(FILE* stream, const char* path) {
+    int failed = ferror(stream);
+    // Preserve earlier buffered-write failures even if close/flush succeeds.
+    int rc = path ? fclose(stream) : fflush(stream);
+    if (rc != 0) failed = 1;
+    if (!path && ferror(stream)) failed = 1;
+    if (failed) die("ncc: write error on '%s'", path ? path : "stdout");
 }
 
 int main(int argc, char** argv) {
@@ -3626,26 +3635,27 @@ int main(int argc, char** argv) {
                                            * exactly this stream. */
         for (;;) {
             if (CUR.k == T_IDENT || CUR.k == T_ATTR_DROP)
-                printf("%d %d %s\n", (int)CUR.k, CUR.line, CUR.s);
+                fprintf(stdout, "%d %d %s\n", (int)CUR.k, CUR.line, CUR.s);
             else if (CUR.k == T_INT)
-                printf("%d %d %ld\n", (int)CUR.k, CUR.line, (long)CUR.ival);
+                fprintf(stdout, "%d %d %ld\n", (int)CUR.k, CUR.line, (long)CUR.ival);
             else if (CUR.k >= T_STR && CUR.k <= T_STR_TAIL)
-                printf("%d %d #%d\n", (int)CUR.k, CUR.line, CUR.slen);
+                fprintf(stdout, "%d %d #%d\n", (int)CUR.k, CUR.line, CUR.slen);
             else
-                printf("%d %d\n", (int)CUR.k, CUR.line);
+                fprintf(stdout, "%d %d\n", (int)CUR.k, CUR.line);
             if (CUR.k == T_EOF) break;
             CUR = next_token();
         }
+        finish_output(stdout, NULL);
         return 0;
     }
     parse_program();
-    if (ast_mode) { ast_program(); return 0; }
+    if (ast_mode) { ast_program(); finish_output(stdout, NULL); return 0; }
     validate_drops();                     /* v0.19: destructor wiring */
 
     OUT = out ? fopen(out, "w") : stdout;
     if (!OUT) die("ncc: cannot open output '%s'", out);
     gen_program(in);
-    if (out) fclose(OUT);
+    finish_output(OUT, out);
 
     fprintf(stderr, "ncc: OK — %d extern syscall(s), %d function(s)%s%s\n",
             NXFN, NFN, out ? " -> " : "", out ? out : "");
