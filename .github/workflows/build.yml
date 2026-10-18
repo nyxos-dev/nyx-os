@@ -60,6 +60,9 @@ jobs:
       - name: Test desktop config persistence and session isolation
         run: python3 tools/test_desktop_config.py
 
+      - name: Test RAM VFS replacement allocation failures
+        run: python3 tools/test_vfs_replace.py
+
       - name: Test memory reporting and free options
         run: python3 tools/test_memory_reporting.py
 

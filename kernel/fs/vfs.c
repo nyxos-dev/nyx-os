@@ -1684,25 +1684,75 @@ int vfs_write_file(const char* path, const void* buf, uint32_t len) {
     }
     // Fallback to RAM VFS — auto-create file if it doesn't exist
     vfs_node_t* ino = resolve_path(path);
+    vfs_node_t* parent = NULL;
     if (!ino) {
         char child_name[MAX_NAME];
-        vfs_node_t* parent = resolve_parent(path, child_name);
+        parent = resolve_parent(path, child_name);
         if (!parent || parent->type != 1) return -1;
         ino = alloc_node();
         if (!ino) return -1;
         strncpy(ino->name, child_name, MAX_NAME - 1);
         ino->type = 0;
         ino->parent = parent;
-        if (vfs_append_child(parent, ino) != 0) { free_node(ino); return -1; }
     }
     if (ino->type != 0) return -1;
     if (!(ino->mode & 0200)) return -1;         // read-only (owner-write bit cleared by chmod): refuse
-    if (ino->data) kfree(ino->data);
-    ino->data = (uint8_t*)kmalloc(len);
-    if (!ino->data && len > 0) return -1;
-    if (len > 0) memcpy(ino->data, buf, len);
+    // Prepare before replacing: buf may alias the old data, and allocation can fail.
+    uint8_t* data = NULL;
+    if (len > 0) {
+        data = (uint8_t*)kmalloc(len);
+        if (!data) {
+            if (parent) free_node(ino);
+            return -1;
+        }
+        memcpy(data, buf, len);
+    }
+    uint8_t* old_data = ino->data;
+    ino->data = data;
     ino->size = len;
+    if (parent && vfs_append_child(parent, ino) != 0) {
+        if (data) kfree(data);
+        ino->data = NULL;
+        ino->size = 0;
+        free_node(ino);
+        return -1;
+    }
+    if (old_data) kfree(old_data);
     return len;
+}
+
+int vfs_replace_selftest(void) {
+    const char* path = "/tmp/__vfsreplacekat";
+    char bytes[8];
+    int fd = -1, rc = 0;
+    vfs_mkdir("/tmp", 0755);
+    if (vfs_write_file(path, "original", 8) != 8) return 1;
+    vfs_node_t* ino = resolve_path(path);
+    fd = vfs_open(path, O_RDONLY, 0);
+    if (!ino || fd < 0) { rc = 2; goto done; }
+    if (vfs_write_file(path, ino->data + 2, 4) != 4) { rc = 3; goto done; }
+    if (resolve_path(path) != ino || vfs_pread(fd, bytes, sizeof(bytes), 0) != 4 ||
+        bytes[0] != 'i' || bytes[1] != 'g' || bytes[2] != 'i' || bytes[3] != 'n') {
+        rc = 4; goto done;
+    }
+    if (vfs_chmod(path, 0444) != 0 || vfs_write_file(path, "lost", 4) != -1 ||
+        vfs_write_file(path, NULL, 0) != -1) { rc = 5; goto done; }
+    if (vfs_pread(fd, bytes, sizeof(bytes), 0) != 4 ||
+        bytes[0] != 'i' || bytes[1] != 'g' || bytes[2] != 'i' || bytes[3] != 'n') {
+        rc = 6; goto done;
+    }
+    if (vfs_chmod(path, 0644) != 0 || vfs_write_file(path, NULL, 0) != 0 ||
+        ino->data != NULL || ino->size != 0 || vfs_pread(fd, bytes, sizeof(bytes), 0) != 0) {
+        rc = 7; goto done;
+    }
+    if (vfs_write_file(path, "new", 3) != 3 ||
+        vfs_pread(fd, bytes, sizeof(bytes), 0) != 3 ||
+        bytes[0] != 'n' || bytes[1] != 'e' || bytes[2] != 'w') rc = 8;
+done:
+    if (fd >= 0) vfs_close(fd);
+    vfs_chmod(path, 0644);
+    vfs_unlink(path);
+    return rc;
 }
 
 // Change a RAM-VFS node's permission bits (chmod). Mount-backed (/mnt) files don't carry

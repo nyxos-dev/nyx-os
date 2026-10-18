@@ -90,7 +90,11 @@ The immediate data and desktop priorities are:
    checks writes/readback and distinguishes disk, RAM and failure notifications.
    [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) records the load/save contract and evidence.
    Broader persistence, concurrent-writer and power-loss recovery remain separate gates.
-3. Complete the shared clipboard workflow across editor, terminal and Oneiros with
+3. Development version 6.5.197 preserves existing RAM file content when
+   `vfs_write_file` cannot allocate its replacement, and cleans up failed new-file
+   creation. See [VFS_REPLACEMENT.md](VFS_REPLACEMENT.md) for regression coverage,
+   transient memory cost and the separate mounted-filesystem/concurrency limits.
+4. Complete the shared clipboard workflow across editor, terminal and Oneiros with
    selection, bounded text, undo and exact content checks.
 
 ### Visual direction and saved personalization

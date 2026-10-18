@@ -10828,6 +10828,7 @@ extern int rtc_selftest(void);           // drivers/misc/rtc.c: CMOS BCD/binary 
 extern int pf_decode_selftest(void);     // core/isr.c: #PF error-code bit decode for the fault dump
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
 extern int vfs_selftest(void);           // fs/vfs.c: ramdisk open/create/O_TRUNC/read/write behaviour
+extern int vfs_replace_selftest(void);
 extern int region_clip_selftest(void);   // drivers/video/fb.c: region ∩ round clip span math (dirty-rect groundwork)
 extern int memset32_selftest(void);      // drivers/video/fb.c: rep-stosd pixel fill primitive (no over/underrun)
 extern int darken_blend_selftest(void);  // drivers/video/fb.c: shadow-blend table == exact v*keep/255
@@ -11359,6 +11360,7 @@ static void run_selftests(void) {
         {"fold",         fold_selftest},          {"tr",            tr_selftest},
         {"sort",         sort_selftest},
         {"vfs",          vfs_selftest},
+        {"vfs-replace",  vfs_replace_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

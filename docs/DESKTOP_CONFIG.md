@@ -52,7 +52,9 @@ button opens the menu without immediately running its first action. The Wallpape
 picker is accessible through this menu.
 
 Writes replace the destination directly. This is not an atomic transaction or a
-power-loss guarantee, and a failed replacement can damage the previous file.
+power-loss guarantee. From 6.5.197, RAM replacement allocation failures preserve
+the previous file; see [VFS_REPLACEMENT.md](VFS_REPLACEMENT.md). Mounted-filesystem
+replacement failures can still damage the previous file.
 Readback only verifies what the filesystem reports; it cannot detect an underlying
 storage error that the filesystem hides. Same-size concurrent writers and ambiguous
 filesystem metadata are not resolved by this increment. No hardware validation or
