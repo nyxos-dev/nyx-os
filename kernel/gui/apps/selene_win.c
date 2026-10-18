@@ -1274,7 +1274,26 @@ static int sel_is_void_tag(const char* n) {
     return 0;
 }
 
-static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
+static int selene_alloc_grids(selene_ctx_t* s) {
+    if (s->lines) return 0;
+    enum { GRID_COUNT = 7 };
+    void* grids[GRID_COUNT];
+    for (int i = 0; i < GRID_COUNT; i++) {
+        grids[i] = kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
+        if (!grids[i]) {
+            while (i > 0) kfree(grids[--i]);
+            return -1;
+        }
+    }
+    // Publish all grids together: a failed first render leaves the tab retryable.
+    s->lines = grids[0]; s->link_of = grids[1]; s->field_of = grids[2];
+    s->img_of = grids[3]; s->color_of = grids[4];
+    s->bgcolor_of = grids[5]; s->bold_of = grids[6];
+    return 0;
+}
+
+static int render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
+    if (selene_alloc_grids(s) < 0) return -1;
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
     s->num_links = 0; s->sel_link = -1;
     s->num_fields = 0; s->num_forms = 0; s->sel_field = -1;
@@ -1291,7 +1310,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     __builtin_memset(s->line_align, 0, SEL_MAX_LINES);
     __builtin_memset(s->line_rule, 0, SEL_MAX_LINES);
     s->num_cell_boxes = 0;                                   // in-cell bordered-<div> outlines, collected by render_table this render
-    if (!body || !len) { s->num_lines = 0; return; }
+    if (!body || !len) { s->num_lines = 0; return 0; }
     char*    txt    = (char*)kmalloc(len + 1);
     uint8_t* tlink  = (uint8_t*)kmalloc(len + 1);
     uint8_t* tfield = (uint8_t*)kmalloc(len + 1);
@@ -1315,7 +1334,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         if (trule) kfree(trule);
         if (tindent) kfree(tindent);
         if (colstk) kfree(colstk);
-        return;
+        return -1;
     }
     __builtin_memset(tfield,  0, len + 1);
     __builtin_memset(timg,    0, len + 1);
@@ -2247,6 +2266,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     } else s->num_cell_boxes = 0;                                // no map -> no in-cell boxes this render
     kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tcolor); kfree(tbgcol); kfree(tbold); kfree(talign); kfree(trule); kfree(tindent);
     kfree(colstk);
+    return 0;
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
@@ -2335,8 +2355,8 @@ static int selene_next_img_index(selene_ctx_t* s, int rows) {
 
 // Fetch + decode AT MOST ONE visible, not-yet-tried image. Returns 1 if it fetched one (the caller
 // should redraw to pop it in), 0 if none are pending. Driven once per compositor tick by
-// selene_win_tick so image loading never freezes the browser: the page shows instantly and images
-// stream in one per frame, with scrolling / clicks / tab switches handled in between.
+// selene_win_tick. This bounds attempts per tick, not latency: each request is synchronous
+// and can block input until it returns.
 static int selene_fetch_next(selene_ctx_t* s, int iface) {
     if (iface < 0) return 0;
     int i = selene_next_img_index(s, visible_rows());
@@ -2376,7 +2396,7 @@ static int selene_anim_tick(selene_ctx_t* s) {
 }
 
 // Compositor ~30fps tick for a Selene window: (1) advance any on-screen animated GIF, then (2)
-// cooperatively load one pending image — so neither animation nor a slow fetch freezes the UI.
+// load one pending image. A slow synchronous fetch still delays the next UI dispatch.
 // Returns 1 (redraw) when it changed something this tick, 0 when idle.
 int selene_win_tick(window_t* win) {
     selene_tabs_t* T = (selene_tabs_t*)win->reserved;
@@ -2384,7 +2404,7 @@ int selene_win_tick(window_t* win) {
     selene_ctx_t* s = T->tab[T->active];
     if (!s) return 0;
     int changed = selene_anim_tick(s);                          // animate first (cheap, no I/O)
-    if (selene_fetch_next(s, find_iface())) changed = 1;        // then fetch one pending image (may block briefly)
+    if (selene_fetch_next(s, find_iface())) changed = 1;
     return changed;
 }
 
@@ -2465,7 +2485,12 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
         break;   // final response: not a redirect, no Location, unresolvable, or the hop cap was reached
     }
 
-    render_html(s, resp->body, resp->body_len);
+    if (render_html(s, resp->body, resp->body_len) < 0) {
+        http_free(resp);
+        strncpy(s->status, "Out of memory: page not rendered", sizeof(s->status) - 1);
+        compositor_redraw_now();
+        return;
+    }
     strncpy(s->cur_url, s->url, sizeof(s->cur_url)-1); s->cur_url[sizeof(s->cur_url)-1] = '\0';
     snprintf(s->status, sizeof(s->status), "%d %s  -  %s  -  %d links",
              resp->status_code, resp->status_text,
@@ -2646,30 +2671,15 @@ static selene_ctx_t* selene_new_ctx(void) {
     selene_ctx_t* s = (selene_ctx_t*)kmalloc(sizeof(selene_ctx_t));
     if (!s) return NULL;
     __builtin_memset(s, 0, sizeof(*s));
-    s->lines    = (char(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
-    s->link_of  = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
-    s->field_of = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
     s->links    = (sel_link_t*)kmalloc(SEL_MAX_LINKS * sizeof(sel_link_t));
     s->fields   = (sel_field_t*)kmalloc(SEL_MAX_FIELDS * sizeof(sel_field_t));
     s->forms    = (sel_form_t*)kmalloc(SEL_MAX_FORMS * sizeof(sel_form_t));
-    s->img_of   = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
     s->images   = (sel_img_t*)kmalloc(SEL_MAX_IMGS * sizeof(sel_img_t));
-    s->color_of = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
-    s->bgcolor_of = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
-    s->bold_of  = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
-    if (!s->lines || !s->link_of || !s->field_of || !s->links || !s->fields || !s->forms ||
-        !s->img_of || !s->images || !s->color_of || !s->bgcolor_of || !s->bold_of) {
-        if (s->lines) kfree(s->lines);
-        if (s->link_of) kfree(s->link_of);
-        if (s->field_of) kfree(s->field_of);
+    if (!s->links || !s->fields || !s->forms || !s->images) {
         if (s->links) kfree(s->links);
         if (s->fields) kfree(s->fields);
         if (s->forms) kfree(s->forms);
-        if (s->img_of) kfree(s->img_of);
         if (s->images) kfree(s->images);
-        if (s->color_of) kfree(s->color_of);
-        if (s->bgcolor_of) kfree(s->bgcolor_of);
-        if (s->bold_of) kfree(s->bold_of);
         kfree(s); return NULL;
     }
     s->sel_field = -1;
@@ -2762,8 +2772,9 @@ void selene_first_load(window_t* win) {
         "<p>Ctrl+T opens a tab. Ctrl+F searches the current page.</p>"
         "</body></html>";
     selene_ctx_t* s = T->tab[T->active];
-    render_html(s, page, sizeof(page) - 1);
-    strncpy(s->status, "Ready - type a URL and press Enter", sizeof(s->status) - 1);
+    int rendered = render_html(s, page, sizeof(page) - 1);
+    strncpy(s->status, rendered < 0 ? "Out of memory: page not rendered" :
+            "Ready - type a URL and press Enter", sizeof(s->status) - 1);
 }
 
 int selene_start_selftest(void) {
@@ -2771,10 +2782,14 @@ int selene_start_selftest(void) {
     win.reserved = selene_create_ctx();
     if (!win.reserved) return 1;
     selene_tabs_t* T = (selene_tabs_t*)win.reserved;
+    int lazy = !T->tab[0]->lines && !T->tab[0]->link_of && !T->tab[0]->field_of &&
+               !T->tab[0]->img_of && !T->tab[0]->color_of && !T->tab[0]->bgcolor_of &&
+               !T->tab[0]->bold_of;
     selene_first_load(&win);     // must render without a network interface or fetch
     selene_ctx_t* s = T->tab[0];
     int rc = 0;
-    if (s->num_lines <= 0 || strcmp(s->title, "Welcome to Selene")) rc = 2;
+    if (!lazy) rc = 6;
+    else if (s->num_lines <= 0 || strcmp(s->title, "Welcome to Selene")) rc = 2;
     else if (strcmp(s->url, "example.com") || s->cur_url[0] || s->hist_len) rc = 3;
     else if (s->num_imgs || s->num_links) rc = 4;
     selene_win_close(&win);

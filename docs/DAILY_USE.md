@@ -116,6 +116,10 @@ The immediate data and desktop priorities are:
    the existing per-user configuration. ANSI cell attributes retain their meanings;
    saving other desktop settings preserves the choice and Reset restores `classic`.
    See [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) for configuration and verification.
+9. Development version 6.5.203 defers Selene's page grids for blank tabs and
+   reports required rendering allocation failures. [SELENE_MEMORY.md](SELENE_MEMORY.md)
+   records the host allocation checks and measured QEMU heap savings. Synchronous
+   networking, image budgets and the documented baseline HTML failures remain open.
 
 ### Visual direction and saved personalization
 

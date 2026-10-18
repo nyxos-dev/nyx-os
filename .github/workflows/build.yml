@@ -69,6 +69,9 @@ jobs:
       - name: Test terminal palettes and ANSI rendering
         run: python3 tools/test_terminal_palette.py
 
+      - name: Test Selene lazy page memory and allocation failures
+        run: python3 tools/test_selene_memory.py
+
       - name: Test RAM VFS replacement allocation failures
         run: python3 tools/test_vfs_replace.py
 
