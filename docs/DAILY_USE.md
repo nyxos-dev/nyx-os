@@ -120,6 +120,10 @@ The immediate data and desktop priorities are:
    reports required rendering allocation failures. [SELENE_MEMORY.md](SELENE_MEMORY.md)
    records the host allocation checks and measured QEMU heap savings. Synchronous
    networking, image budgets and the documented baseline HTML failures remain open.
+10. Development version 6.5.204 reconciles the legacy `formtest` with the existing
+    glyph and nested-table contracts, handles rendering allocation failure and
+    adds the suite to CI. [SELENE_MEMORY.md](SELENE_MEMORY.md) distinguishes this
+    test maintenance from renderer changes and documents mutation/failure checks.
 
 ### Visual direction and saved personalization
 
