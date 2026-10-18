@@ -4,6 +4,10 @@
 static inline nyx_i64 write(nyx_i32 fd, nyx_u8* buf, nyx_isize len) {
     return (nyx_i64)__nyx_syscall6(1, (nyx_i64)fd, (nyx_i64)buf, (nyx_i64)len, 0, 0, 0);
 }
+static inline void sys_exit(nyx_i64 code) {
+    (void)__nyx_syscall6(0, (nyx_i64)code, 0, 0, 0, 0, 0);
+    for (;;) {}
+}
 static inline nyx_i64 sys_open(nyx_u8* path, nyx_i64 flags, nyx_i64 mode) {
     return (nyx_i64)__nyx_syscall6(3, (nyx_i64)path, (nyx_i64)flags, (nyx_i64)mode, 0, 0, 0);
 }
@@ -17,6 +21,7 @@ static inline nyx_i64 sys_sbrk(nyx_i64 incr) {
     return (nyx_i64)__nyx_syscall6(7, (nyx_i64)incr, 0, 0, 0, 0, 0);
 }
 
+void put_bytes(nyx_u8* p, nyx_i64 len);
 void put(nyx_str s);
 nyx_bool is_idc(nyx_i64 b);
 nyx_bool is_dg(nyx_i64 b);
@@ -35,8 +40,22 @@ nyx_i64 next_kind(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 void dump_tok(nyx_u8* p, nyx_i64* st, nyx_i64 k);
 nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv);
 
+void put_bytes(nyx_u8* p, nyx_i64 len) {
+    nyx_i64 sent = 0;
+    while ((sent < len)) {
+        nyx_i64 left = (len - sent);
+        nyx_i64 n = write(1, (nyx_u8*)(((nyx_addr)(p) + (nyx_addr)(sent))), (nyx_isize)(left));
+        if (((n <= 0) || (n > left))) {
+            nyx_str error = ((nyx_str){"nlex: output write failed\n", 26});
+            write(2, (nyx_u8*)(((nyx_u8*)error.ptr)), (nyx_isize)(error.len));
+            sys_exit(1);
+        }
+        sent = (sent + n);
+    }
+}
+
 void put(nyx_str s) {
-    write(1, (nyx_u8*)(((nyx_u8*)s.ptr)), (nyx_isize)(s.len));
+    put_bytes((nyx_u8*)(((nyx_u8*)s.ptr)), (nyx_i64)(s.len));
 }
 
 nyx_bool is_idc(nyx_i64 b) {
@@ -499,7 +518,7 @@ void dump_tok(nyx_u8* p, nyx_i64* st, nyx_i64 k) {
         __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(l));
         __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" ", 1});
         put(__s0);
-        write(1, (nyx_u8*)(((nyx_addr)(p) + (nyx_addr)(st[6]))), (nyx_isize)(st[7]));
+        put_bytes((nyx_u8*)(((nyx_addr)(p) + (nyx_addr)(st[6]))), st[7]);
         put(((nyx_str){"\n", 1}));
         return;
     }

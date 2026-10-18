@@ -107,6 +107,11 @@ The immediate data and desktop priorities are:
    offsets. Invalid results preserve the descriptor position; valid positions
    still use the existing unsigned 32-bit range. Host, kernel and ring-3 RAM/EXT2
    evidence is recorded in [VFS_WRITE_BOUNDS.md](VFS_WRITE_BOUNDS.md).
+7. Development version 6.5.201 checks output progress in the four N-written
+   compiler drivers and regenerates the installable emitters. Short writes are
+   completed; failed or zero-progress writes terminate with error. The contract
+   and evidence are in [selfhost/README.md](../lang/selfhost/README.md). Accepted
+   output prefixes are not rolled back, and redirected files remain non-atomic.
 
 ### Visual direction and saved personalization
 

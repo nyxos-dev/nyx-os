@@ -11,6 +11,10 @@ typedef struct {
 static inline nyx_i64 write(nyx_i32 fd, nyx_u8* buf, nyx_isize len) {
     return (nyx_i64)__nyx_syscall6(1, (nyx_i64)fd, (nyx_i64)buf, (nyx_i64)len, 0, 0, 0);
 }
+static inline void sys_exit(nyx_i64 code) {
+    (void)__nyx_syscall6(0, (nyx_i64)code, 0, 0, 0, 0, 0);
+    for (;;) {}
+}
 static inline nyx_i64 sys_open(nyx_u8* path, nyx_i64 flags, nyx_i64 mode) {
     return (nyx_i64)__nyx_syscall6(3, (nyx_i64)path, (nyx_i64)flags, (nyx_i64)mode, 0, 0, 0);
 }
@@ -24,6 +28,7 @@ static inline nyx_i64 sys_sbrk(nyx_i64 incr) {
     return (nyx_i64)__nyx_syscall6(7, (nyx_i64)incr, 0, 0, 0, 0, 0);
 }
 
+void put_bytes(nyx_u8* p, nyx_i64 len);
 void put(nyx_str s);
 void put_span(nyx_u8* p, nyx_i64 s, nyx_i64 l);
 nyx_bool is_idc(nyx_i64 b);
@@ -84,12 +89,26 @@ void pimpl(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64* ps);
 void pass_items(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 which, nyx_i64* ps);
 nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv);
 
+void put_bytes(nyx_u8* p, nyx_i64 len) {
+    nyx_i64 sent = 0;
+    while ((sent < len)) {
+        nyx_i64 left = (len - sent);
+        nyx_i64 n = write(1, (nyx_u8*)(((nyx_addr)(p) + (nyx_addr)(sent))), (nyx_isize)(left));
+        if (((n <= 0) || (n > left))) {
+            nyx_str error = ((nyx_str){"nparse: output write failed\n", 28});
+            write(2, (nyx_u8*)(((nyx_u8*)error.ptr)), (nyx_isize)(error.len));
+            sys_exit(1);
+        }
+        sent = (sent + n);
+    }
+}
+
 void put(nyx_str s) {
-    write(1, (nyx_u8*)(((nyx_u8*)s.ptr)), (nyx_isize)(s.len));
+    put_bytes((nyx_u8*)(((nyx_u8*)s.ptr)), (nyx_i64)(s.len));
 }
 
 void put_span(nyx_u8* p, nyx_i64 s, nyx_i64 l) {
-    write(1, (nyx_u8*)(((nyx_addr)(p) + (nyx_addr)(s))), (nyx_isize)(l));
+    put_bytes((nyx_u8*)(((nyx_addr)(p) + (nyx_addr)(s))), l);
 }
 
 nyx_bool is_idc(nyx_i64 b) {

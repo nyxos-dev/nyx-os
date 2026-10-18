@@ -58,6 +58,7 @@
 #[caps(syscall)]
 extern syscall {
     fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn sys_exit(code: i64) -> never                       = 0
     fn sys_open(path: *u8, flags: i64, mode: i64) -> i64   = 3
     fn sys_read(fd: i64, buf: *u8, len: isize) -> i64      = 4
     fn sys_close(fd: i64) -> i64                           = 5
@@ -65,14 +66,30 @@ extern syscall {
 }
 
 #[caps(syscall)]
+fn put_bytes(p: *u8, len: i64) {
+    mut sent := 0;
+    while sent < len {
+        left := len - sent;
+        n := write(1, (p as addr + sent as addr) as #[user] *u8, left as isize);
+        if n <= 0 || n > left {
+            // Best-effort diagnostic; exit must not depend on stderr working.
+            error := "nparse: output write failed\n";
+            write(2, error.ptr as #[user] *u8, error.len as isize);
+            sys_exit(1);
+        }
+        sent = sent + n;
+    }
+}
+
+#[caps(syscall)]
 fn put(s: str) {
-    write(1, s.ptr as #[user] *u8, s.len as isize);
+    put_bytes(s.ptr as *u8, s.len as i64);
 }
 
 // Write buf[s .. s+l) — the span echo, from lex.n's dump.
 #[caps(syscall)]
 fn put_span(p: *u8, s: i64, l: i64) {
-    write(1, (p as addr + s as addr) as #[user] *u8, l as isize);
+    put_bytes((p as addr + s as addr) as *u8, l);
 }
 
 fn is_idc(b: i64) -> bool {

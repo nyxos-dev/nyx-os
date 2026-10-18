@@ -49,6 +49,60 @@ the N examples and all four selfhost sources, plus the checker rejection
 corpus. Comparisons are byte-for-byte. Use `CC` to select the C compiler or
 `--sources /path/to/older/selfhost` to demonstrate the pre-fix failures.
 
+## Output progress and failures (NyxOS 6.5.201)
+
+All four N-written drivers send strings and source spans through `put_bytes`.
+It advances by the actual number of bytes written and repeats a short write until
+that span is complete. A negative result, zero progress or a result larger than
+the remaining request terminates the process with status 1. The driver attempts
+one `n<tool>: output write failed` message on stderr; failure of that diagnostic
+does not prevent termination. Existing input/parser diagnostics remain on stdout.
+
+This avoids reporting success with incomplete tokens, AST or generated C. It
+does not undo bytes already accepted by the output destination or make redirected
+files atomic. These are direct writes, without a new buffering layer or output
+file ownership/close protocol. Negative errors are fatal; there is no new retry
+policy for interrupted writes. Empty input and a successful checker produce no
+output and retain status 0 even if stdout would reject a write.
+
+The installable `nlex`, `nparse` and `ngen` C sources are regenerated from the N
+sources and retain the appended `user/nyxrt.c` runtime. `ncheck` remains a compiler
+ladder artifact; this change does not add a package for it.
+
+On Linux x86_64 or WSL:
+
+```sh
+python3 lang/selfhost/tests/test_output_io.py
+python3 lang/selfhost/tests/test_driver_io.py --corpus
+python3 lang/nppc/tests/test_workbench.py
+```
+
+The output runner passes 52 checks: real `/dev/full` and closed-stdout failures,
+short writes, errors and zero progress before/after a prefix, invalid byte counts,
+failed stderr, silent successful inputs, and package/source/runtime correspondence.
+Fault injection affects a temporary copy of the existing host syscall shim.
+The previous sources fail 39 of the 49 behavioral checks (`--sources` selects a
+baseline and skips the three current-package comparisons). The input/corpus runner
+still matches ncc over 33 valid sources and 78 refusals, and the N++ Workbench and
+ownership checks pass. These host results do not establish target behavior by
+themselves; target evidence is recorded separately below.
+
+The final 6.5.201 GCC 14 kernel builds without warnings, passes 229 kernel tests
+in QEMU and reaches login with four CPUs. A separate one-CPU, 512 MiB QEMU session
+installs and verifies `ncc`, `nlex`, `nparse` and `ngen`. A small ring-3 launcher
+redirects stdout to an open RAM-directory descriptor before `execve`: all three
+installed emitters report the real write failure and exit 1. A separately
+cross-compiled `ncheck` does the same while printing a diagnostic; checking valid
+input without output still succeeds. This checks the process's failure result,
+not just refusal of a redirect before it starts.
+
+The 18 installed-driver input cases still match their exact reference files.
+Installed `ncc` and `ngen` generate the same Workbench C, the in-OS C compiler links
+both, and both executions produce the exact 301-byte reference trace. N++ lowering
+and building the standalone checker/launcher happen on the host. The VM closes
+without kernel fault markers. Target short-write/zero-progress injection, full
+disks, GUI interaction, power-loss recovery and long-running use are not claimed.
+
 ## lex.n — the lexer (rung 1: the stream)
 
 `lex.n` is ncc's `next_token`, in N: the whitespace/comment skip

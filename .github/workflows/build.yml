@@ -45,6 +45,9 @@ jobs:
       - name: Test N and N++ bootstrap output errors
         run: python3 tools/test_n_output.py
 
+      - name: Test N-written compiler output progress and failures
+        run: python3 lang/selfhost/tests/test_output_io.py
+
       - name: Test Oneiros CLI text output and model validation
         run: python3 tools/test_oneiros_cli.py
 
