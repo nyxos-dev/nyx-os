@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.198"
+#define KERNEL_VERSION "6.5.199"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1032,6 +1032,7 @@ void set_putchar_hook(int (*hook)(int c));
 // System text clipboard (kernel.c). One shared buffer; the `clip` command and the
 // GUI terminal/editor copy/paste through it. clipboard_get copies up to `cap` bytes
 // from the start and returns how many it wrote.
+#define CLIPBOARD_MAX 4096
 void     clipboard_set(const char* data, uint32_t len);
 uint32_t clipboard_get(char* out, uint32_t cap);
 uint32_t clipboard_len(void);

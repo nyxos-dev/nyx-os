@@ -711,9 +711,14 @@ void terminal_win_key(window_t* win, int key) {
         return;
     }
 
-    // Desktop cut/paste through the system clipboard (v6.4.245). Ctrl+C is
-    // reserved for SIGINT and Ctrl+Z for SIGTSTP (the keyboard driver turns them
-    // into signals), so the terminal takes the X/V pair.
+    if (c == 0x03) {                    // no foreground job: cancel the input line
+        term->input_len = 0;
+        term->cursor_pos = 0;
+        term->input[0] = 0;
+        return;
+    }
+
+    // Foreground Ctrl+C/Z remain signals; idle terminal cut/paste uses X/V.
     if (c == 0x18) {                    // Ctrl+X — cut the whole input line
         if (term->input_len > 0) {
             clipboard_set(term->input, (uint32_t)term->input_len);

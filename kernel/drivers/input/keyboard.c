@@ -111,14 +111,13 @@ static char kbd_translate(int layout, uint8_t sc, int shift, int altgr, int caps
 
 /* Both IRQ and direct polling use the same cooked Ctrl keys. The caller holds
  * kbd_lock while reading modifier state; any signal is sent after unlocking. */
-// With no foreground job, Ctrl+Z belongs to the focused client (editor Undo).
-// Keep SIGTSTP for foreground jobs; Ctrl+C retains its existing signal route.
+// With no foreground job, Ctrl+C/Z belong to the focused client (Copy/Undo).
 extern uint32_t g_foreground_pid;
 static char kbd_control_char(char c, int ctrl, int foreground, int* sig) {
     *sig = 0;
     if (ctrl && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
         c = (char)((c | 0x20) - 'a' + 1);
-        if (c == 3) { *sig = SIGINT; return 0; }
+        if (c == 3 && foreground) { *sig = SIGINT; return 0; }
         if (c == 26 && foreground) { *sig = SIGTSTP; return 0; }
     }
     return c;
@@ -128,7 +127,7 @@ int kbd_control_selftest(void) {
     int sig;
     for (int foreground = 0; foreground < 2; foreground++) {
         for (int i = 0; i < 26; i++) {
-            int expected_sig = i == 2 ? SIGINT : (i == 25 && foreground ? SIGTSTP : 0);
+            int expected_sig = i == 2 && foreground ? SIGINT : (i == 25 && foreground ? SIGTSTP : 0);
             char expected = expected_sig ? 0 : (char)(i + 1);
             if (kbd_control_char((char)('a' + i), 1, foreground, &sig) != expected || sig != expected_sig) return 1;
             if (kbd_control_char((char)('A' + i), 1, foreground, &sig) != expected || sig != expected_sig) return 2;

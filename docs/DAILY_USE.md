@@ -98,8 +98,11 @@ The immediate data and desktop priorities are:
    capacity overflow and makes zero-byte positional writes leave the file unchanged.
    [VFS_WRITE_BOUNDS.md](VFS_WRITE_BOUNDS.md) distinguishes host fault injection,
    kernel tests and RAM/EXT2 syscall checks from remaining seek and storage limits.
-5. Complete the shared clipboard workflow across editor, terminal and Oneiros with
-   selection, bounded text, undo and exact content checks.
+5. Development version 6.5.199 adds bounded Copy/Cut/Paste and single-step undo to
+   Mnemosyne through the shared clipboard. [EDITOR.md](EDITOR.md) records content
+   limits, allocation-failure preservation and host/target evidence. Terminal
+   output selection, per-login clipboard isolation and per-window job routing
+   remain acceptance work.
 
 ### Visual direction and saved personalization
 
@@ -198,7 +201,7 @@ driver contract. Expanding the device list must not weaken the VM regression gat
 - N++ lowers through N and C. M6.6 remains open and `FnMut` is not implemented; a
   workbench test covers a bounded combination of implemented features. Distinguish
   host compilation, target ELF execution, and compilation performed inside NyxOS.
-- Mnemosyne accepts ASCII keyboard input and has no shared clipboard handling. Its
+- Mnemosyne accepts ASCII keyboard input and bounded shared clipboard text. Its
   exact text I/O contract preserves supported bytes but does not add UTF-8 editing;
   the byte-oriented 8×16 font renderer and Spanish keymap do not establish Unicode
   support. [EDITOR.md](EDITOR.md) documents row/path limits, unsupported formats,

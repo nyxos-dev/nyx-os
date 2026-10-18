@@ -696,10 +696,10 @@ int editor_goto_selftest(void) {
 // Push the current buffer onto the undo stack before a mutating edit. Snapshots only the used
 // lines (line_count * EDITOR_LINE_LEN, contiguous in lines[]) so a small file costs little; drops
 // the oldest snapshot when the stack is full. A failed kmalloc just skips undo for this edit.
-static void editor_push_undo(editor_win_t* ed) {
+static int editor_push_undo(editor_win_t* ed) {
     int bytes = ed->line_count * EDITOR_LINE_LEN;
     char* snap = (char*)kmalloc(bytes);
-    if (!snap) return;
+    if (!snap) return 0;
     memcpy_asm(snap, ed->lines, bytes);
     if (ed->undo_n == EDITOR_UNDO_N) {                       // full: free + shift out the oldest
         kfree(ed->undo[0].text);
@@ -715,6 +715,111 @@ static void editor_push_undo(editor_win_t* ed) {
     ed->undo[ed->undo_n].selected = ed->selection_active;
     ed->undo[ed->undo_n].crlf = ed->crlf;
     ed->undo_n++;
+    return 1;
+}
+
+static void editor_copy_selection(editor_win_t* ed, int cut) {
+    int sx, sy, ex, ey;
+    if (!editor_selection_bounds(ed, &sx, &sy, &ex, &ey)) {
+        snprintf(ed->status, sizeof(ed->status), "Select text first");
+        return;
+    }
+    uint32_t size = 0;
+    for (int y = sy; y <= ey; y++) {
+        int first = y == sy ? sx : 0;
+        int last = y == ey ? ex : (int)strlen(ed->lines[y]);
+        size += (uint32_t)(last - first);
+        if (y < ey) size += ed->crlf ? 2 : 1;
+    }
+    if (size > CLIPBOARD_MAX) {
+        snprintf(ed->status, sizeof(ed->status), "Selection exceeds %d clipboard bytes", CLIPBOARD_MAX);
+        return;
+    }
+    if (cut && sx + (int)strlen(ed->lines[ey]) - ex >= EDITOR_LINE_LEN) {
+        snprintf(ed->status, sizeof(ed->status), "Cut would exceed %d columns", EDITOR_LINE_LEN - 1);
+        return;
+    }
+    char* text = (char*)kmalloc(size);
+    if (!text) { snprintf(ed->status, sizeof(ed->status), "Clipboard: out of memory"); return; }
+    uint32_t pos = 0;
+    for (int y = sy; y <= ey; y++) {
+        int first = y == sy ? sx : 0;
+        int last = y == ey ? ex : (int)strlen(ed->lines[y]);
+        for (int x = first; x < last; x++) text[pos++] = ed->lines[y][x];
+        if (y < ey) {
+            if (ed->crlf) text[pos++] = '\r';
+            text[pos++] = '\n';
+        }
+    }
+    if (cut && !editor_push_undo(ed)) {
+        kfree(text);
+        snprintf(ed->status, sizeof(ed->status), "Cut cancelled: cannot save undo");
+        return;
+    }
+    clipboard_set(text, size);
+    kfree(text);
+    if (cut) editor_delete_selection(ed);
+    snprintf(ed->status, sizeof(ed->status), "%s %d bytes", cut ? "Cut" : "Copied", (int)size);
+}
+
+static void editor_paste(editor_win_t* ed) {
+    if (!clipboard_len()) { snprintf(ed->status, sizeof(ed->status), "Clipboard is empty"); return; }
+    char* text = (char*)kmalloc(CLIPBOARD_MAX);
+    if (!text) { snprintf(ed->status, sizeof(ed->status), "Paste: out of memory"); return; }
+    uint32_t size = clipboard_get(text, CLIPBOARD_MAX);
+    if (!size) { kfree(text); return; }
+    int sx, sy, ex, ey;
+    if (!editor_selection_bounds(ed, &sx, &sy, &ex, &ey)) {
+        sx = ex = ed->cursor_x; sy = ey = ed->cursor_y;
+    }
+    int rows = 0, col = sx;
+    const char* error = NULL;
+    for (uint32_t i = 0; i < size; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (!c) { error = "NUL bytes are unsupported"; break; }
+        if (c == '\r') {
+            if (i + 1 >= size || text[++i] != '\n') { error = "bare CR is unsupported"; break; }
+            c = '\n';
+        }
+        if (c == '\n') { rows++; col = 0; }
+        else if (++col >= EDITOR_LINE_LEN) { error = "line exceeds 255 bytes"; break; }
+    }
+    int count = ed->line_count - (ey - sy) + rows;
+    int tail = (int)strlen(ed->lines[ey]) - ex;
+    if (!error && col + tail >= EDITOR_LINE_LEN) error = "joined line exceeds 255 bytes";
+    if (!error && count > EDITOR_MAX_LINES) error = "document exceeds 512 rows";
+    if (error) {
+        kfree(text);
+        snprintf(ed->status, sizeof(ed->status), "Paste rejected: %s", error);
+        return;
+    }
+    // Stage the complete result so validation/OOM never consumes the selection.
+    char (*lines)[EDITOR_LINE_LEN] = kmalloc((size_t)count * EDITOR_LINE_LEN);
+    if (!lines) { kfree(text); snprintf(ed->status, sizeof(ed->status), "Paste: out of memory"); return; }
+    memset_asm(lines, 0, (size_t)count * EDITOR_LINE_LEN);
+    for (int y = 0; y < sy; y++) memcpy_asm(lines[y], ed->lines[y], EDITOR_LINE_LEN);
+    memcpy_asm(lines[sy], ed->lines[sy], (size_t)sx);
+    int y = sy, x = sx;
+    for (uint32_t i = 0; i < size; i++) {
+        if (text[i] == '\r') continue;
+        if (text[i] == '\n') { y++; x = 0; }
+        else lines[y][x++] = text[i];
+    }
+    memcpy_asm(lines[y] + x, ed->lines[ey] + ex, (size_t)tail + 1);
+    for (int r = ey + 1; r < ed->line_count; r++)
+        memcpy_asm(lines[y + r - ey], ed->lines[r], EDITOR_LINE_LEN);
+    if (!editor_push_undo(ed)) {
+        kfree(lines); kfree(text);
+        snprintf(ed->status, sizeof(ed->status), "Paste cancelled: cannot save undo");
+        return;
+    }
+    memcpy_asm(ed->lines, lines, (size_t)count * EDITOR_LINE_LEN);
+    ed->line_count = count;
+    ed->cursor_x = x; ed->cursor_y = y;
+    ed->modified = 1;
+    editor_clear_selection(ed);
+    kfree(lines); kfree(text);
+    snprintf(ed->status, sizeof(ed->status), "Pasted %d bytes", (int)size);
 }
 
 // Ctrl+Z: restore (and drop) the most recent snapshot.
@@ -891,6 +996,13 @@ void editor_win_key(window_t* win, int key) {
 
     if (key == 0x13) { // Ctrl+S
         editor_save(ed);
+        return;
+    }
+
+    if (key == 0x03 || key == 0x18 || key == 0x16) {
+        if (key == 0x16) editor_paste(ed);
+        else editor_copy_selection(ed, key == 0x18);
+        editor_adjust_scroll(ed, win);
         return;
     }
 

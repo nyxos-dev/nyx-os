@@ -7585,7 +7585,7 @@ static void cmd_screenshot(int argc, char** argv) {
 // A single shared text buffer. `clip <text>` copies, `clip` (no args) pastes, `clip -c` clears.
 // The clipboard_* API is exposed (kernel.h) so the GUI terminal/editor can later wire Ctrl+C/V to
 // the same buffer. Content is opaque bytes; the +1 slot lets paste NUL-terminate for printf.
-#define CLIP_MAX 4096
+#define CLIP_MAX CLIPBOARD_MAX
 static char clip_buf[CLIP_MAX + 1];
 static uint32_t clip_len_v;
 

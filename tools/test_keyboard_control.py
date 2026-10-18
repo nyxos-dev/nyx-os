@@ -62,15 +62,15 @@ static int sequence(int ctrl_irq, int char_irq, int foreground) {
     CHECK(key(0x2A, ctrl_irq) == 0);           /* Shift down */
     CHECK(key(0x20, char_irq) == 4);           /* Ctrl-Shift-D */
     CHECK(key(0xAA, ctrl_irq) == 0);           /* Shift up */
-    CHECK(key(0x2E, char_irq) == 0);           /* Ctrl-C is a signal, not input */
-    CHECK(signal_count == 1 && last_signal == SIGINT);
+    CHECK(key(0x2E, char_irq) == (foreground ? 0 : 3));
+    CHECK(signal_count == foreground && last_signal == (foreground ? SIGINT : 0));
     CHECK(key(0x2C, char_irq) == (foreground ? 0 : 26)); /* Ctrl-Z: job signal or client Undo */
-    CHECK(signal_count == 1 + foreground && last_signal == (foreground ? SIGTSTP : SIGINT));
+    CHECK(signal_count == 2 * foreground && last_signal == (foreground ? SIGTSTP : 0));
     CHECK(key(0x18, char_irq) == 15);          /* Ctrl-O */
     CHECK(key(0x2D, char_irq) == 24);          /* Ctrl-X */
     CHECK(key(0x9D, ctrl_irq) == 0);           /* Ctrl up */
     CHECK(key(0x20, char_irq) == 'd');
-    CHECK(signal_count == 1 + foreground && !bad_lock && !kbd_lock.locked);
+    CHECK(signal_count == 2 * foreground && !bad_lock && !kbd_lock.locked);
     return 0;
 }
 int main(void) {

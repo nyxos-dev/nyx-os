@@ -16,6 +16,7 @@ ROOT = next(p for p in Path(__file__).resolve().parents if (p / "kernel/gui/apps
 
 HARNESS = r'''
 #include "@SOURCE@"
+@CLIPBOARD@
 extern void* malloc(size_t size);
 extern void free(void* ptr);
 extern int open(const char* path, int flags, ...);
@@ -309,7 +310,10 @@ def main():
     print(f"Evidence: {evidence}", flush=True)
     vfs = (ROOT / "kernel/fs/vfs.c").read_text()
     paths = function_source(vfs, "join_mount_relative") + "\n" + function_source(vfs, "vfs_realpath")
+    core = (ROOT / "kernel/core/kernel.c").read_text()
+    clipboard = core[core.index("#define CLIP_MAX"):core.index("// KAT: set/get round-trip")]
     harness = HARNESS.replace("@SOURCE@", source.as_posix()).replace("@PATH_FUNCTIONS@", paths)
+    harness = harness.replace("@CLIPBOARD@", clipboard)
     (evidence / "harness.c").write_text(harness)
     command = ["gcc", "-std=gnu99", "-O0", "-ffreestanding", "-Wall", "-Wextra", "-Werror",
                "-ffunction-sections", "-fdata-sections", "-no-pie", "-Wl,--gc-sections",
