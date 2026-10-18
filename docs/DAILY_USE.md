@@ -129,6 +129,11 @@ The immediate data and desktop priorities are:
     allocation exits with an error instead of dereferencing the failed result.
     [selfhost/README.md](../lang/selfhost/README.md) records the checks and the
     remaining fixed-arena bounds and demand-paging limitations.
+12. Development version 6.5.206 rejects the minimum signed BMP height without
+    overflowing its magnitude calculation. Existing valid image row order and
+    pixels are retained. The decoder section in [ARCHITECTURE.md](ARCHITECTURE.md)
+    describes the host regression; browser memory budgets and blocking network
+    operations remain separate work.
 
 ### Visual direction and saved personalization
 

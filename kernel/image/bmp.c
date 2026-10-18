@@ -24,10 +24,11 @@ int bmp_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
     int32_t  hh = bmp_s32(src + 22);
     uint16_t bpp  = bmp_u16(src + 28);
     uint32_t comp = bmp_u32(src + 30);
-    int top_down = 0;
-    if (hh < 0) { top_down = 1; hh = -hh; }
-    if (w <= 0 || hh <= 0) return -4;
-    uint32_t width = (uint32_t)w, height = (uint32_t)hh;
+    int top_down = hh < 0;
+    if (w <= 0 || hh == 0) return -4;
+    // Widen before negation: the minimum signed height has no int32_t magnitude.
+    uint32_t width = (uint32_t)w;
+    uint32_t height = top_down ? (uint32_t)(-(int64_t)hh) : (uint32_t)hh;
     if (comp != 0) return -5;                                // BI_RGB (uncompressed) only
     if (bpp != 24 && bpp != 32 && bpp != 8) return -6;
     if (width > BMP_MAX_DIM || height > BMP_MAX_DIM || (uint64_t)width * height > BMP_MAX_PIXELS) return -7;
@@ -169,6 +170,7 @@ int bmp_selftest(void) {
       negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[30] = 1;                  neg += bmp_rejects(bad, sizeof bad); // BI_RLE (compressed)
       negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[18]=0xa0; bad[19]=0x86; bad[20]=1; neg += bmp_rejects(bad, sizeof bad); // width 100000 > cap
       negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[10]=0xff; bad[11]=0xff;   neg += bmp_rejects(bad, sizeof bad); // pixel offset past EOF
+      negtot++; __builtin_memcpy(bad, BMP24, sizeof bad); bad[22]=bad[23]=bad[24]=0; bad[25]=0x80; neg += bmp_rejects(bad, sizeof bad); // minimum signed height
       total++; pass += (neg == negtot);
       printf("bmp: reject %d/%d malformed inputs rejected\n", neg, negtot);
     }

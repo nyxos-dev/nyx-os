@@ -154,8 +154,21 @@ handshake step by step, and the key-pinned X.509 trust model (`X509_OK` / `INCOM
 
 ### Image decoders — `kernel/image/`
 From-scratch **PNG** (with per-chunk CRC-32 validation), **BMP**, **GIF** (including
-animation), and **JPEG** decoders, plus a "reject" self-test that feeds deliberately
-malformed inputs to prove the decoders fail safely rather than misbehaving.
+animation), and **JPEG** decoders, plus a "reject" self-test for selected malformed
+inputs. These fixed cases do not establish safety for every possible input.
+
+Development version **6.5.206** computes BMP height magnitude in 64-bit signed
+arithmetic before applying the existing dimension and pixel limits. This rejects
+the minimum signed 32-bit height without undefined negation; supported top-down
+and bottom-up images retain their row order. `bmptest` includes this malformed
+height. `python3 tools/test_bmp_bounds.py` adds 251 ASan/UBSan host checks for exact
+RGBA, signed dimension boundaries, truncation, failed allocation and recovery.
+The same test detects the negation error in 6.5.205. This is a bounded BMP fix;
+it does not add image formats, aggregate browser image budgets or asynchronous I/O.
+The warning-free GCC 14 build passes 229 kernel tests in QEMU, including `bmptest`
+5/5 with seven malformed inputs rejected, and reaches login with four CPUs.
+Sanitizer and allocation-failure checks are host evidence; no new GUI, general
+image-format fuzzing or physical-hardware qualification is claimed.
 
 ### GUI — `kernel/gui/`
 - **core/** — the **compositor** and window manager: window stacking, dragging, focus, the

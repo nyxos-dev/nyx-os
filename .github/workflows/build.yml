@@ -51,6 +51,9 @@ jobs:
       - name: Test N-written compiler allocation failures
         run: python3 lang/selfhost/tests/test_allocations.py
 
+      - name: Test BMP geometry and allocation failures
+        run: python3 tools/test_bmp_bounds.py
+
       - name: Test Oneiros CLI text output and model validation
         run: python3 tools/test_oneiros_cli.py
 
