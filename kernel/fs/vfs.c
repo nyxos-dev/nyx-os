@@ -10,6 +10,7 @@
 #define VFS_SYMLINK   2     // vfs_node_t.type: 0=file, 1=dir, 2=symlink (target string in ->data)
 #define SYMLINK_MAX   8     // max symlink hops before giving up (loop / too-deep guard)
 #define BLOCK_SIZE    512
+#define VFS_MAX_FILE_SIZE 0x7FFFFFFFu  // file sizes and byte counts return through int
 
 // Mount table
 static mount_entry_t mount_table[MAX_MOUNT_POINTS];
@@ -868,7 +869,7 @@ static void flush_mount_node(vfs_node_t* ino) {
 // redirect and the welcome.txt setup — both now build one buffer and write once.)
 int vfs_write(int fd, const void* buf, size_t count) {
     vfs_node_t* ino = handle_to_node(fd);
-    if (!ino || ino->type != 0) return -1;
+    if (!ino || ino->type != 0 || count > VFS_MAX_FILE_SIZE) return -1;
     if (!ino->data || ino->size < count) {
         uint8_t* new_data = (uint8_t*)kmalloc(count + BLOCK_SIZE);
         if (!new_data) return -1;
@@ -914,12 +915,22 @@ int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
 
 // Offset-aware write: write `count` bytes at `offset`, growing the file (and
 // zero-filling any gap) as needed without discarding existing content.
+static uint32_t vfs_growth_capacity(uint32_t end, uint32_t oldcap) {
+    if (end > VFS_MAX_FILE_SIZE) return 0;
+    uint32_t capacity = end <= VFS_MAX_FILE_SIZE - BLOCK_SIZE
+                      ? end + BLOCK_SIZE : VFS_MAX_FILE_SIZE;
+    uint32_t doubled = oldcap <= VFS_MAX_FILE_SIZE / 2
+                     ? oldcap * 2 : VFS_MAX_FILE_SIZE;
+    return capacity > doubled ? capacity : doubled;
+}
+
 int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     vfs_node_t* ino = handle_to_node(fd);
-    if (!ino || ino->type != 0) return -1;
+    if (!ino || ino->type != 0 || count > VFS_MAX_FILE_SIZE) return -1;
+    if (count == 0) return 0;
     if (ino->dev_type) return (int)count;      // /dev/null etc: accept + discard
+    if (offset > VFS_MAX_FILE_SIZE || count > VFS_MAX_FILE_SIZE - offset) return -1;
     uint32_t end = offset + count;
-    if (end < offset) return -1;                 // overflow
     // Grow ino->data only when the write runs past the CURRENT allocation, and then grow
     // GEOMETRICALLY (>= double). The old code reallocated the whole buffer on EVERY write
     // that extended the file, so a large file written in small chunks (a tcc object built
@@ -929,8 +940,7 @@ int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     // needed and the reallocs drop to O(log n).
     if (!ino->data || end > ksize(ino->data)) {
         uint32_t oldcap = ksize(ino->data);      // 0 when ino->data is NULL
-        uint32_t newcap = end + BLOCK_SIZE;
-        if (newcap < oldcap * 2) newcap = oldcap * 2;
+        uint32_t newcap = vfs_growth_capacity(end, oldcap);
         uint8_t* nd = (uint8_t*)kmalloc(newcap);
         if (!nd) return -1;
         memset_asm(nd, 0, newcap);               // zero-fill gaps beyond old data
@@ -988,6 +998,17 @@ int vfs_pwrite_selftest(void) {
     }
     // 7) a bad fd is refused
     if (!rc && vfs_pwrite(0, "z", 1, 0) != -1) rc = 25;
+    if (!rc) {
+        uint8_t* before = n->data;
+        uint32_t size = n->size;
+        uint8_t dirty = n->dirty;
+        if (vfs_pwrite(fd, "z", 1, 0xFFFFFFFEu) != -1 ||
+            vfs_pwrite(fd, "z", 1, VFS_MAX_FILE_SIZE) != -1 ||
+            vfs_pwrite(fd, NULL, 0, 0xFFFFFFFFu) != 0 ||
+            vfs_write(fd, "z", (size_t)-1) != -1) rc = 26;
+        else if (n->data != before || n->size != size || n->dirty != dirty ||
+                 vfs_pread(fd, rb, 1, 0) != 1 || rb[0] != 'H') rc = 27;
+    }
     if (n->data) { kfree(n->data); n->data = NULL; }
     free_node(n);
     return rc;
@@ -1674,6 +1695,7 @@ int vfs_touch(const char* path) {
 }
 
 int vfs_write_file(const char* path, const void* buf, uint32_t len) {
+    if (len > VFS_MAX_FILE_SIZE) return -1;
     char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
     mount_entry_t* me = vfs_find_mount(path);
     if (me && me->write_file) {

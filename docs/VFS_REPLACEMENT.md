@@ -23,10 +23,13 @@ Run `python3 tools/test_vfs_replace.py` on Linux or WSL. It executes the actual
 replacement function, inode structure, pool allocation/recycling and bounded
 directory insertion functions, with controlled path/mount fixtures and allocator
 failure injection. AddressSanitizer and UndefinedBehaviorSanitizer check memory
-accesses. The 2,263 checks include repeated allocation failures, inode exhaustion,
+accesses. The original 6.5.197 run's 2,263 checks include repeated allocation failures, inode exhaustion,
 full directories, empty files, alias input, retained open references and unchanged
 mounted-filesystem callback results. The regression fails against 6.5.196 before
 dereferencing its freed buffer.
+
+From 6.5.198, four additional checks cover the signed byte-count bound, bringing
+this runner to 2,267 assertions. See [VFS_WRITE_BOUNDS.md](VFS_WRITE_BOUNDS.md).
 
 The kernel's `vfs-replace` selftest exercises the real path lookup, allocator,
 open descriptor, alias replacement, read-only refusal, truncation and readback.

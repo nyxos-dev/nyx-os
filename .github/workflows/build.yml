@@ -63,6 +63,9 @@ jobs:
       - name: Test RAM VFS replacement allocation failures
         run: python3 tools/test_vfs_replace.py
 
+      - name: Test VFS write bounds and sparse growth
+        run: python3 tools/test_vfs_growth.py
+
       - name: Test memory reporting and free options
         run: python3 tools/test_memory_reporting.py
 

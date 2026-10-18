@@ -6,6 +6,7 @@ check regression sensitivity. Path lookup and mounts are controlled fixtures;
 this does not qualify disk durability or concurrent writers.
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -88,6 +89,8 @@ int main(void) {
     vfs_node_t* n = old_file();
     uint8_t* prior = n->data;
     fail_alloc = 1;
+    CHECK(vfs_write_file("/old", "X", 0x80000000u) == -1);
+    CHECK(n->data == prior && n->size == 4 && allocs == 1 && frees == 0);
     CHECK(vfs_write_file("/old", "NEW", 3) == -1);
     CHECK(n->data == prior && n->size == 4);
     CHECK(frees == 0 && live == 1 && n->open_refs == 2);
@@ -161,6 +164,8 @@ int main(void) {
         CHECK(allocs == 0 && node_count == 0);
     }
     CHECK(mount_calls == 4);
+    CHECK(vfs_write_file("/mnt/file", payload, 0x80000000u) == -1);
+    CHECK(mount_calls == 4);
     CHECK(vfs_write_file("/mnt", payload, 4) == 4);
     CHECK(strcmp(mount_path, "/") == 0);
     reset();
@@ -178,6 +183,7 @@ def main():
     start = source.index("typedef struct vfs_node {")
     end = source.index("} vfs_node_t;", start) + len("} vfs_node_t;")
     code = HARNESS.replace("@NODE@", source[start:end])
+    code = "\n".join(re.findall(r"^#define VFS_MAX_FILE_SIZE[^\n]*", source, re.M)) + "\n" + code
     code = code.replace("@POOL@", "\n".join(function(source, signature) for signature in (
         "static vfs_node_t* alloc_node(void)", "static void free_node(vfs_node_t* n)",
         "static int vfs_append_child(vfs_node_t* parent, vfs_node_t* child)")))

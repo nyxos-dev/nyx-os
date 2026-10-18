@@ -94,7 +94,11 @@ The immediate data and desktop priorities are:
    `vfs_write_file` cannot allocate its replacement, and cleans up failed new-file
    creation. See [VFS_REPLACEMENT.md](VFS_REPLACEMENT.md) for regression coverage,
    transient memory cost and the separate mounted-filesystem/concurrency limits.
-4. Complete the shared clipboard workflow across editor, terminal and Oneiros with
+4. Development version 6.5.198 rejects unrepresentable VFS writes, prevents growth
+   capacity overflow and makes zero-byte positional writes leave the file unchanged.
+   [VFS_WRITE_BOUNDS.md](VFS_WRITE_BOUNDS.md) distinguishes host fault injection,
+   kernel tests and RAM/EXT2 syscall checks from remaining seek and storage limits.
+5. Complete the shared clipboard workflow across editor, terminal and Oneiros with
    selection, bounded text, undo and exact content checks.
 
 ### Visual direction and saved personalization
