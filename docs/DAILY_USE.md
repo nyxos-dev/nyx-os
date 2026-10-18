@@ -86,8 +86,10 @@ The immediate data and desktop priorities are:
    edited document preserved, Ctrl+A/replacement and PS/2 Ctrl+Z. Close the broader
    persistence gate only after save/reopen/reboot checks; disk extraction after a
    single session does not establish that gate. Failed writes are not atomic.
-2. Connect existing desktop configuration to persistent per-user storage and report
-   write failures. Verify logout and reboot, not only closing and reopening a window.
+2. Development version 6.5.196 connects desktop configuration to per-user storage,
+   checks writes/readback and distinguishes disk, RAM and failure notifications.
+   [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) records the load/save contract and evidence.
+   Broader persistence, concurrent-writer and power-loss recovery remain separate gates.
 3. Complete the shared clipboard workflow across editor, terminal and Oneiros with
    selection, bounded text, undo and exact content checks.
 
@@ -102,9 +104,10 @@ giving each window unrelated controls or styling.
 
 This is planned work, with the VM as its first test environment. Theme, layout and
 widget choices should be user-configurable, saved and restored after logout/reboot.
-Hemera already has configuration loading/saving and numerous appearance controls;
-extend those facilities. Its current `/etc/nyx.conf` lives in the RAM filesystem,
-so an in-session save does not establish persistence across reboot.
+Hemera loads shared defaults from RAM-backed `/etc/nyx.conf`, then per-user
+`nyx.conf` from the logged-in home. From 6.5.196, the picker saves all supported
+settings in that home and resets every knob before each login. A mounted home
+provides disk storage; a fallback RAM home still loses changes on reboot.
 Widgets must use real subsystem measurements or show a clear unavailable state;
 decorative or simulated values are not evidence of working resource accounting or
 media integration. In particular, the RAM widget must retain the distinction between

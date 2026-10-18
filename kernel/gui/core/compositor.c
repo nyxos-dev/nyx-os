@@ -4012,11 +4012,18 @@ int accent_config_selftest(void) {
 // nyx.conf `rounding` — the window/menu corner radius in px, clamped to [0, WIN_RADIUS_MAX].
 // 0 = fully square windows (a classic rice choice); a leading non-digit or NULL -> 0. Pure
 // (does not set g_corner_radius) so the KAT can check the parse in isolation.
-static int rounding_resolve(const char* val) {
+static int config_uint(const char* val, int maximum) {
     int r = 0;
-    if (val) for (const char* p = val; *p >= '0' && *p <= '9'; p++) r = r * 10 + (*p - '0');
-    if (r > WIN_RADIUS_MAX) r = WIN_RADIUS_MAX;
-    return r < 0 ? 0 : r;
+    if (val) for (const char* p = val; *p >= '0' && *p <= '9'; p++) {
+        int digit = *p - '0';
+        if (r > maximum / 10 || r * 10 + digit > maximum) r = maximum;
+        else r = r * 10 + digit;
+    }
+    return r;
+}
+
+static int rounding_resolve(const char* val) {
+    return config_uint(val, WIN_RADIUS_MAX);
 }
 
 // KAT: the `rounding` parser clamps to [0, WIN_RADIUS_MAX] and maps NULL / non-numeric to 0.
@@ -4036,10 +4043,7 @@ int rounding_selftest(void) {
 // set g_wallpaper_dim) so the KAT can check the parse in isolation.
 #define WALLPAPER_DIM_MAX 80
 static int wallpaper_dim_resolve(const char* val) {
-    int d = 0;
-    if (val) for (const char* p = val; *p >= '0' && *p <= '9'; p++) d = d * 10 + (*p - '0');
-    if (d > WALLPAPER_DIM_MAX) d = WALLPAPER_DIM_MAX;
-    return d < 0 ? 0 : d;
+    return config_uint(val, WALLPAPER_DIM_MAX);
 }
 
 // KAT: the `wallpaper_dim` parser clamps to [0, WALLPAPER_DIM_MAX] and maps NULL / non-numeric to 0.
@@ -4141,19 +4145,56 @@ int scheme_selftest(void) {
     return 0;
 }
 
-// Rice config foundation (v6.5.23): read /etc/nyx.conf at desktop start and apply the
-// desktop settings it names. A missing file or unknown value just leaves the defaults, so
-// the desktop always comes up. Currently drives the wallpaper style + accent color; future
-// keys (font, taskbar…) hang off the same parser.
-static void apply_nyx_config(void) {
-    theme_set_accent(fb_rgb(130, 90, 210));     // Morado default UI accent (may be overridden below)
-    int fd = vfs_open("/etc/nyx.conf", 0, 0);   // O_RDONLY; -1 if absent
-    if (fd < 0) return;
-    static char buf[2048];
-    int n = vfs_read(fd, buf, sizeof(buf) - 1);
-    vfs_close(fd);
-    if (n <= 0) return;
+void reset_nyx_config(void) {
+    wallpaper_set_style(WP_STYLE_NIGHTFALL);
+    wallpaper_set_color(0);
+    theme_set_accent(wallpaper_base_color());
+    g_widget_on = 1; g_widget_pos = 0;
+    g_clock_12h = 0; g_desktop_icons_visible = 0; g_gaps = 0;
+    g_border_color = 0; g_border_inactive = 0; g_panel_tint = 0;
+    g_corner_radius = WIN_RADIUS; g_shadows = 1;
+    g_title_center = 0; g_wallpaper_dim = 0;
+}
+
+static int user_config_path(char* path, int cap) {
+    if (g_login_home[0] != '/') return 0;
+    int n = snprintf(path, cap, "%s%snyx.conf", g_login_home,
+                     g_login_home[strlen(g_login_home) - 1] == '/' ? "" : "/");
+    return n > 0 && n < cap;
+}
+
+// Read the whole bounded image before applying anything. Mounted reads bypass cached
+// VFS handles so save verification checks the filesystem's returned bytes.
+static int read_nyx_config(const char* path, char* buf, int cap) {
+    uint32_t size = 0; int is_dir = 0;
+    mount_entry_t* me = vfs_find_mount(path);
+    int n;
+    if (me) {
+        const char* sub = path + strlen(me->mount_point);
+        if (!*sub) sub = "/";
+        if (!me->resolve || !me->read_file || !me->get_size || !me->readdir) return -2;
+        if (!me->resolve(sub)) return -1;
+        dirent_t entry;
+        if (me->readdir(sub, &entry, 1) >= 0) return -2;
+        size = me->get_size(sub);
+        if (size >= (uint32_t)cap) return -2;
+        n = me->read_file(sub, buf, (uint32_t)cap - 1);
+        if (me->get_size(sub) != size) return -2;
+    } else {
+        if (vfs_stat(path, &size, &is_dir) < 0) return -1;
+        if (is_dir || size >= (uint32_t)cap) return -2;
+        int fd = vfs_open(path, 0, 0);
+        if (fd < 0) return -2;
+        n = vfs_read(fd, buf, (size_t)cap - 1);
+        if (vfs_close(fd) < 0) return -2;
+    }
+    if (n < 0 || (uint32_t)n != size) return -2;
+    for (int i = 0; i < n; i++) if (!buf[i]) return -2;
     buf[n] = '\0';
+    return n;
+}
+
+static void apply_config_text(const char* buf) {
     char val[64];
     if (nyxconf_get(buf, "wallpaper", val, sizeof val)) {
         int s = wallpaper_style_from_name(val);
@@ -4199,10 +4240,7 @@ static void apply_nyx_config(void) {
                                    strcmp(val, "true") == 0 || strcmp(val, "yes") == 0);
     }
     if (nyxconf_get(buf, "gaps", val, sizeof val)) {
-        int gp = 0;                                  // px between tiles + around the screen
-        for (const char* p = val; *p >= '0' && *p <= '9'; p++) gp = gp * 10 + (*p - '0');
-        if (gp > 64) gp = 64;                        // clamp to a sane rice range
-        g_gaps = gp;
+        g_gaps = config_uint(val, 64);
     }
     if (nyxconf_get(buf, "border", val, sizeof val)) {
         g_border_color = border_resolve(val);        // focused-window outline; 0 = follow accent
@@ -4211,10 +4249,7 @@ static void apply_nyx_config(void) {
         g_border_inactive = border_resolve(val);     // unfocused-window outline; 0 = neutral bevel
     }
     if (nyxconf_get(buf, "panel_tint", val, sizeof val)) {
-        int t = 0;                                   // % the taskbar tints toward the wallpaper
-        for (const char* p = val; *p >= '0' && *p <= '9'; p++) t = t * 10 + (*p - '0');
-        if (t > 100) t = 100;
-        g_panel_tint = t;
+        g_panel_tint = config_uint(val, 100);
     }
     if (nyxconf_get(buf, "rounding", val, sizeof val)) {
         g_corner_radius = rounding_resolve(val);      // window/menu corner radius; 0 = square
@@ -4230,9 +4265,18 @@ static void apply_nyx_config(void) {
     }
 }
 
-// Write the current theme (wallpaper style + accent color + widget state) back to
-// /etc/nyx.conf, so a change made in the GUI (the Wallpaper theme picker) persists across
-// reboots — apply_nyx_config reads it at desktop start. The inverse of apply_nyx_config.
+static void apply_nyx_config(void) {
+    static char buf[2048];
+    char path[96];
+    reset_nyx_config();
+    int n = read_nyx_config("/etc/nyx.conf", buf, sizeof buf);
+    if (n >= 0) apply_config_text(buf);
+    if (!user_config_path(path, sizeof path)) return;
+    n = read_nyx_config(path, buf, sizeof buf);
+    if (n >= 0) apply_config_text(buf);
+    else if (n == -2) notify_push("Desktop settings", "Saved settings unreadable");
+}
+
 // Reverse of border_resolve for save_nyx_config: 0 -> "accent", else the palette name whose
 // rgb matches (a border only ever holds 0 or one of the 11 palette colors, so this round-trips
 // exactly). An unrecognised rgb falls back to "accent" so the write is always valid.
@@ -4284,10 +4328,18 @@ void save_nyx_config(void) {
         g_shadows ? "on" : "off",
         g_title_center ? "center" : "left",
         g_wallpaper_dim);
-    if (n <= 0) return;
-    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;   // snprintf returns the intended length; clamp to what fit
-    int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }
+    char path[96], check[640];
+    if (n <= 0 || n >= (int)sizeof buf || !user_config_path(path, sizeof path)) {
+        notify_push("Desktop settings", "Could not save your settings");
+        return;
+    }
+    mount_entry_t* me = vfs_find_mount(path);
+    if ((me && !me->write_file) || vfs_write_file(path, buf, (uint32_t)n) != n ||
+        read_nyx_config(path, check, sizeof check) != n || strcmp(buf, check)) {
+        notify_push("Desktop settings", "Save failed; active for now");
+        return;
+    }
+    notify_push("Desktop settings", me ? "Saved in your home on disk" : "Saved in RAM; lost on reboot");
 }
 
 static void draw_welcome_windows(void) {
@@ -4361,7 +4413,7 @@ void compositor_run(void) {
     uint8_t prev_btns = 0;
     ss_last_activity = get_ticks(); screensaver_active = 0;   // start the idle timer fresh
 
-    apply_nyx_config();          // rice: /etc/nyx.conf picks the wallpaper/accent before first paint
+    apply_nyx_config();          // defaults, system config, then this account's saved settings
     draw_welcome_windows();
     redraw_all();
     save_cursor_bg(mouse_x, mouse_y);
@@ -4544,7 +4596,7 @@ void compositor_run(void) {
         }
 
         // Right-click: desktop context menu
-        if ((btns & 2) && !(btns & 1)) {
+        if ((btns & 2) && !(prev_btns & 2) && !(btns & 1)) {
             // Check if we hit desktop (not on a window, not on taskbar)
             int on_desktop = 1;
             if (my >= (int)(fh - TASKBAR_H)) on_desktop = 0; // taskbar (fh: the function-level framebuffer height)

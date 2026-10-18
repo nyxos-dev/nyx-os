@@ -374,8 +374,8 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
         int x = cx + WP_STYLE_X(i);
         int y = cy + WP_STYLE_Y(i);
         if (mx >= x && mx < x + WP_STYLE_BW && my >= y && my < y + WP_STYLE_BH) {
-            g_style = i;                      // the compositor repaints (incl. the background)
-            save_nyx_config();                // persist the choice to /etc/nyx.conf
+            wallpaper_set_style(i);
+            save_nyx_config();
             return;
         }
     }
@@ -388,7 +388,7 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
         int x = cx + WP_OX + col * (WP_SW + WP_GAP);
         int y = cy + WP_OY + row * WP_ROW_H;
         if (mx >= x && mx < x + WP_SW && my >= y && my < y + WP_SH) {
-            g_wallpaper = i;                  // the compositor repaints (incl. the background)
+            wallpaper_set_color(i);
             theme_set_accent(wallpaper_base_color());
             save_nyx_config();
             return;
@@ -410,10 +410,7 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
     {
         int x = cx + WP_RST_X, y = cy + WP_RST_OY;
         if (mx >= x && mx < x + WP_RST_W && my >= y && my < y + WP_RST_H) {
-            g_style = WP_STYLE_NIGHTFALL;
-            g_wallpaper = 0;                      // Morado (brand purple), index 0
-            theme_set_accent(wallpaper_base_color());
-            g_widget_on = 1; g_widget_pos = 0;    // panel on, bottom-right
+            reset_nyx_config();
             save_nyx_config();
             return;
         }

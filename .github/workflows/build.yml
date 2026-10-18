@@ -57,6 +57,9 @@ jobs:
       - name: Test Mnemosyne exact text I/O and failure handling
         run: python3 tools/test_editor_io.py
 
+      - name: Test desktop config persistence and session isolation
+        run: python3 tools/test_desktop_config.py
+
       - name: Test memory reporting and free options
         run: python3 tools/test_memory_reporting.py
 
