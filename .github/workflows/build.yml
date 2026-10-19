@@ -75,6 +75,9 @@ jobs:
       - name: Test Mnemosyne shared clipboard and undo
         run: python3 tools/test_editor_clipboard.py
 
+      - name: Test minimized window arrangement recovery
+        run: python3 tools/test_window_minimize.py
+
       - name: Test desktop config persistence and session isolation
         run: python3 tools/test_desktop_config.py
 

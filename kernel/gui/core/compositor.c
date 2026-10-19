@@ -3099,7 +3099,8 @@ void window_resize(int id, uint32_t w, uint32_t h) {
 
 void window_minimize(int id) {
     window_t* win = find_window(id);
-    if (!win) return;
+    if (!win || win->state == WSTATE_MINIMIZED) return;
+    win->minimized_state = win->state;
     win->state = WSTATE_MINIMIZED;
     win->visible = 1;
     win->focused = 0;
@@ -3320,6 +3321,17 @@ void window_restore(int id) {
     win->x = win->normal_x; win->y = win->normal_y;
     win->w = win->normal_w; win->h = win->normal_h;
     win->state = WSTATE_NORMAL;
+}
+
+static void window_unminimize(int id) {
+    window_t* win = find_window(id);
+    if (!win || win->state != WSTATE_MINIMIZED) return;
+    int state = win->minimized_state;
+    win->state = (state == WSTATE_MAXIMIZED || win_is_snapped(state))
+               ? state : WSTATE_NORMAL;
+    apply_snap_geom(win);  // the display mode or gaps may have changed while hidden
+    win->workspace = current_workspace;
+    window_focus(id);
 }
 
 // Drop-snap: SET a window outright to `state` (from a title-bar drag onto a screen
@@ -4887,9 +4899,7 @@ void compositor_run(void) {
                         window_t* w = find_window(tb_win_id);
                         if (w) {
                             if (w->state == WSTATE_MINIMIZED) {
-                                w->state = WSTATE_NORMAL;
-                                w->workspace = current_workspace;
-                                window_focus(tb_win_id);
+                                window_unminimize(tb_win_id);
                             } else if (w->focused) {
                                 window_minimize(tb_win_id);
                             } else {

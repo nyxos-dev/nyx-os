@@ -145,6 +145,11 @@ The immediate data and desktop priorities are:
     [N++ compiler reference](../lang/nppc/README.md) records per-file size bounds,
     cleanup, host fault injection, and the separate target Workbench evidence.
 
+15. Development version 6.5.210 retains snapped/maximized arrangements across
+    minimize and taskbar recovery, preserving the original floating rectangle.
+    [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) records session semantics and the
+    separate host/GUI evidence; this does not add saved window layouts.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

@@ -75,6 +75,32 @@ VFS file image. Saving checks the filesystem's byte count, rereads the complete 
 and compares it with the serialized settings before announcing success. Mounted
 readback uses the filesystem callbacks rather than a cached VFS file handle.
 
+## Minimizing arranged windows
+
+Development version 6.5.210 preserves a window's floating, maximized or snapped
+state when minimizing it. Clicking its taskbar button recovers that arrangement
+and focuses it on the current workspace. Repeating minimize does not overwrite
+the saved state. Restoring a snapped/maximized window afterwards returns to its
+original floating rectangle, rather than treating the tile as a new rectangle.
+
+Recovery derives arranged geometry using the current display size and gaps;
+resolution changes continue to scale the saved floating geometry. This is live
+session state, not a saved window layout or a new tiling mode.
+
+`python3 tools/test_window_minimize.py` runs 577 ASan/UBSan checks covering eight
+states, three gap settings and three resolutions, including repeated minimize,
+focus/workspace recovery, invalid IDs and the original snap/focus self-tests.
+`--compare-ref e608f7b` confirms that the previous source loses the arrangement.
+The existing 234 configuration and 229 terminal-palette checks also pass.
+
+The warning-free 6.5.210 kernel passes 230 KATs and four-CPU login. A separate
+one-CPU, 512 MiB QEMU GUI trial at 1024x768 verifies taskbar recovery of a left
+half and a maximized terminal, subsequent floating restoration, commands,
+window dragging and recovery of the moved floating window. Stack canaries remain
+intact; the VM is closed. All six snap zones, gap/resolution combinations and
+workspace transfer are host checks, not additional GUI or hardware claims.
+
+
 ## Verification and limits
 
 Development version 6.5.207 adds 234 host configuration checks covering the

@@ -75,6 +75,7 @@ struct window {
     int z_order;
     int visible;
     int state;
+    int minimized_state;  // arrangement to recover without changing normal_*
     int dragging;
     int drag_off_x, drag_off_y;
     int resizing;
