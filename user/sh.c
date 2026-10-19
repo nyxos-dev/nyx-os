@@ -1103,12 +1103,19 @@ int main(int argc, char** argv) {
     env_set("TERM", "nyx");
 
     /* sh -c "one command line" — may itself be a ; && || list */
-    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+    if (argc >= 2 && strcmp(argv[1], "-c") == 0) {
         char buf[128];
-        strncpy(buf, argv[2], sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
+        if (argc < 3) {
+            printf("sh: -c requires a command\n");
+            return 2;
+        }
+        if (strlen(argv[2]) >= sizeof(buf)) {
+            printf("sh: command exceeds %u bytes\n", (unsigned)(sizeof(buf) - 1));
+            return 2;
+        }
+        strcpy(buf, argv[2]);
         run_command_list(buf);
-        return 0;
+        return last_status;
     }
 
     /* Interactive REPL: read(0) blocks in the kernel's canonical line

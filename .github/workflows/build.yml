@@ -102,6 +102,12 @@ jobs:
       - name: Test lseek bounds and failed-position preservation
         run: python3 tools/test_lseek.py
 
+      - name: Test exec argument and environment bounds
+        run: python3 tools/test_exec_input.py
+
+      - name: Test shell command entry status and bounds
+        run: python3 tools/test_sh_entry.py
+
       - name: Test rm option and operand boundaries
         run: python3 tools/test_rm_options.py
 

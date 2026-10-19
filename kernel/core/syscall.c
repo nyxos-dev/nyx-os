@@ -518,6 +518,28 @@ static int copy_str_from_user(char* dst, uint64_t usrc, uint64_t maxlen) {
     return 0;
 }
 
+static int copy_exec_string(char* dst, uint64_t usrc, uint64_t capacity) {
+    if (!capacity || copy_str_from_user(dst, usrc, capacity) != 0) return -1;
+    /* The legacy copier terminates truncated input; exec must reject that case. */
+    uint64_t p = user_v2p(usrc + strlen(dst));
+    return p && *(volatile char*)p == '\0' ? 0 : -1;
+}
+
+static int copy_exec_vector(uint64_t src, char* store, char** pointers,
+                            int limit, int width) {
+    if (!src) return 0;
+    for (int count = 0; count <= limit; count++) {
+        uint64_t ptr = 0;
+        if (copy_from_user(&ptr, src + (uint64_t)count * 8, 8) != 0) return -1;
+        if (!ptr) return count;
+        if (count == limit) return -1;
+        char* dst = store + count * width;
+        if (copy_exec_string(dst, ptr, (uint64_t)width) != 0) return -1;
+        pointers[count] = dst;
+    }
+    return -1;
+}
+
 /* Resolve `path` (absolute, or relative to `cwd`) into a normalized absolute path
  * in `out`: collapses `.`, `..`, and redundant `/`. cwd must be absolute; an empty
  * cwd is treated as "/". This is what makes a process's CWD affect open()/getdents()
@@ -1037,37 +1059,19 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // layout, read by crt0). Both are NULL-terminated user arrays of user
             // string pointers — copied into kernel buffers HERE, while the old address
             // space still exists (do_execve destroys it before building the new
-            // stack). Limits: 32 args of 63 chars, 16 env entries of 159 chars. On
+            // stack). Limits: 32 args of 255 chars, 16 env entries of 159 chars. On
             // success the syscall returns into the new program; on failure -1.
             if (!user_str_ok(a1)) return -1;
             char path[128];
-            if (copy_str_from_user(path, a1, sizeof(path)) != 0) return -1;
-            static char kargv_store[32][64];   /* safe: syscalls serialized, no block */
+            if (copy_exec_string(path, a1, sizeof(path)) != 0) return -1;
+            static char kargv_store[32][256];  /* safe: syscalls serialized, no block */
             char* kargv[32];
-            int argc = 0;
-            if (a2) {
-                for (; argc < 32; argc++) {
-                    uint64_t uptr = 0;
-                    if (copy_from_user(&uptr, a2 + (uint64_t)argc * 8, 8) != 0) return -1;
-                    if (!uptr) break;                    /* NULL terminator */
-                    if (!user_str_ok(uptr)) return -1;
-                    if (copy_str_from_user(kargv_store[argc], uptr, 64) != 0) return -1;
-                    kargv[argc] = kargv_store[argc];
-                }
-            }
+            int argc = copy_exec_vector(a2, &kargv_store[0][0], kargv, 32, sizeof(kargv_store[0]));
+            if (argc < 0) return -1;
             static char kenvp_store[16][160];  /* NAME=VALUE strings, copied in like argv */
             char* kenvp[16];
-            int envc = 0;
-            if (a3) {
-                for (; envc < 16; envc++) {
-                    uint64_t uptr = 0;
-                    if (copy_from_user(&uptr, a3 + (uint64_t)envc * 8, 8) != 0) return -1;
-                    if (!uptr) break;                    /* NULL terminator */
-                    if (!user_str_ok(uptr)) return -1;
-                    if (copy_str_from_user(kenvp_store[envc], uptr, 160) != 0) return -1;
-                    kenvp[envc] = kenvp_store[envc];
-                }
-            }
+            int envc = copy_exec_vector(a3, &kenvp_store[0][0], kenvp, 16, sizeof(kenvp_store[0]));
+            if (envc < 0) return -1;
             int fd = vfs_open(path, 0, 0);
             if (fd < 0) return -1;
             uint32_t sz = vfs_fsize(fd);

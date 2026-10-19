@@ -153,7 +153,12 @@ The immediate data and desktop priorities are:
 16. Development version 6.5.211 rejects unsupported leading `rm.elf` options
     before removal and supports `--` in both rm implementations. [RM.md](RM.md)
     records operand rules, target file-preservation checks and the separate
-    unresolved `sh -c` exit-status bug.
+    `sh -c` exit-status bug subsequently fixed in 6.5.212.
+
+17. Development version 6.5.212 preserves `sh -c` status and rejects oversized
+    commands before parsing; checked `execve` input prevents earlier truncation.
+    [SHELL_ENTRY.md](SHELL_ENTRY.md) records string/vector bounds, host and target
+    preservation tests, and remaining shell expansion/error-handling limits.
 
 ### Oneiros numerical failure handling (6.5.208)
 

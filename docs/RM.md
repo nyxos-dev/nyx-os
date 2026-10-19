@@ -45,7 +45,9 @@ EXT2 fixtures retain the exact two four-byte `KEEP` contents; the VM is closed.
 The same trial confirms file preservation and explicit removal through `sh -c`,
 but also reproduces a separate unresolved shell bug: `sh -c` returns 0 even when
 the child `rm.elf` exits 2. Direct utility status and shell status must not be
-treated as equivalent at this baseline.
+treated as equivalent at that baseline. Development 6.5.212 fixes this shell
+status bug; [SHELL_ENTRY.md](SHELL_ENTRY.md) records its separate validation and
+remaining limits.
 
 Kernel recursive removal remains limited to the RAM tree; mounted paths fall
 back to a single unlink. Its force option still suppresses all removal errors.
