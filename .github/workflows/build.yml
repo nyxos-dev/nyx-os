@@ -81,6 +81,9 @@ jobs:
       - name: Test desktop calculator arithmetic and recovery
         run: python3 tools/test_calculator.py
 
+      - name: Test user windows without a framebuffer
+        run: python3 tools/test_userwin_headless.py
+
       - name: Test minimized window arrangement recovery
         run: python3 tools/test_window_minimize.py
 

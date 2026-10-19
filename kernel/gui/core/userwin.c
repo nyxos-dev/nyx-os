@@ -131,6 +131,9 @@ int64_t uwin_create(uint32_t w, uint32_t h, const char* title) {
     int id = uwin_alloc_slot(w, h);
     if (id < 0) return -1;
 
+    /* Text-mode boots have no drawable desktop; keep the headless registry slot. */
+    if (!fb_get_width() || !fb_get_height()) return id;
+
     /* Bind a compositor window whose CLIENT area is w x h. window_create's h param IS the
      * client height (win_total_h adds TITLE_H for the title bar on top), so pass h directly —
      * NOT h + TITLE_H, which made the frame one title-bar too tall and left a TITLE_H strip of

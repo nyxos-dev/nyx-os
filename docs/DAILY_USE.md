@@ -191,6 +191,11 @@ The immediate data and desktop priorities are:
     integer contract, host regression and QEMU GUI evidence. The application remains in
     kernel context.
 
+23. Development version 6.5.218 keeps user windows headless when no framebuffer
+    exists, avoiding a ring-0 divide-by-zero panic from text-mode `win_create`.
+    [USERSPACE_GUI.md](USERSPACE_GUI.md) records the regression and remaining
+    ownership, stale-handle and process-cleanup requirements for GUI migration.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

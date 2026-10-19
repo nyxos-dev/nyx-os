@@ -6,11 +6,11 @@ of the kernel and into ring-3 processes. It is a living plan, not a finished mig
 
 ## The problem
 
-Today the **entire GUI runs in ring 0**. The compositor (Hemera), the window manager, the
+Today the **built-in desktop applications run in ring 0**. The compositor (Hemera), the window manager, the
 desktop, and every app — terminal (Erebus), browser (Selene), editor (Mnemosyne), paint,
 the games, the file manager, the task manager, the wallpaper picker — live under
-`kernel/gui/` and are compiled straight into `nyx-kernel.bin`. Only the `user/*.c` programs
-(the coreutils and the `xbm` ports) are ring-3 ELFs.
+`kernel/gui/` and are compiled straight into `nyx-kernel.bin`. The `user/*.c` programs,
+including the `wintest` GUI demonstrator, coreutils and `xbm` ports, are ring-3 ELFs.
 
 For a daily-driver-grade OS that is real technical debt:
 
@@ -39,6 +39,10 @@ privileges. This is the foundation the migration builds on; it is not a greenfie
 | 58 | `SYS_WIN_DESTROY` | destroy a window (idempotent) |
 | 59 | `SYS_WIN_PRESENT` | blit a `w×h` XRGB buffer as the whole client area |
 | 60 | `SYS_WIN_POLL_EVENT` | pop one input event, non-blocking |
+| 61 | `SYS_WIN_PRESENT_RECT` | copy a rectangular client-area update |
+| 62 | `SYS_WIN_SET_TITLE` | update the bound window title |
+| 63 | `SYS_WIN_RESIZE` | resize the client area and discard the old backing |
+| 64 | `SYS_FONT_GLYPH` | copy one shared 8x16 font glyph |
 
 **Kernel model** — `kernel/gui/core/userwin.c`: a fixed registry of user windows, each owning
 its backing buffer and a per-window **event ring** (`UWE_KEY`, `UWE_CLICK`, `UWE_MOVE`, with
@@ -67,10 +71,15 @@ it. The client ABI is also still minimal for rich apps; likely additions as real
   (`SYS_WIN_PRESENT_RECT`, 61) updates a sub-rectangle of the client area, so a client sends only
   what changed instead of the whole window. (The compositor still blits the whole backing on
   redraw — a compositor-side partial-blit is a later optimization.)
-- **No resize / no title update** after `win_create`; no window-move or focus events surfaced
-  to the client (only key/click/move within the client area).
-- **No shared widget toolkit** in user space yet (buttons, menus, text fields) — each ported
-  app would re-implement its own, or we grow a small ring-3 UI lib.
+- **Title and resize are available.** App-initiated resizing uses `win_resize`;
+  frame drag-resizing queues `UWE_RESIZE`. Window-move and focus events are still absent.
+- **Drawing helpers exist** in `user/uwin.h`: clipped primitives, shared-font text,
+  button drawing and event-state helpers. This is not yet a full widget toolkit
+  with text editing, menus, layout and accessibility.
+- **Ownership and lifetime need work.** The registry uses reusable slot IDs without
+  owner identities or generation counters. Process exit does not currently release
+  those slots. Migration must address other-process access, stale handles, thread
+  groups, exit/fault cleanup and synchronization before claiming app isolation.
 - The **compositor/display-server stays in the kernel** under this plan (see below); fully
   moving Hemera itself to user space is a separate, much larger step.
 
@@ -84,19 +93,46 @@ drive through `SYS_WIN_*`.
 2. **Pick the smallest self-contained app** and port it to a ring-3 ELF client on top of the
    existing `SYS_WIN_*` ABI (e.g. a simple viewer/toy), launched like any other ELF; verify it
    composites and takes input, with the original in-kernel version kept until parity is proven.
-3. **Close ABI gaps the port exposes** — most likely partial present and a title/resize path —
+3. **Close ABI gaps the port exposes** — including ownership, lifetime and focus events —
    each behind a syscall with its own KAT (extend `uwin_selftest`).
-4. **Grow a tiny ring-3 UI helper** (draw text/buttons into a client buffer) so ported apps
-   share widget code instead of each re-implementing it.
+4. **Extend the existing ring-3 UI helpers** into reusable widgets as real clients need them.
 5. **Port the remaining apps one at a time**, boot-verifying 0-fault at each step, then retire
    the in-kernel version once the ring-3 one reaches parity.
 6. **(Stretch, much later)** move the compositor itself toward user space.
 
 Each step is a small, independently verifiable increment — no big-bang rewrite of a working OS.
 
+## Text-mode window creation (6.5.218)
+
+Without framebuffer dimensions, `uwin_create` now returns a headless registry slot
+without calling `window_create`. Present, poll, resize, retitle and explicit destroy
+remain available; the slot has no visible frame and receives no desktop input.
+Clients must still explicitly destroy it. A missing compositor window is not an
+application-isolation or automatic-cleanup guarantee.
+
+Before this check, a ring-3 `win_create(8, 8, "owner")` on a QEMU boot with
+`-vga none` caused a ring-0 division-by-zero panic in the background rendering
+reached through `redraw_all`. The test uses the actual syscall, not a model of it.
+The host regression `tools/test_userwin_headless.py --compare-ref 1d8849c`
+checks absent/partially absent dimensions, repeated headless operations, desktop
+binding callbacks, compositor allocation failure and the existing user-window KAT
+under ASan/UBSan (585 checks plus the KAT).
+
+With the check in place, the same text-mode VM completes the window syscalls.
+The subsequent audit also reproduces three **unfixed** limits: a fork child can
+retitle/present/poll/destroy its parent's window; a released ID can destroy a new
+window that reused its slot; and eight programs that exit without destroying
+their windows exhaust the eight-slot registry. Explicit destruction recovers the
+slots. These are single-CPU VM results, not concurrency or fault-cleanup tests.
+
+The final kernel builds without compiler/linker warnings, passes 230 QEMU
+self-tests and reaches login with four CPUs. With a framebuffer, the packaged
+`wintest.elf` creates a desktop window, presents 160 frames, explicitly destroys
+the window and exits 0; Erebus continues to execute `echo` and `mem` afterward.
+
 ## Pointers
 
-- Syscall ABI: [SYSCALLS.md](SYSCALLS.md) (rows 54–60).
+- Syscall ABI: [SYSCALLS.md](SYSCALLS.md) (rows 54–64).
 - Kernel model + KAT: `kernel/gui/core/userwin.{c,h}` (`uwin_selftest`, battery entry `userwin`).
 - Working ring-3 client: `user/wintest.c`.
 - In-kernel GUI (what migrates): `kernel/gui/core/` (compositor) and `kernel/gui/apps/`.
