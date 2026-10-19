@@ -108,6 +108,9 @@ jobs:
       - name: Test exec argument and environment bounds
         run: python3 tools/test_exec_input.py
 
+      - name: Test shell argument expansion and capacity failures
+        run: python3 tools/test_sh_expansion.py
+
       - name: Test shell command entry status and bounds
         run: python3 tools/test_sh_entry.py
 

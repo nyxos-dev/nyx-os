@@ -26,12 +26,13 @@ static char* trim(char* s) {
     return s;
 }
 
-/* Split a stage ("prog arg1 arg2") into an argv[]; modifies s. Returns argc. */
+/* Split a stage in place; return argc, or -1 when words would be omitted. */
 static int split_args(char* s, char** av, int max) {
     int n = 0;
-    while (*s && n < max - 1) {
+    while (*s) {
         while (*s == ' ') *s++ = '\0';
         if (!*s) break;
+        if (n >= max - 1) { av[n] = 0; return -1; }
         av[n++] = s;
         while (*s && *s != ' ') s++;
     }
@@ -449,8 +450,10 @@ static void builtin_bg(char* arg) {
 
 /* ---- filename globbing (* ? [..]) ----------------------------------------- */
 #define MAX_GLOB 32
-static nyx_dirent_t glob_ents[64];       /* .bss: getdents can't fault lazy pages */
-static char  glob_store[MAX_GLOB][96];
+#define MAX_GLOB_WORD 128
+#define MAX_GLOB_DIRENTS 64
+static nyx_dirent_t glob_ents[MAX_GLOB_DIRENTS];       /* .bss: getdents can't fault lazy pages */
+static char  glob_store[MAX_GLOB][MAX_GLOB_WORD];
 static char* glob_av[MAX_GLOB + 1];
 
 /* Match a '[...]' class at *pp (pointing at '[') against char c; returns 1/0 and
@@ -530,11 +533,14 @@ static int glob_match(const char* pat, const char* str) {
  * argv (and count via *pac). A plain arg passes through; an arg with '*'/'?'/'[' is
  * replaced by the sorted-ish directory entries it matches — leading-dot names are
  * skipped unless the pattern itself starts with '.'. A wildcard with no match stays
- * literal (nullglob off, like bash's default). Runs in the forked child before exec. */
+ * literal (nullglob off, like bash's default). Return NULL on capacity overflow
+ * or a full directory page: the caller must fail before redirection and exec. */
 static char** expand_globs(char** av, int* pac) {
     int out = 0;
-    for (int a = 0; a < *pac && out < MAX_GLOB; a++) {
+    for (int a = 0; a < *pac; a++) {
+        if (out >= MAX_GLOB) return 0;
         char* arg = av[a];
+        if (strlen(arg) >= sizeof(glob_store[0])) return 0;
         if (!strchr(arg, '*') && !strchr(arg, '?')) {    /* no wildcard: copy through */
             strncpy(glob_store[out], arg, sizeof(glob_store[0]) - 1);
             glob_store[out][sizeof(glob_store[0]) - 1] = '\0';
@@ -542,26 +548,32 @@ static char** expand_globs(char** av, int* pac) {
             continue;
         }
         /* Split off a directory prefix (everything up to the last '/'). */
-        char dir[80]; int has_dir = 0;
+        char dir[MAX_GLOB_WORD]; int has_dir = 0;
         const char* pat = arg;
         char* slash = 0;
         for (char* q = arg; *q; q++) if (*q == '/') slash = q;
         if (slash) {
             int dl = (int)(slash - arg);
             if (dl == 0) { dir[0] = '/'; dir[1] = '\0'; } /* "/pat" -> dir "/" */
-            else { if (dl > 78) dl = 78; memcpy(dir, arg, dl); dir[dl] = '\0'; }
+            else { if (dl >= (int)sizeof(dir)) return 0; memcpy(dir, arg, dl); dir[dl] = '\0'; }
             pat = slash + 1;
             has_dir = 1;
         }
-        long n = getdents(has_dir ? dir : ".", glob_ents, 64);
+        long n = getdents(has_dir ? dir : ".", glob_ents, MAX_GLOB_DIRENTS);
+        if (n >= MAX_GLOB_DIRENTS) return 0; /* A full page may omit more matching names. */
         int matched = 0;
-        for (long e = 0; e < n && out < MAX_GLOB; e++) {
+        for (long e = 0; e < n; e++) {
             const char* nm = glob_ents[e].name;
             if (nm[0] == '.' && pat[0] != '.') continue; /* skip hidden / . / .. */
             if (!glob_match(pat, nm)) continue;
+            if (out >= MAX_GLOB) return 0;
             if (has_dir) {
                 const char* sep = (dir[strlen(dir) - 1] == '/') ? "" : "/";
-                snprintf(glob_store[out], sizeof(glob_store[0]), "%s%s%s", dir, sep, nm);
+                size_t dl = strlen(dir), sl = strlen(sep), nl = strlen(nm);
+                if (dl + sl + nl >= sizeof(glob_store[0])) return 0;
+                memcpy(glob_store[out], dir, dl);
+                memcpy(glob_store[out] + dl, sep, sl);
+                memcpy(glob_store[out] + dl + sl, nm, nl + 1);
             } else {
                 strncpy(glob_store[out], nm, sizeof(glob_store[0]) - 1);
                 glob_store[out][sizeof(glob_store[0]) - 1] = '\0';
@@ -569,7 +581,7 @@ static char** expand_globs(char** av, int* pac) {
             glob_av[out] = glob_store[out]; out++;
             matched = 1;
         }
-        if (!matched && out < MAX_GLOB) {                /* no match: keep the literal */
+        if (!matched) {                /* no match: keep the literal */
             strncpy(glob_store[out], arg, sizeof(glob_store[0]) - 1);
             glob_store[out][sizeof(glob_store[0]) - 1] = '\0';
             glob_av[out] = glob_store[out]; out++;
@@ -622,10 +634,12 @@ static void run_line(char* line) {
             if (has_next)     { close(pfd[0]); dup2(pfd[1], 1); close(pfd[1]); }
             char* av[MAX_ARGS];
             int ac = split_args(trim(stages[s]), av, MAX_ARGS);
+            if (ac < 0) { printf("sh: too many words\n"); exit(2); }
             char *infile, *outfile, *errfile; int append, errappend;
             parse_redir(av, &ac, &infile, &outfile, &append, &errfile, &errappend);
             if (ac == 0) exit(0);
             char** rav = expand_globs(av, &ac);   /* wildcard (* ?) expansion */
+            if (!rav) { printf("sh: expansion exceeds limits\n"); exit(2); }
             /* Restore any quote-protected bytes now that all splitting/globbing is
              * done, so exec and open() see the real spaces / specials. */
             for (int qi = 0; qi < ac; qi++) q_unprotect(rav[qi]);

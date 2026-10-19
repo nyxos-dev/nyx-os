@@ -164,7 +164,14 @@ The immediate data and desktop priorities are:
     file mirrors flush, preventing writes to truncated prefix names.
     [MOUNT_PATHS.md](MOUNT_PATHS.md) records checked open bounds, the 96 KiB
     static memory cost, host regressions and exact RAM/EXT2 file checks.
-    Shell argument truncation and non-atomic mounted saves remain open.
+    The separate shell argument truncation is addressed in 6.5.214 below;
+    non-atomic mounted saves remain open.
+
+19. Development version 6.5.214 preserves bounded external shell words and
+    wildcard paths, rejecting excess words/results or incomplete directory
+    pages before that child's redirections and exec. [SHELL_ENTRY.md](SHELL_ENTRY.md)
+    records host regressions and exact packaged-shell RAM/EXT2 evidence.
+    Variable storage, intermediate expansion and syscall path limits remain.
 
 ### Oneiros numerical failure handling (6.5.208)
 

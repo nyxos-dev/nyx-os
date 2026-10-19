@@ -52,8 +52,9 @@ truncation cannot hide or misattribute the VFS result.
 
 ## Remaining limits
 
-- The userspace shell still truncates some literal arguments to 95 bytes
-  during glob expansion. This separate reproduced bug remains a priority.
+- The separate 95-byte shell argument truncation is repaired in 6.5.214.
+  [SHELL_ENTRY.md](SHELL_ENTRY.md) records its checked expansion limits and
+  remaining parser/variable-storage restrictions.
 - Other VFS entry points and syscall path-copy/normalization helpers are
   unchanged. These checks do not establish complete path rejection across
   all callers, long working directories or all filesystem operations.
