@@ -179,6 +179,12 @@ The immediate data and desktop priorities are:
     checked bounds and host/guest prefix-preservation evidence. Other VFS
     callers, shell PATH lookup and filesystem transaction limits remain.
 
+21. Development version 6.5.216 evaluates an indexed N++ `Fn` receiver once,
+    preventing duplicated index side effects during callback dispatch. The
+    [compiler reference](../lang/nppc/README.md) records seven host differential
+    regressions, seven target ELF runs with 184 exact EXT2 output bytes, and
+    remaining bounds/inference limits. Lowering ran on the host.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

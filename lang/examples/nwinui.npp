@@ -18,7 +18,7 @@
 // lambda lifts to a top-level `__c_N` reading its captures from an `__E_N`
 // environment built where the button is born, and the call through the
 // handler field of the widget read out of the table, `bs[i].on_click(a,
-// b)`, becomes `bs[i].on_click.call(bs[i].on_click.env, a, b)` (nppc
+// b)`, passes `bs[i].on_click` once to a generated invocation helper (nppc
 // knows `bs` points at Buttons from the `Ui` field it was read from). The
 // widget structs themselves are ordinary N structs, kept in sbrk'd memory
 // the way nwin.n keeps its pixels. Inside NyxOS the very same `dispatch` sits in nwin.n's

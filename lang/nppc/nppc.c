@@ -2742,8 +2742,27 @@ static void reg_sigs(int t, int e, char** nm, char** tx, int* n) {
         apps(&b, &len, &cap, ");\n    __fo_drop_");
         apps(&b, &len, &cap, name + 2);
         apps(&b, &len, &cap, rts >= 0 ? "(f);\n    r\n}\n\n" : "(f);\n}\n\n");
-    } else
-        apps(&b, &len, &cap, "}\n\n");
+    } else {
+        apps(&b, &len, &cap, "}\n\nfn __invoke_");
+        apps(&b, &len, &cap, name + 2);
+        apps(&b, &len, &cap, "(f: ");
+        apps(&b, &len, &cap, name);
+        for (int p = 0; p < np; p++) {
+            char pn[32];
+            sprintf(pn, ", a%d: ", p);
+            apps(&b, &len, &cap, pn);
+            render_type(pts[p], pte[p], &b, &len, &cap);
+        }
+        apps(&b, &len, &cap, ")");
+        if (rts >= 0) { apps(&b, &len, &cap, " -> "); render_type(rts, rte, &b, &len, &cap); }
+        apps(&b, &len, &cap, " {\n    f.call(f.env");
+        for (int p = 0; p < np; p++) {
+            char pn[32];
+            sprintf(pn, ", a%d", p);
+            apps(&b, &len, &cap, pn);
+        }
+        apps(&b, &len, &cap, rts >= 0 ? ")\n}\n\n" : ");\n}\n\n");
+    }
     nm[*n] = name; tx[*n] = b; (*n)++;
 }
 
@@ -2937,7 +2956,7 @@ static char* closure_pass(const char* prog) {
                 ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[u + 1].end; ced[ne].repl = r; ne++;
                 continue;
             }
-            if (TOKS[u + 1].k == T_LBRACK) {  /* bs[i].run(a) -> bs[i].run.call(bs[i].run.env, a) (M6.4c5) */
+            if (TOKS[u + 1].k == T_LBRACK) {  /* Pass the indexed closure by value so its receiver is evaluated once. */
                 int s = -1;
                 for (int c = 0; c < npn && s < 0; c++) if (tokspan_eq(pn[c], u)) s = pv[c];
                 if (s < 0) continue;
@@ -2952,8 +2971,9 @@ static char* closure_pass(const char* prog) {
                 if (fld < 0 || !range_is_Fn(STT[s].pts[fld], STT[s].pte[fld])) continue;
                 int pl = TOKS[v].end - TOKS[u].start;   /* `bs[i]`, verbatim from the source */
                 const char* ps = prog + TOKS[u].start;
-                char* r = xmalloc((size_t)(pl + TOKS[v + 2].slen) * 2 + 24);
-                sprintf(r, "%.*s.%.*s.call(%.*s.%.*s.env%s", pl, ps, TOKS[v + 2].slen, TOKS[v + 2].s,
+                char* sig = sig_name(STT[s].pts[fld], STT[s].pte[fld]);
+                char* r = xmalloc((size_t)(pl + TOKS[v + 2].slen) + strlen(sig) + 24);
+                sprintf(r, "__invoke_%s(%.*s.%.*s%s", sig + 2,
                         pl, ps, TOKS[v + 2].slen, TOKS[v + 2].s,
                         TOKS[v + 4].k == T_RP ? "" : ", ");
                 if (ne >= MAXI) die("%s: too many rewrites", FILENAME);

@@ -456,6 +456,22 @@ program's host run.)
 The rungs are sized like M5's were: one honest increment each, docs in
 the same commit, nothing claimed that a fence does not hold.
 
+### Indexed callback receiver evaluation (NyxOS 6.5.216)
+
+The M6.4c5 implementation originally copied an indexed receiver into both
+`.call` and `.env` accesses. An index such as `next(counter)` therefore ran
+twice. The current lowering passes the closure value once to a concrete
+`__invoke_Fn_...` helper, which reads both fields from its local parameter.
+The helper adds no environment allocation and leaves `FnOnce` ownership intact.
+
+`nppc/tests/test_indexed_calls.py` checks seven cases through `ncheck`, identical
+`ncc`/`ngen` C, and both host executions; the preceding compiler evaluates the
+index twice in all seven cases. NyxOS 6.5.216 also executes seven host-compiled
+ELFs with exact serial results and 184 bytes of extracted EXT2 output. The
+26-example corpus, Workbench cleanup and module tests pass. This does not add
+index bounds checking, arbitrary receiver type inference, `FnMut`, or general
+argument evaluation-order semantics. N++ lowering still ran on the host.
+
 ### 6.5 M6.6 integration checkpoint
 
 [`workbench.npp`](../examples/workbench.npp) and its

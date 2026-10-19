@@ -345,7 +345,9 @@ name (`Fn()` is `__Fn__`, `Fn(*u8, Box<i64>) -> bool` is
 `Fn` type, a local bound from a call returning one, the `Fn` field of
 a struct-typed parameter or local, or that field of the element a
 pointer-to-struct name indexes, `bs[i].f(a)` (M6.4c5) — becomes
-`f.call(f.env, a)`; on a `FnOnce` name it becomes `__call_once_…(f, a)`,
+`f.call(f.env, a)`. Since 6.5.216 the indexed field first passes through
+`__invoke_Fn_...`, which captures that receiver once before accessing its
+function and environment. On a `FnOnce` name the call becomes `__call_once_…(f, a)`,
 which consumes the closure (M6.4c6, below). A lambda
 written where a closure is expected takes the environment as its first
 parameter and the expression becomes the closure value
@@ -472,13 +474,38 @@ at a struct joins the names whose `Fn` fields are called through
 `.call`: a parameter `bs: *Button`, a local `bs := ui.buttons` whose
 type is the `*Button` field of a struct-typed name, or a local cast
 `bs := sys_sbrk(n) as *Button`. Where such a name is indexed and a
-closure field called — `bs[i].on_click(a, b)` — the call becomes
-`bs[i].on_click.call(bs[i].on_click.env, a, b)`, the index copied
-verbatim (brackets balanced, so `bs[idx[k]]` works too). The scan is
+closure field called — `bs[i].on_click(a, b)` — since NyxOS 6.5.216 the
+call passes `bs[i].on_click` by value to a generated `__invoke_Fn_...`
+helper. The helper calls `f.call(f.env, a, b)`, so an index such as
+`next(counter)` executes once rather than once for the function pointer
+and again for the environment. Brackets stay balanced, so `bs[idx[k]]`
+works too. The scan is
 the token scan the other shapes use: it types nothing it cannot see
 (an index on a `*i64`, a field chain before the index, `ui.buttons[i]`)
 and leaves those calls alone for N to judge. nwinui.npp's `dispatch`
 is the worked case, held by stage [10w].
+
+The focused regression `python3 lang/nppc/tests/test_indexed_calls.py`
+checks seven executable cases: zero, one and two arguments, a nested
+index, a void result, a generic holder and a generic dispatch function.
+Each passes `ncheck`, emits identical C through `ncc` and `ngen`, and
+executes with exactly one index side effect through both outputs.
+`--compare-ref 88bb966` reproduces two evaluations in all seven preceding
+compiler cases. `indexed_callbacks.npp` is the minimal worked example.
+
+The helper is generated once per concrete non-owning `Fn` signature;
+its closure parameter is a value and requires no new heap allocation.
+This does not add bounds checking, general field-chain inference, `FnMut`,
+or an argument evaluation-order guarantee. Existing closure environment
+allocation and lifetime rules remain in force. `FnOnce` keeps its owning
+call/finalizer path.
+
+On NyxOS 6.5.216 under QEMU, the seven host-compiled ELF fixtures each
+exit 0 with one index evaluation on serial and through file redirection.
+Their seven extracted EXT2 outputs match exactly, totaling 184 bytes.
+The build has zero compiler warnings, passes 230 kernel tests and reaches
+four-CPU login. N++/N lowering ran on the host; this does not claim
+in-OS compiler execution, GUI dispatch or hardware qualification.
 
 **Owning closures — `FnOnce` (M6.4c6).** `FnOnce(A…) -> R` is the
 closure type that owns: a lambda in a FnOnce slot (a parameter, a
