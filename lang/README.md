@@ -247,6 +247,14 @@ in-OS include path) and loads the syscall ABI's r10/r8/r9 explicitly inside
 the asm (tcc cannot satisfy six bound register constraints), and `nyxrt.c`
 leaves `environ` to the in-OS `libc.o` to avoid a duplicate symbol.
 
+## Direct field callbacks (NyxOS 6.5.222)
+
+N++ supports `ui.buttons[index].on_click(...)` when a known struct value has a
+pointer field to callback-bearing structs. It reuses the invocation helper that
+evaluates the indexed receiver once. See [field_callbacks.npp](examples/field_callbacks.npp)
+and the [nppc contract and verification](nppc/README.md) for supported local and
+generic types, host/target evidence and the remaining inference/lifetime limits.
+
 ## Documentation policy
 
 Everything in `lang/` is documented to the same bar: every public construct

@@ -472,6 +472,21 @@ ELFs with exact serial results and 184 bytes of extracted EXT2 output. The
 index bounds checking, arbitrary receiver type inference, `FnMut`, or general
 argument evaluation-order semantics. N++ lowering still ran on the host.
 
+### Direct pointer-field callback receivers (NyxOS 6.5.222)
+
+The closure pass resolves `ui.buttons[i].on_click(...)` when `ui` has a known
+struct value type and `buttons` is a pointer to a known struct. It reuses the
+indexed-call invocation helper, evaluating the receiver once. Struct parameters,
+locals from literals/function returns, and substituted generic holders/dispatch
+functions are covered; no new AST, allocation or owning-closure path is added.
+
+The existing indexed-call suite covers 17 positive programs through both N
+checkers/emitters and five negative field/type/arity programs. Ten new field
+receiver programs fail with the preceding front end. This adds one known pointer
+field before an index, not general field-chain or arbitrary expression inference.
+Index bounds and closure lifetime rules are unchanged. See
+[`field_callbacks.npp`](../examples/field_callbacks.npp) and the nppc README.
+
 ### 6.5 M6.6 integration checkpoint
 
 [`workbench.npp`](../examples/workbench.npp) and its

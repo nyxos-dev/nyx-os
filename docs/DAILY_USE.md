@@ -220,6 +220,14 @@ The immediate data and desktop priorities are:
     tests pass and four-CPU login succeeds. This does not change the
     foreground GUI input limitation or add subsecond durations/job control.
 
+27. Development version 6.5.222 extends N++ callback receivers to
+    `ui.buttons[index].on_click(...)` for a known struct's pointer field. It
+    reuses the single-evaluation invocation helper and supports substituted
+    generic holders/dispatch functions and known local holder types. The
+    existing indexed-call regression gains direct-field and invalid-type cases;
+    [nppc documentation](../lang/nppc/README.md) describes the scope. Bounds,
+    arbitrary receiver inference and closure environment lifetime are unchanged.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

@@ -41,6 +41,41 @@ def fixtures():
     return cases
 
 
+def field_fixtures():
+    cases = {}
+    for name, (source, expected) in fixtures().items():
+        if name == 'generic_dispatch':
+            source = source.replace('fn dispatch<T>(bs: *Button<T>, counter: *i64) -> T {',
+                'struct Ui<T> { buttons: *Button<T> }\nfn dispatch<T>(ui: Ui<T>, counter: *i64) -> T {')
+            source = source.replace('dispatch<i64>(bs, counter)', 'dispatch<i64>(Ui<i64>{ buttons: bs }, counter)')
+        else:
+            element = 'Button<i64>' if name == 'generic_holder' else 'Button'
+            source = source.replace(f'fn dispatch(bs: *{element}, counter: *i64) -> i64 {{',
+                f'struct Ui {{ buttons: *{element} }}\nfn dispatch(ui: Ui, counter: *i64) -> i64 {{')
+            source = source.replace('dispatch(bs, counter)', 'dispatch(Ui{ buttons: bs }, counter)')
+        source = source.replace('bs[index(counter)]', 'ui.buttons[index(counter)]')
+        source = source.replace('bs[counter[index(counter)] * 0]', 'ui.buttons[counter[index(counter)] * 0]')
+        cases['field_' + name] = (source, expected)
+    base, expected = cases['field_one_argument']
+    cases['field_local_literal'] = (base.replace('fn dispatch(ui: Ui, counter: *i64) -> i64 {',
+        'fn dispatch(input: Ui, counter: *i64) -> i64 {\n    ui := Ui{ buttons: input.buttons };'), expected)
+    cases['field_local_return'] = (base.replace('fn dispatch(ui: Ui, counter: *i64) -> i64 {',
+        'fn copy_ui(input: Ui) -> Ui { input }\nfn dispatch(input: Ui, counter: *i64) -> i64 {\n    ui := copy_ui(input);'), expected)
+    cases['field_example'] = ((ROOT / 'lang/examples/field_callbacks.npp').read_text(encoding='utf-8'), expected)
+    return cases
+
+
+def invalid_field_fixtures():
+    base = field_fixtures()['field_one_argument'][0]
+    return {
+        'unknown_pointer_field': base.replace('ui.buttons[', 'ui.missing['),
+        'unknown_callback': base.replace('].on_click(7)', '].missing(7)'),
+        'wrong_arity': base.replace('].on_click(7)', '].on_click(7, 9)'),
+        'scalar_pointer': base.replace('buttons: *Button', 'buttons: *i64').replace('Ui{ buttons: bs }', 'Ui{ buttons: bs as *i64 }'),
+        'nonpointer_field': base.replace('buttons: *Button', 'buttons: Button').replace('Ui{ buttons: bs }', 'Ui{ buttons: bs[0] }'),
+    }
+
+
 def require(args):
     p = subprocess.run([str(x) for x in args], capture_output=True, timeout=90)
     if p.returncode:
@@ -51,6 +86,7 @@ def require(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare-ref', help='also reproduce the doubled index with an older nppc')
+    parser.add_argument('--compare-fields-ref', help='also check that an older nppc cannot lower direct field receivers')
     args = parser.parse_args()
     if platform.system() != 'Linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
         parser.error('the runtime shim requires Linux x86_64; use WSL on Windows')
@@ -75,7 +111,13 @@ def main():
             old = require(['git', '-C', ROOT, 'show', f'{args.compare_ref}:lang/nppc/nppc.c'])
             (work / 'old.c').write_bytes(old)
             require([*cc, *flags, work / 'old.c', '-o', work / 'old'])
+        if args.compare_fields_ref:
+            old = require(['git', '-C', ROOT, 'show', f'{args.compare_fields_ref}:lang/nppc/nppc.c'])
+            (work / 'old-fields.c').write_bytes(old)
+            require([*cc, *flags, work / 'old-fields.c', '-o', work / 'old-fields'])
         cases = fixtures()
+        original_count = len(cases)
+        cases.update(field_fixtures())
         for name, (source, expected) in cases.items():
             path, lowered, emitted = (work / f'{name}{ext}' for ext in ('.npp', '.n', '.c'))
             path.write_text(source, encoding='utf-8')
@@ -88,15 +130,29 @@ def main():
             for src in (emitted, work / 'other.c'):
                 build(src, work / 'run')
                 assert require([work / 'run']) == expected.encode(), name
-            if args.compare_ref:
+            if args.compare_ref and not name.startswith('field_'):
                 require([work / 'old', path, '-o', lowered])
                 require([work / 'ncc', lowered, '-o', emitted])
                 build(emitted, work / 'old-run')
                 doubled = expected.replace('index calls 1', 'index calls 2').encode()
                 assert require([work / 'old-run']) == doubled, f'{name}: baseline did not reproduce'
+            if args.compare_fields_ref and name.startswith('field_'):
+                require([work / 'old-fields', path, '-o', lowered])
+                result = subprocess.run([work / 'ncc', lowered, '-o', emitted], capture_output=True, timeout=90)
+                assert result.returncode == 1, f'{name}: baseline unexpectedly accepts field receiver'
+        for name, source in invalid_field_fixtures().items():
+            path, lowered, emitted = (work / f'invalid_{name}{ext}' for ext in ('.npp', '.n', '.c'))
+            path.write_text(source, encoding='utf-8')
+            require([work / 'nppc', path, '-o', lowered])
+            for command in ([work / 'ncc', lowered, '-o', emitted], [work / 'ncheck', lowered]):
+                result = subprocess.run(command, capture_output=True, timeout=90)
+                assert result.returncode == 1, f'{name}: invalid receiver not rejected by {command[0]}'
         print(f'PASS {len(cases)} indexed callback cases: ncheck, identical ncc/ngen C, both executions')
+        print('PASS 5 invalid field receiver cases rejected by both N checkers')
         if args.compare_ref:
-            print(f'PASS {len(cases)} baseline reproductions: index evaluated twice')
+            print(f'PASS {original_count} baseline reproductions: index evaluated twice')
+        if args.compare_fields_ref:
+            print(f'PASS {len(cases) - original_count} baseline field receivers cannot compile')
 
 
 if __name__ == '__main__':

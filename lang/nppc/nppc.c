@@ -2956,11 +2956,25 @@ static char* closure_pass(const char* prog) {
                 ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[u + 1].end; ced[ne].repl = r; ne++;
                 continue;
             }
-            if (TOKS[u + 1].k == T_LBRACK) {  /* Pass the indexed closure by value so its receiver is evaluated once. */
-                int s = -1;
-                for (int c = 0; c < npn && s < 0; c++) if (tokspan_eq(pn[c], u)) s = pv[c];
-                if (s < 0) continue;
-                int v = u + 1, d = 0;     /* the matching `]` */
+            int index_at = u + 1, indexed_struct = -1;
+            if (TOKS[index_at].k == T_LBRACK) {
+                for (int c = 0; c < npn && indexed_struct < 0; c++)
+                    if (tokspan_eq(pn[c], u)) indexed_struct = pv[c];
+            } else if (TOKS[u + 1].k == T_DOT && TOKS[u + 2].k == T_IDENT && TOKS[u + 3].k == T_LBRACK) {
+                int holder = -1;
+                for (int c = 0; c < nsn && holder < 0; c++)
+                    if (tokspan_eq(sn[c], u)) holder = sv[c];
+                if (holder >= 0)
+                    for (int q = 0; q < STT[holder].np; q++)
+                        if (tokspan_eq(STT[holder].pname[q], u + 2)) {
+                            indexed_struct = ptr_struct(STT[holder].pts[q], STT[holder].pte[q]);
+                            break;
+                        }
+                index_at = u + 3;
+            }
+            if (indexed_struct >= 0) { /* Both bs[i] and ui.buttons[i] evaluate the receiver once. */
+                int s = indexed_struct;
+                int v = index_at, d = 0;     /* the matching `]` */
                 for (; TOKS[v].k != T_EOF; v++) {
                     if (TOKS[v].k == T_LBRACK) d++;
                     else if (TOKS[v].k == T_RBRACK && --d == 0) break;

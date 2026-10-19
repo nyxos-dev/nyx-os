@@ -481,12 +481,12 @@ helper. The helper calls `f.call(f.env, a, b)`, so an index such as
 and again for the environment. Brackets stay balanced, so `bs[idx[k]]`
 works too. The scan is
 the token scan the other shapes use: it types nothing it cannot see
-(an index on a `*i64`, a field chain before the index, `ui.buttons[i]`)
+(an index on a `*i64` or an arbitrary receiver expression)
 and leaves those calls alone for N to judge. nwinui.npp's `dispatch`
 is the worked case, held by stage [10w].
 
 The focused regression `python3 lang/nppc/tests/test_indexed_calls.py`
-checks seven executable cases: zero, one and two arguments, a nested
+keeps seven original executable cases: zero, one and two arguments, a nested
 index, a void result, a generic holder and a generic dispatch function.
 Each passes `ncheck`, emits identical C through `ncc` and `ngen`, and
 executes with exactly one index side effect through both outputs.
@@ -499,6 +499,31 @@ This does not add bounds checking, general field-chain inference, `FnMut`,
 or an argument evaluation-order guarantee. Existing closure environment
 allocation and lifetime rules remain in force. `FnOnce` keeps its owning
 call/finalizer path.
+
+**Pointer fields before the index (NyxOS 6.5.222).** A known struct value can
+call through one pointer field directly: `ui.buttons[index(counter)].on_click(7)`.
+The receiver can be a struct-typed parameter or a local whose type comes from a
+struct literal or a function return. Generic holders and dispatch functions use
+the existing second lowering pass after substitution. The field must point to a
+known struct with an `Fn` callback field. The same generated invocation helper
+receives the closure value once; no intermediate local or new allocation is
+required. [`field_callbacks.npp`](../examples/field_callbacks.npp) demonstrates it.
+
+The indexed-call regression now covers 17 executable cases through both N
+checkers, byte-identical `ncc`/`ngen` output and both executions. Five invalid
+field/type/arity cases are rejected by both checkers. `--compare-fields-ref
+1b9cee2` verifies that the ten new field-receiver cases cannot compile with the
+preceding front end. `--compare-ref 88bb966` still targets only the original seven
+double-evaluation regressions. Arbitrary chains, index bounds, `FnMut`, argument
+evaluation order and closure environment lifetime remain outside this extension.
+
+On NyxOS 6.5.222, the ten field-receiver fixtures each run twice as host-compiled
+ELFs: once on the serial console and once with output redirected to EXT2. All
+exit 0, evaluate their index once and match 259 extracted output bytes exactly.
+The 27-example corpus, module tests and Workbench ownership/cleanup fences pass.
+GCC14 builds without warnings; 230 kernel tests and four-CPU login pass. This
+evidence covers host N++/N lowering and target program execution, not in-OS
+compiler execution, GUI event dispatch or hardware readiness.
 
 On NyxOS 6.5.216 under QEMU, the seven host-compiled ELF fixtures each
 exit 0 with one index evaluation on serial and through file redirection.
