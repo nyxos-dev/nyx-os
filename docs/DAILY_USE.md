@@ -206,6 +206,20 @@ The immediate data and desktop priorities are:
     were an allocated application context. [USERSPACE_GUI.md](USERSPACE_GUI.md)
     documents the real compositor teardown regression and its scope.
 
+26. Development version 6.5.221 validates the complete `timeout` duration before
+    launching a program. It accepts 1..4294967 whole seconds, with the existing
+    numeric parser's optional plus sign and surrounding blanks, and rejects
+    suffixes, fractions and values whose millisecond conversion would overflow.
+    `tools/test_timeout.py` exercises the actual command and numeric parser with
+    virtual ticks/processes under ASan/UBSan: 369 checks cover tick wrap, natural
+    exit, single timeout delivery, reaping and failure paths. Both malformed and
+    overflowing durations reproduce unwanted launches on 6.5.220. The QEMU GUI
+    rejects `1x` and `4294968`, runs an immediately exiting child with `4294967`,
+    and verifies a one-second timeout (124), normal exit (0), `mtdemo` progress
+    and subsequent terminal commands. GCC14 builds without warnings, 230 kernel
+    tests pass and four-CPU login succeeds. This does not change the
+    foreground GUI input limitation or add subsecond durations/job control.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

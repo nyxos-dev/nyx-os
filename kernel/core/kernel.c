@@ -755,8 +755,12 @@ static int resolve_user_elf(const char* name, char* out, int outsz) {
 // a timeout. Builtins run synchronously and cannot be interrupted, so only ELFs are accepted.
 static void cmd_timeout(int argc, char** argv) {
     if (argc < 3) { printf("Usage: timeout <seconds> <command> [args...]\n"); return; }
-    int secs = atoi(argv[1]);
-    if (secs <= 0) { printf("timeout: invalid duration '%s'\n", argv[1]); return; }
+    uint32_t secs;
+    // Bound seconds before multiplying into the 32-bit millisecond tick domain.
+    if (parse_u32_max(argv[1], 0xFFFFFFFFu / 1000u, &secs) != 0 || secs == 0) {
+        printf("timeout: invalid duration '%s' (expected 1..4294967 seconds)\n", argv[1]);
+        return;
+    }
     char path[256];
     if (!resolve_user_elf(argv[2], path, sizeof path)) {
         printf("timeout: %s: not an external command\n", argv[2]);
@@ -767,7 +771,7 @@ static void cmd_timeout(int argc, char** argv) {
     extern uint32_t g_foreground_pid;
     g_foreground_pid = (uint32_t)pid;            // Ctrl-C still targets the child while it runs
     uint32_t t0 = get_ticks();
-    uint32_t deadline = (uint32_t)secs * 1000u;  // milliseconds
+    uint32_t deadline = secs * 1000u;  // milliseconds; checked before spawn
     int timed_out = 0;
     for (;;) {
         process_t* child = find_process((uint32_t)pid);
@@ -1381,7 +1385,7 @@ static const man_page_t man_pages[] = {
     {"nproc",    "Print the number of online CPUs as a single integer, the count the SMP bring-up counted (the same number `uptime` reports inside its prose line). Unlike `uptime` it prints just the number, so it drops into a command substitution — e.g. a parallel build `cc -j$(nproc)`."},
     {"ac97",     "Drive the AC'97 audio controller (class 04:01, e.g. QEMU `-device AC97`). With no argument it probes the PCI bus, brings the codec up (cold reset, read the codec vendor id, unmute + set master/PCM volume + 44.1 kHz) and prints the controller's BARs (NAMBAR mixer / NABMBAR bus-master), IRQ, codec-ready state and vendor id. `ac97 tone` builds a buffer-descriptor list over a 440 Hz square tone and runs it through the PCM-out bus-master DMA engine, reporting the position registers (PICB/CIV/SR) so you can see the DMA advance even though audio is inaudible in a headless VM. `soundinfo` covers the SB16 side."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
-    {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
+    {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` accepts 1..4294967 whole seconds (no suffix or fraction) and starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
     {"pgrep",    "List the PIDs of processes whose name contains <pattern> (a substring match, like ps | grep). With -l also print each name. Prints one PID per line so you can act on them; reports when nothing matches."},
     {"pkill",    "Terminate every process whose name contains <pattern> (substring match). Kernel threads (init/idle/compositor) are protected and refused, exactly like kill. Reports how many were signalled."},
