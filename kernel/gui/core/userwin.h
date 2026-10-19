@@ -45,7 +45,9 @@ void uwin_evq_init(uwin_evq_t* q);
 void uwin_evq_push(uwin_evq_t* q, int64_t kind, int64_t a, int64_t b, int64_t c);
 int  uwin_evq_pop(uwin_evq_t* q, uwin_event_t* out);   /* 1 = got one, 0 = empty */
 
-/* Syscall entry points — KERNEL pointers only (syscall.c marshals user VAs). */
+/* Syscall entry points — KERNEL pointers only (syscall.c marshals user VAs).
+ * IDs are opaque nonnegative int handles, never reused within a boot. Exhausting
+ * the handle space makes create fail; IDs are not ownership capabilities. */
 int64_t uwin_create(uint32_t w, uint32_t h, const char* title); /* id (>=0) or -1  */
 int64_t uwin_destroy(int id);                                   /* 0 (idempotent)   */
 int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h); /* 0 / -1 */

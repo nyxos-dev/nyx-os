@@ -196,6 +196,11 @@ The immediate data and desktop priorities are:
     [USERSPACE_GUI.md](USERSPACE_GUI.md) records the regression and remaining
     ownership, stale-handle and process-cleanup requirements for GUI migration.
 
+24. Development version 6.5.219 separates user-window handles from reusable
+    registry slots. Stale handles cannot address a replacement window; handle
+    exhaustion fails creation instead of wrapping. [USERSPACE_GUI.md](USERSPACE_GUI.md)
+    describes the contract and the remaining ownership/lifetime limitations.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

@@ -102,6 +102,40 @@ drive through `SYS_WIN_*`.
 
 Each step is a small, independently verifiable increment — no big-bang rewrite of a working OS.
 
+## Window identities (6.5.219)
+
+Window IDs are opaque nonnegative `int` handles, not registry indices. A
+successful allocation consumes the next handle, independently of which of
+the eight slots it occupies. Closing a window invalidates its handle; a
+replacement in the same slot receives a different one. Destroy remains
+idempotent for a dead handle. Present, rectangle present, poll, retitle and
+resize reject that handle without affecting the replacement's buffer or events.
+
+Handles stop at `INT_MAX`. After the final handle is allocated, further creates
+fail until reboot, even if slots are free. This deliberate failure avoids
+wrapping into a previously issued identity. Placement on the desktop still uses
+the small slot index, so a long creation history does not move windows off-screen.
+
+`tools/test_userwin_handles.py --compare-ref e3e9f7b` runs 3489 ASan/UBSan
+checks, including repeated headless/graphical slot reuse, all stale-handle
+operations, full-table replacement and the final two handle values. The old
+implementation fails the identity-reuse regression. The existing 585-check
+headless/desktop suite and kernel user-window KAT also pass on the host.
+
+The final GCC14 build is warning-free, passes 230 QEMU kernel tests and reaches
+login with four CPUs. In a separate single-CPU headless VM, a ring-3 test runs
+128 create/destroy/replacement cycles across two executions and a full-table
+replacement case; stale calls are rejected and the live window remains usable.
+In the graphical VM, two packaged `wintest.elf` runs receive handles 0 and 1,
+render at the same visible position, present 160 frames each and exit 0.
+The terminal continues to run `echo` and `mem` afterward. A separate GUI check
+visibly moves the terminal from (80,80) to (180,160) and runs another command.
+
+This is not process ownership or automatic cleanup. Another process that knows
+a live handle can still use it; process exit still leaves windows behind.
+Registry, backing-buffer and compositor synchronization remain open work;
+these sequential tests do not establish SMP or GUI race safety.
+
 ## Text-mode window creation (6.5.218)
 
 Without framebuffer dimensions, `uwin_create` now returns a headless registry slot
@@ -119,11 +153,12 @@ binding callbacks, compositor allocation failure and the existing user-window KA
 under ASan/UBSan (585 checks plus the KAT).
 
 With the check in place, the same text-mode VM completes the window syscalls.
-The subsequent audit also reproduces three **unfixed** limits: a fork child can
+The 6.5.218 audit reproduced three limits: a fork child can
 retitle/present/poll/destroy its parent's window; a released ID can destroy a new
 window that reused its slot; and eight programs that exit without destroying
 their windows exhaust the eight-slot registry. Explicit destruction recovers the
-slots. These are single-CPU VM results, not concurrency or fault-cleanup tests.
+slots. The stale-ID case is addressed by 6.5.219 above; ownership and exit cleanup
+remain unfixed. These are single-CPU VM results, not concurrency or fault-cleanup tests.
 
 The final kernel builds without compiler/linker warnings, passes 230 QEMU
 self-tests and reaches login with four CPUs. With a framebuffer, the packaged

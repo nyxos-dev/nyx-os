@@ -83,6 +83,8 @@ jobs:
 
       - name: Test user windows without a framebuffer
         run: python3 tools/test_userwin_headless.py
+      - name: Test user window stale handles and identity exhaustion
+        run: python3 tools/test_userwin_handles.py
 
       - name: Test minimized window arrangement recovery
         run: python3 tools/test_window_minimize.py

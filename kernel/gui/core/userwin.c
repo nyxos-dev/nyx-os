@@ -36,6 +36,7 @@ int uwin_evq_pop(uwin_evq_t* q, uwin_event_t* out) {
 
 typedef struct {
     int        active;
+    int        handle;   /* opaque per-boot identity, never reused */
     int        win_id;    /* compositor window id, or -1 (headless / not bound) */
     uint32_t   w, h;      /* client-area dimensions */
     uint32_t*  backing;   /* w*h XRGB, last presented; NULL until first present */
@@ -43,23 +44,30 @@ typedef struct {
 } user_win_t;
 
 static user_win_t g_uwin[USERWIN_MAX];
+#define USERWIN_HANDLE_LIMIT 0x7fffffffU
+static uint32_t g_next_uwin_handle;
 
 static user_win_t* uwin_slot(int id) {
-    if (id < 0 || id >= USERWIN_MAX) return 0;
-    return g_uwin[id].active ? &g_uwin[id] : 0;
+    if (id < 0) return 0;
+    for (int i = 0; i < USERWIN_MAX; i++)
+        if (g_uwin[i].active && g_uwin[i].handle == id) return &g_uwin[i];
+    return 0;
 }
 
 /* Allocate + initialise a registry slot (no compositor window). Shared by
  * uwin_create and the KAT so the model is testable without a running desktop. */
 static int uwin_alloc_slot(uint32_t w, uint32_t h) {
     if (w == 0 || h == 0 || w > USERWIN_MAX_W || h > USERWIN_MAX_H) return -1;
+    /* Fail closed at exhaustion rather than wrapping into an old identity. */
+    if (g_next_uwin_handle > USERWIN_HANDLE_LIMIT) return -1;
     for (int i = 0; i < USERWIN_MAX; i++) {
         if (!g_uwin[i].active) {
             user_win_t* s = &g_uwin[i];
             s->w = w; s->h = h; s->backing = 0; s->win_id = -1;
             uwin_evq_init(&s->evq);
+            s->handle = (int)g_next_uwin_handle++;
             s->active = 1;
-            return i;
+            return s->handle;
         }
     }
     return -1;                                          /* table full */
@@ -138,16 +146,18 @@ int64_t uwin_create(uint32_t w, uint32_t h, const char* title) {
      * client height (win_total_h adds TITLE_H for the title bar on top), so pass h directly —
      * NOT h + TITLE_H, which made the frame one title-bar too tall and left a TITLE_H strip of
      * bare body fill below the app's w x h backing. In-kernel windows pass the client height too. */
-    int px = 80 + id * 24, py = 80 + id * 24;
+    user_win_t* s = uwin_slot(id);
+    int slot_index = (int)(s - g_uwin);
+    int px = 80 + slot_index * 24, py = 80 + slot_index * 24;
     window_t* win = window_create(px, py, w, h, title ? title : "app", uwin_draw_cb);
     if (win) {
-        win->reserved     = &g_uwin[id];
+        win->reserved     = s;
         win->on_key       = uwin_on_key;
         win->on_click     = uwin_on_click;
         win->on_mousemove = uwin_on_move;
         win->on_resize    = uwin_on_resize;
         win->on_close     = uwin_on_close_cb;
-        g_uwin[id].win_id = win->id;
+        s->win_id = win->id;
     }
     /* No compositor window (desktop not up / table full) still yields a usable
      * headless slot: present/poll work, it simply isn't drawn. */
@@ -270,8 +280,9 @@ int uwin_selftest(void) {
     for (int i = 0; i < USERWIN_MAX; i++) { ids[i] = uwin_alloc_slot(8, 8); if (ids[i] < 0) return 16; }
     if (uwin_alloc_slot(8, 8) != -1) return 17;         /* table full */
     uwin_release(uwin_slot(ids[3]));
-    if (uwin_alloc_slot(8, 8) != ids[3]) return 18;     /* freed id reused */
-    for (int i = 0; i < USERWIN_MAX; i++) if (uwin_slot(i)) uwin_release(uwin_slot(i));
+    int replacement = uwin_alloc_slot(8, 8);
+    if (replacement < 0 || replacement == ids[3] || uwin_slot(ids[3])) return 18;
+    for (int i = 0; i < USERWIN_MAX; i++) uwin_release(&g_uwin[i]);
 
     /* 4. partial present: a sub-rect lands exactly, neighbours are untouched, and an
      * out-of-bounds rect / bad id is rejected. */
@@ -291,13 +302,13 @@ int uwin_selftest(void) {
     if (ps->backing[4 * 16 + 2] != 0x00112233) return 26;        /* just left of rect untouched */
     if (uwin_present_rect(pid, r2, 15, 4, 2, 2) != -1) return 27; /* x+w=17 > 16 -> reject */
     if (uwin_present_rect(pid, r2, 3, 11, 2, 2) != -1) return 28; /* y+h=13 > 12 -> reject */
-    if (uwin_present_rect(9999, r2, 0, 0, 2, 2) != -1) return 29; /* bad id -> reject */
+    if (uwin_present_rect(-1, r2, 0, 0, 2, 2) != -1) return 29; /* bad id -> reject */
     if (ps->backing[4 * 16 + 3] != 0x00AABBCC) return 30;        /* rejects left the backing intact */
 
     /* 5. set_title: a headless slot (win_id == -1, no compositor window) is a no-op
      * success so a client need not special-case the desktop-down path; a bad id is -1. */
     if (uwin_set_title(pid, "retitled") != 0) return 31;         /* headless slot -> 0 */
-    if (uwin_set_title(9999, "x")       != -1) return 32;        /* bad id -> -1 */
+    if (uwin_set_title(-1, "x")       != -1) return 32;        /* bad id -> -1 */
     uwin_release(ps);
 
     /* 6. resize: client dims update and the backing is DROPPED (so the next present reallocs
@@ -316,7 +327,7 @@ int uwin_selftest(void) {
     if (uwin_resize(rid, 32, 24) != 0) return 38;                /* no-op resize -> 0 */
     if (uwin_slot(rid)->backing == 0) return 39;                 /* ...and it kept the backing */
     if (uwin_resize(rid, 0, 10) != -1) return 40;                /* zero dim rejected */
-    if (uwin_resize(9999, 8, 8) != -1) return 41;                /* bad id rejected */
+    if (uwin_resize(-1, 8, 8) != -1) return 41;                /* bad id rejected */
 
     /* 7. compositor-driven resize notify (a USER drag-resize): uwin_on_resize adopts the new
      * client dims, drops the backing, and queues UWE_RESIZE(w,h). Staged window bound to the slot

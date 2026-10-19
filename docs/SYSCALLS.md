@@ -128,7 +128,7 @@ while waiting); the TCP receive window advertises real free space and caps the r
 | 54 | `SYS_FBINFO` | `fbinfo(out[3])` | screen width/height/bpp for a fullscreen app |
 | 55 | `SYS_FBPRESENT` | `fbpresent(buf, w, h)` | blit a 32bpp buffer to the screen, scaled |
 | 56 | `SYS_GETKEYEVENT` | `getkeyevent()` | next raw key event `(pressed<<8)|scancode`, or −1 |
-| 57 | `SYS_WIN_CREATE` | `win_create(w, h, title)` | open a `w×h` composited desktop window; returns an id (≥0) or −1 |
+| 57 | `SYS_WIN_CREATE` | `win_create(w, h, title)` | open a `w×h` composited desktop window; returns an opaque handle (≥0) or −1; handles are not slot indices and are not reused within a boot |
 | 58 | `SYS_WIN_DESTROY` | `win_destroy(id)` | close the window (idempotent — 0 even if already gone) |
 | 59 | `SYS_WIN_PRESENT` | `win_present(id, buf, w, h)` | blit a `w×h` XRGB (`0x00RRGGBB`) buffer as the whole client area |
 | 60 | `SYS_WIN_POLL_EVENT` | `win_poll_event(id, ev)` | pop one input event, non-blocking: `1` got / `0` none / −1 |

@@ -26,7 +26,7 @@ void fb_fill_rect(uint32_t x,uint32_t y,uint32_t w,uint32_t h,uint32_t c) {
 window_t* window_create(int x,int y,uint32_t w,uint32_t h,const char* t,window_draw_fn draw) {
     (void)x;(void)y;(void)w;(void)h;(void)t;(void)draw;creates++;
     if(unavailable)return 0;
-    bound.id=42;return &bound;
+    bound.id=42;bound.x=x;bound.y=y;return &bound;
 }
 void window_destroy(int id) { (void)id;destroys++;if(bound.on_close)bound.on_close(&bound); }
 int window_set_title(int id,const char* t) { (void)id;(void)t;return 0; }
