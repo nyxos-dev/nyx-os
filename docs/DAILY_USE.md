@@ -150,6 +150,11 @@ The immediate data and desktop priorities are:
     [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) records session semantics and the
     separate host/GUI evidence; this does not add saved window layouts.
 
+16. Development version 6.5.211 rejects unsupported leading `rm.elf` options
+    before removal and supports `--` in both rm implementations. [RM.md](RM.md)
+    records operand rules, target file-preservation checks and the separate
+    unresolved `sh -c` exit-status bug.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

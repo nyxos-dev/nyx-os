@@ -424,7 +424,7 @@ static const command_t commands[] = {
     {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
     {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal|symbolic> <file>", false},
     {"stat",      cmd_stat,      "Show file metadata: stat <file>", false},
-    {"rm",        cmd_rm,        "Remove files/dirs: rm [-rf] <path>...", false},
+    {"rm",        cmd_rm,        "Remove files/dirs: rm [-rf] [--] <path>...", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
     {"mv",        cmd_mv,        "Move/rename: mv <src> <dst> (into dst if dst is a dir)", false},
@@ -9732,13 +9732,15 @@ int rm_r_selftest(void) {
 
 static void cmd_rm(int argc, char** argv) {
     int rflag = 0, fflag = 0, ai = 1;
-    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++) {
+        if (strcmp(argv[ai], "--") == 0) { ai++; break; }
         for (const char* f = argv[ai] + 1; *f; f++) {
             if      (*f == 'r' || *f == 'R') rflag = 1;
             else if (*f == 'f')              fflag = 1;   // ignore missing / suppress errors
             else { printf("rm: unknown option -%c\n", *f); return; }
         }
-    if (ai >= argc) { if (!fflag) printf("Usage: rm [-rf] <path>...\n"); return; }
+    }
+    if (ai >= argc) { if (!fflag) printf("Usage: rm [-rf] [--] <path>...\n"); return; }
     for (int i = ai; i < argc; i++) {
         int rc = rflag ? vfs_rmtree(argv[i]) : vfs_unlink(argv[i]);
         if (rc < 0 && !fflag) printf("rm: failed to remove %s\n", argv[i]);

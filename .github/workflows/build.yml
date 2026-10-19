@@ -102,6 +102,9 @@ jobs:
       - name: Test lseek bounds and failed-position preservation
         run: python3 tools/test_lseek.py
 
+      - name: Test rm option and operand boundaries
+        run: python3 tools/test_rm_options.py
+
       - name: Test cat streaming and canonical terminal input
         run: |
           python3 tools/test_cat.py
