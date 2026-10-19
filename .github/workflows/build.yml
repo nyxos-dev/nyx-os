@@ -78,6 +78,9 @@ jobs:
       - name: Test Mnemosyne shared clipboard and undo
         run: python3 tools/test_editor_clipboard.py
 
+      - name: Test desktop calculator arithmetic and recovery
+        run: python3 tools/test_calculator.py
+
       - name: Test minimized window arrangement recovery
         run: python3 tools/test_window_minimize.py
 

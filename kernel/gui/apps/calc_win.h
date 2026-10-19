@@ -19,6 +19,7 @@ typedef struct {
     int64_t mem_val;
     char op;
     int new_input;
+    int error;
     char display[32];
 } calc_win_t;
 

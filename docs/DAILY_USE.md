@@ -185,6 +185,12 @@ The immediate data and desktop priorities are:
     regressions, seven target ELF runs with 184 exact EXT2 output bytes, and
     remaining bounds/inference limits. Lowering ran on the host.
 
+22. Development version 6.5.217 checks desktop calculator digit/arithmetic
+    overflow and division errors, preserves `ERR`, and allows recovery with
+    `C` or a new digit. [CALCULATOR.md](CALCULATOR.md) documents its signed
+    integer contract, host regression and QEMU GUI evidence. The application remains in
+    kernel context.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

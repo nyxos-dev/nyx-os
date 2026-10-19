@@ -20,7 +20,8 @@ static const uint8_t pos_to_btn[16] = {
 };
 
 static void update_display(calc_win_t* calc) {
-    snprintf(calc->display, sizeof(calc->display), "%ld", (long long)calc->current_val);
+    if (calc->error) snprintf(calc->display, sizeof(calc->display), "ERR");
+    else snprintf(calc->display, sizeof(calc->display), "%ld", (long long)calc->current_val);
 }
 
 calc_win_t* calc_create_ctx(void) {
@@ -33,57 +34,74 @@ calc_win_t* calc_create_ctx(void) {
     return calc;
 }
 
-static void calc_do_op(calc_win_t* calc) {
-    if (calc->op == '+') calc->mem_val += calc->current_val;
-    else if (calc->op == '-') calc->mem_val -= calc->current_val;
-    else if (calc->op == '*') calc->mem_val *= calc->current_val;
+static void calc_set_error(calc_win_t* calc) {
+    calc->current_val = 0;
+    calc->mem_val = 0;
+    calc->op = 0;
+    calc->new_input = 1;
+    calc->error = 1;
+    update_display(calc);
+}
+
+static int calc_do_op(calc_win_t* calc) {
+    int64_t result = calc->current_val;
+    int failed = 0;
+    if (calc->op == '+') failed = __builtin_add_overflow(calc->mem_val, calc->current_val, &result);
+    else if (calc->op == '-') failed = __builtin_sub_overflow(calc->mem_val, calc->current_val, &result);
+    else if (calc->op == '*') failed = __builtin_mul_overflow(calc->mem_val, calc->current_val, &result);
     else if (calc->op == '/') {
-        if (calc->current_val == 0) {
-            calc->mem_val = 0;
-            snprintf(calc->display, sizeof(calc->display), "ERR");
-            calc->op = 0;
-            calc->new_input = 1;
-            return;
-        }
-        calc->mem_val /= calc->current_val;
-    } else {
-        calc->mem_val = calc->current_val;
+        const int64_t min_value = -9223372036854775807LL - 1;
+        failed = calc->current_val == 0 || (calc->mem_val == min_value && calc->current_val == -1);
+        if (!failed) result = calc->mem_val / calc->current_val;
     }
-    calc->current_val = calc->mem_val;
+    if (failed) { calc_set_error(calc); return 0; }
+    calc->mem_val = result;
+    calc->current_val = result;
+    return 1;
 }
 
 static void calc_handle_btn(calc_win_t* calc, int btn_id) {
+    if (calc->error) {
+        if ((btn_id < 0 || btn_id > 9) && btn_id != 15) return;
+        calc->error = 0;
+    }
     switch (btn_id) {
         case 0 ... 9:
             if (calc->new_input) {
                 calc->current_val = btn_id;
                 calc->new_input = 0;
             } else {
-                calc->current_val = calc->current_val * 10 + btn_id;
+                int64_t scaled, value;
+                if (__builtin_mul_overflow(calc->current_val, (int64_t)10, &scaled) ||
+                    __builtin_add_overflow(scaled, (int64_t)btn_id, &value)) {
+                    calc_set_error(calc);
+                    return;
+                }
+                calc->current_val = value;
             }
             break;
         case 10:
-            calc_do_op(calc);
+            if (!calc_do_op(calc)) return;
             calc->op = 0;
             calc->new_input = 1;
             break;
         case 11:
-            calc_do_op(calc);
+            if (!calc_do_op(calc)) return;
             calc->op = '+';
             calc->new_input = 1;
             break;
         case 12:
-            calc_do_op(calc);
+            if (!calc_do_op(calc)) return;
             calc->op = '-';
             calc->new_input = 1;
             break;
         case 13:
-            calc_do_op(calc);
+            if (!calc_do_op(calc)) return;
             calc->op = '*';
             calc->new_input = 1;
             break;
         case 14:
-            calc_do_op(calc);
+            if (!calc_do_op(calc)) return;
             calc->op = '/';
             calc->new_input = 1;
             break;
