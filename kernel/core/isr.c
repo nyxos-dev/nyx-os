@@ -143,7 +143,7 @@ void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uin
             printf(" -> killed (signal %d)\n", signo);
             if (cur) {
                 cur->exit_code = 128 + signo;   // waitpid status convention: 128 + signo
-                close_proc_fds(cur);            // drop pipe ends so readers get EOF
+                if (!tg_reassign_leader(cur)) close_proc_fds(cur);
                 cur->state = PROC_ZOMBIE;
                 wake_waiters(cur);              // unblock a parent in waitpid()
             }

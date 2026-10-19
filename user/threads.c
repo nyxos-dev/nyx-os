@@ -71,7 +71,90 @@ static void worker(void* arg) {
     exit(0);
 }
 
-int main(void) {
+static unsigned char fault_stack[16384] __attribute__((aligned(16)));
+static int fault_fd, fault_leader;
+static sigjmp_buf fault_recover;
+static volatile int fault_caught;
+
+static void fault_handler(int sig) {
+    fault_caught = sig;
+    siglongjmp(fault_recover, 1);
+}
+
+static void fault_survivor(void* unused) {
+    (void)unused;
+    /* Wait for the parent to reap the leader, rather than relying on a delay. */
+    for (int i = 0; i < 200 && kill(fault_leader, 0) == 0; i++) sleep_ms(10);
+    if (kill(fault_leader, 0) == 0) exit(19);
+    int value = 73;
+    exit(write(fault_fd, &value, sizeof(value)) == sizeof(value) ? 0 : 20);
+}
+
+static void fault_worker(void* unused) {
+    (void)unused;
+    __asm__ volatile("ud2");
+    exit(21);
+}
+
+static int fault_case(int mode) {
+    int fds[2];
+    if (pipe(fds)) return 1;
+    long child = fork();
+    if (child < 0) { close(fds[0]); close(fds[1]); return 2; }
+    if (!child) {
+        close(fds[0]);
+        fault_fd = fds[1];
+        fault_leader = (int)getpid();
+        if (mode == 5) __asm__ volatile("ud2");
+        if (mode == 4) {
+            int status = -1;
+            int tid = clone((void*)fault_worker, fault_stack + sizeof(fault_stack), 0, CLONE_VM);
+            if (tid < 0 || waitpid(tid, &status) != tid || status != 128 + SIGILL) exit(22);
+            int value = 73;
+            exit(write(fault_fd, &value, sizeof(value)) == sizeof(value) ? 0 : 23);
+        }
+        if (clone((void*)fault_survivor, fault_stack + sizeof(fault_stack), 0, CLONE_VM) < 0) exit(24);
+        if (mode == 1) __asm__ volatile("ud2");
+        if (mode == 2) __asm__ volatile("xor %%edx,%%edx; mov $1,%%eax; xor %%ecx,%%ecx; div %%ecx" ::: "rax", "rcx", "rdx");
+        if (mode == 3) *(volatile unsigned long*)0x600000000000UL = 1;
+        if (mode == 6) {
+            fault_caught = 0;
+            signal(SIGILL, fault_handler);
+            if (!sigsetjmp(fault_recover, 1)) __asm__ volatile("ud2");
+            if (fault_caught != SIGILL) exit(25);
+        }
+        exit(0);
+    }
+    close(fds[1]);
+    int status = -1, value = -1;
+    if (waitpid(child, &status) != child) { close(fds[0]); return 3; }
+    int expected = (mode == 1 || mode == 5) ? 128 + SIGILL :
+                   mode == 2 ? 128 + SIGFPE : mode == 3 ? 128 + SIGSEGV : 0;
+    if (status != expected) { close(fds[0]); return 4; }
+    long count = read(fds[0], &value, sizeof(value));
+    close(fds[0]);
+    if (mode == 5) return count == 0 ? 0 : 5;
+    return count == sizeof(value) && value == 73 ? 0 : 6;
+}
+
+static int fault_tests(void) {
+    static const char* names[] = {
+        "normal", "leader-ill", "leader-fpe", "leader-segv",
+        "worker-ill", "last-member", "handled-ill"
+    };
+    int failures = 0;
+    for (int i = 0; i < 7; i++) {
+        int result = fault_case(i);
+        printf("threads: fault case %s -> %s (%d)\n", names[i], result ? "FAIL" : "OK", result);
+        failures += result != 0;
+    }
+    printf("threads: fault lifecycle %d/7 passed\n", 7 - failures);
+    return failures ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && !strcmp(argv[1], "--faults")) return fault_tests();
+    if (argc != 1) { printf("Usage: threads [--faults]\n"); return 1; }
     printf("threads: spawning %d threads x %d increments each (shared address space)\n",
            NTHREADS, ITERS);
     for (long i = 0; i < NTHREADS; i++) {

@@ -228,6 +228,14 @@ The immediate data and desktop priorities are:
     [nppc documentation](../lang/nppc/README.md) describes the scope. Bounds,
     arbitrary receiver inference and closure environment lifetime are unchanged.
 
+28. Development version 6.5.223 transfers shared thread-group resources before
+    closing descriptors when an unhandled ring-3 exception terminates the leader.
+    Surviving `CLONE_VM` threads retain their shared descriptors; the last member
+    still closes them. Run `exec /threads.elf --faults` for normal exit, three
+    leader exceptions, a worker exception, last-member EOF and a handled exception.
+    This uses the existing leader handoff; it does not add window ownership,
+    automatic window cleanup or concurrent thread-group migration guarantees.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
