@@ -31,6 +31,7 @@ HARNESS = r'''
 #include <stdlib.h>
 #include <string.h>
 #define MAX_NAME 64
+#define MAX_PATH 256
 #define MAX_INODES 512
 #define MAX_CHILDREN 128
 #define memset_asm memset

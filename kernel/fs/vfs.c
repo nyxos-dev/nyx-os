@@ -55,7 +55,7 @@ typedef struct vfs_node {
                            // Was flush-on-every-write, which re-wrote the WHOLE file to ext2
                            // per 4 KB write() — O(n^2) I/O that made a ~496 KB write (the in-OS
                            // tcc self-host object) take minutes. Now writes just mark dirty.
-    char     mpath[MAX_NAME]; // path within the mount (e.g. "/foo.txt")
+    char     mpath[MAX_PATH]; // full path within the mount, not one filename
     void*    mount_ent;    // mount_entry_t* to flush writes through
     uint32_t dev_type;    // 0 = regular file; else a /dev special (DEV_* below)
     uint32_t proc_type;   // 0 = not /proc; else a PROC_* generated node (below)
@@ -761,6 +761,12 @@ static const char* vfs_abs(const char* path, char* buf, int n);
 
 int vfs_open(const char* path, int flags, mode_t mode) {
     (void)mode;
+    if (!path || strlen(path) >= MAX_PATH) return -1;
+    if (path[0] != '/') {
+        const char* cwd = vfs_getcwd();
+        if (vfs_find_mount(cwd) && strlen(cwd) + 1 + strlen(path) >= MAX_PATH)
+            return -1;
+    }
     char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
 
     // Refresh /proc's per-pid dirs so an open/getdents under /proc sees the
@@ -774,6 +780,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
     if (me) {
         const char* sub = path + strlen(me->mount_point);
         if (!*sub) sub = "/";
+        if (strlen(sub) >= sizeof(((vfs_node_t*)0)->mpath)) return -1;
 
         // Directory? readdir returns -1 for non-dirs, so probe by loading its
         // entries once into the node; vfs_readdir then serves them by index.
@@ -783,7 +790,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             vfs_node_t* dn = alloc_node();
             if (!dn) { if (dents) kfree(dents); return -1; }
             dn->type = 1; dn->mount_backed = 1; dn->mount_ent = me;
-            strncpy(dn->mpath, sub, MAX_NAME - 1);
+            strcpy(dn->mpath, sub);
             dn->data = (uint8_t*)dents; dn->size = (uint32_t)nd;
             dn->open_refs = 1;
             return node_to_handle(dn);
@@ -798,7 +805,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
         n->type = 0;
         n->mount_backed = 1;
         n->mount_ent = me;
-        strncpy(n->mpath, sub, MAX_NAME - 1);
+        strcpy(n->mpath, sub);
         if (!exists && (flags & 1)) {
             if (me->write_file) me->write_file(sub, "", 0);   // create empty
         } else if (exists && me->read_file) {

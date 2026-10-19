@@ -90,6 +90,9 @@ jobs:
       - name: Test Selene forms, layout contracts and allocation recovery
         run: python3 tools/test_selene_forms.py
 
+      - name: Test mounted VFS full-path preservation
+        run: python3 tools/test_vfs_mount_paths.py
+
       - name: Test RAM VFS replacement allocation failures
         run: python3 tools/test_vfs_replace.py
 

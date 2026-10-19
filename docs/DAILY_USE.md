@@ -160,6 +160,12 @@ The immediate data and desktop priorities are:
     [SHELL_ENTRY.md](SHELL_ENTRY.md) records string/vector bounds, host and target
     preservation tests, and remaining shell expansion/error-handling limits.
 
+18. Development version 6.5.213 preserves complete mounted paths when dirty
+    file mirrors flush, preventing writes to truncated prefix names.
+    [MOUNT_PATHS.md](MOUNT_PATHS.md) records checked open bounds, the 96 KiB
+    static memory cost, host regressions and exact RAM/EXT2 file checks.
+    Shell argument truncation and non-atomic mounted saves remain open.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
