@@ -102,6 +102,37 @@ drive through `SYS_WIN_*`.
 
 Each step is a small, independently verifiable increment — no big-bang rewrite of a working OS.
 
+## Window close context ownership (6.5.220)
+
+The compositor owns dynamically allocated application contexts in
+`window_t.reserved`: `window_destroy` invokes `on_close`, then frees any context
+pointer the callback leaves behind. User windows instead store a pointer into
+the static registry. Their close callback now clears `reserved` before releasing
+the backing buffer, so the compositor never passes the static registry to
+`kfree`. Both app-initiated destruction and compositor-driven close use this path.
+
+`tools/test_userwin_close.py --compare-ref c66a346` compiles the actual
+`window_destroy` function with the user-window implementation and host allocation
+stubs under ASan/UBSan. It exercises repeated app/compositor closes, checks that
+only the backing buffer and window are released, and checks repeated destroys.
+The baseline triggers an AddressSanitizer invalid-free report for static storage.
+In the kernel, `kfree` writes a freed marker to the presumed allocation header
+before checking its original magic; passing static storage is therefore invalid
+even if it does not immediately cause a guest panic. This fix does not implement
+process-exit cleanup or concurrent window ownership.
+
+The corrected build passes 961 close checks, the existing identity/headless
+regressions, 230 QEMU kernel tests and four-CPU login, with no GCC14 warnings.
+A ring-3 guest launched using `spawn` detects GUI close, creates a replacement,
+rejects present through the old handle, destroys the replacement twice and
+exits 0. Terminal commands and dragging remain usable afterward.
+
+For interactive window tests, launch the client with `spawn`. The current
+foreground `exec` wait loop calls `compositor_redraw_now`, which only repaints;
+it does not run the desktop input/event loop. A waiting client can therefore
+remain visible without receiving a title-bar close until the foreground wait
+ends. This input limitation is separate from the static-context fix.
+
 ## Window identities (6.5.219)
 
 Window IDs are opaque nonnegative `int` handles, not registry indices. A

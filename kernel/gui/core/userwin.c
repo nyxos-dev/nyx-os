@@ -130,7 +130,10 @@ static void uwin_on_close_cb(window_t* win) {
      * teardown, uwin_destroy already released the slot (no-op here); if the
      * compositor's close box fired it, this is where the slot is released and the
      * app learns of it via poll_event returning -1 (its window no longer exists). */
-    uwin_release((user_win_t*)win->reserved);
+    user_win_t* s = (user_win_t*)win->reserved;
+    /* window_destroy frees a remaining context; this registry is static. */
+    win->reserved = 0;
+    uwin_release(s);
 }
 
 /* ---- syscall entry points ---- */

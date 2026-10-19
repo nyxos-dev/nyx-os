@@ -201,6 +201,11 @@ The immediate data and desktop priorities are:
     exhaustion fails creation instead of wrapping. [USERSPACE_GUI.md](USERSPACE_GUI.md)
     describes the contract and the remaining ownership/lifetime limitations.
 
+25. Development version 6.5.220 detaches the static user-window registry pointer
+    during close, preventing the compositor from passing it to `kfree` as if it
+    were an allocated application context. [USERSPACE_GUI.md](USERSPACE_GUI.md)
+    documents the real compositor teardown regression and its scope.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
