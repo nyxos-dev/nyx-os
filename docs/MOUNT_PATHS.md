@@ -55,9 +55,10 @@ truncation cannot hide or misattribute the VFS result.
 - The separate 95-byte shell argument truncation is repaired in 6.5.214.
   [SHELL_ENTRY.md](SHELL_ENTRY.md) records its checked expansion limits and
   remaining parser/variable-storage restrictions.
-- Other VFS entry points and syscall path-copy/normalization helpers are
-  unchanged. These checks do not establish complete path rejection across
-  all callers, long working directories or all filesystem operations.
+- Other VFS entry points remain separate. Version 6.5.215 checks the shared
+  filesystem syscall path-copy/normalization helper; see [SYSCALL_PATHS.md](SYSCALL_PATHS.md).
+  These increments do not establish complete path rejection across every
+  kernel caller or filesystem operation.
 - Mounted flushes still ignore backing write failures and lack atomic
   replacement, crash recovery and concurrent-writer protection. Preserving
   the path does not make save transactions reliable under every failure.

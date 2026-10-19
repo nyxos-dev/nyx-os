@@ -544,36 +544,48 @@ static int copy_exec_vector(uint64_t src, char* store, char** pointers,
  * in `out`: collapses `.`, `..`, and redundant `/`. cwd must be absolute; an empty
  * cwd is treated as "/". This is what makes a process's CWD affect open()/getdents()
  * — a relative path is joined onto the caller's cwd before hitting the VFS. */
-static void path_resolve(const char* cwd, const char* path, char* out, int outsz) {
+static int path_resolve(const char* cwd, const char* path, char* out, int outsz) {
+    if (!path || !out || outsz < 2) return -1;
     char buf[MAX_PATH];
+    size_t plen = strlen(path);
+    if (plen >= sizeof(buf)) return -1;
     if (path[0] == '/') {
-        strncpy(buf, path, sizeof(buf) - 1); buf[sizeof(buf) - 1] = '\0';
+        memcpy(buf, path, plen + 1);
     } else {
         const char* c = (cwd && cwd[0]) ? cwd : "/";
-        snprintf(buf, sizeof(buf), "%s/%s", c, path);
+        size_t clen = strlen(c);
+        if (clen + 1 + plen >= sizeof(buf)) return -1;
+        memcpy(buf, c, clen);
+        buf[clen] = '/';
+        memcpy(buf + clen + 1, path, plen + 1);
     }
-    char* comps[32]; int nc = 0;                 // component stack (into buf)
+    char* comps[32]; int nc = 0;
     char* s = buf;
     while (*s) {
-        while (*s == '/') s++;                    // skip runs of '/'
+        while (*s == '/') s++;
         if (!*s) break;
         char* start = s;
         while (*s && *s != '/') s++;
         if (*s) *s++ = '\0';
-        if (start[0] == '.' && start[1] == '\0') continue;              // "."
-        if (start[0] == '.' && start[1] == '.' && start[2] == '\0') {   // ".."
+        if (start[0] == '.' && start[1] == '\0') continue;
+        if (start[0] == '.' && start[1] == '.' && start[2] == '\0') {
             if (nc > 0) nc--;
             continue;
         }
-        if (nc < 32) comps[nc++] = start;
+        if (nc >= (int)(sizeof(comps) / sizeof(comps[0]))) return -1;
+        comps[nc++] = start;
     }
+    size_t need = nc ? 0 : 1;
+    for (int i = 0; i < nc; i++) need += 1 + strlen(comps[i]);
+    if (need >= (size_t)outsz) return -1;
     int o = 0;
-    if (nc == 0) { if (outsz > 1) out[o++] = '/'; }
+    if (nc == 0) out[o++] = '/';
     else for (int i = 0; i < nc; i++) {
-        if (o < outsz - 1) out[o++] = '/';
-        for (char* p = comps[i]; *p && o < outsz - 1; p++) out[o++] = *p;
+        out[o++] = '/';
+        for (char* p = comps[i]; *p; p++) out[o++] = *p;
     }
     out[o] = '\0';
+    return 0;
 }
 
 /* KAT for path_resolve — the cwd-relative path normalizer behind every path syscall
@@ -619,10 +631,9 @@ int path_resolve_selftest(void) {
 /* Copy the caller's cwd-resolved absolute path for a user path pointer into `out`. */
 static int copy_path_from_user(char* out, int outsz, uint64_t uptr) {
     char rel[128];
-    if (copy_str_from_user(rel, uptr, sizeof(rel)) != 0) return -1;
+    if (copy_exec_string(rel, uptr, sizeof(rel)) != 0) return -1;
     process_t* cur = get_cur_proc();
-    path_resolve(cur ? cur->cwd : "/", rel, out, outsz);
-    return 0;
+    return path_resolve(cur ? cur->cwd : "/", rel, out, outsz);
 }
 
 // Broken-down RTC time -> Unix epoch seconds. The RTC carries no timezone, so it is

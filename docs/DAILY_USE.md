@@ -173,6 +173,12 @@ The immediate data and desktop priorities are:
     records host regressions and exact packaged-shell RAM/EXT2 evidence.
     Variable storage, intermediate expansion and syscall path limits remain.
 
+20. Development version 6.5.215 rejects truncated raw syscall paths and
+    overflow in cwd joining, component stacking or normalized output before
+    filesystem callbacks. [SYSCALL_PATHS.md](SYSCALL_PATHS.md) records the
+    checked bounds and host/guest prefix-preservation evidence. Other VFS
+    callers, shell PATH lookup and filesystem transaction limits remain.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

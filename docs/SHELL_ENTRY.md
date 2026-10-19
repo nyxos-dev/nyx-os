@@ -110,10 +110,11 @@ child rejects its arguments; the complete pipeline is not a transaction.
 The existing wildcard dispatch still requires `*` or `?`; a bracket-only
 pattern and quote-protected directory prefixes need separate compatibility work.
 Inherited environment import is not implemented; local values remain bounded.
-Executable PATH-search buffers and other syscall path normalization still need
-their own complete-input checks.
+Executable PATH-search buffers still need their own complete-input checks.
+Version 6.5.215 adds checked filesystem syscall input and normalization;
+see [SYSCALL_PATHS.md](SYSCALL_PATHS.md) for its scope and remaining limits.
 The interactive shell's input limit and exit behaviour remain unchanged. Other
-syscalls still use their existing string-copy semantics. Generic syscall errors
+uses of the legacy string copier retain their earlier semantics. Generic syscall errors
 remain -1 rather than a complete errno contract. No power-loss, hardware or
 long-running process-isolation claim is made.
 

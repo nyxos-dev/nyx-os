@@ -105,6 +105,9 @@ jobs:
       - name: Test lseek bounds and failed-position preservation
         run: python3 tools/test_lseek.py
 
+      - name: Test syscall path bounds and normalization
+        run: python3 tools/test_syscall_paths.py
+
       - name: Test exec argument and environment bounds
         run: python3 tools/test_exec_input.py
 
