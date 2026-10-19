@@ -236,6 +236,18 @@ The immediate data and desktop priorities are:
     This uses the existing leader handoff; it does not add window ownership,
     automatic window cleanup or concurrent thread-group migration guarantees.
 
+29. Development version 6.5.224 measures the desktop NET rate over the actual
+    elapsed kernel ticks instead of assuming every repaint takes 500 ms. The first
+    sample primes the counter; disabling the panel or resetting/loading desktop
+    settings clears its history. Re-enabling starts a fresh measurement. Counter
+    rollback re-primes the rate, and very large rates saturate without wrapping
+    the graph. The existing 32-bit tick clock supports a wrap within an interval;
+    intervals spanning an entire clock cycle (about 49.7 days) remain ambiguous.
+    `python3 tools/test_desktop_config.py` covers sampling and configuration
+    transitions; the existing `netrate` KAT also checks arithmetic boundaries.
+    This corrects measurement after a delayed update; foreground shell commands
+    can still block desktop event processing until they return.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

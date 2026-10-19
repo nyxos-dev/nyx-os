@@ -12,6 +12,12 @@ HARNESS = r'''
 extern int puts(const char*);
 char g_login_home[64] = "/mnt/home/alice";
 uint32_t get_ticks(void) { return 1; }
+static uint64_t sample_bytes;
+uint64_t net_total_bytes(void) { return sample_bytes; }
+uint32_t perf_cpu_percent(void) { return 7; }
+void mem_pool_kb(uint32_t* used, uint32_t* free_kb, uint32_t* total) {
+    *used = 20; *total = 100; if (free_kb) *free_kb = 80;
+}
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b) { return (r<<16)|(g<<8)|b; }
 void memcpy_asm(void* dst, const void* src, size_t n) {
     unsigned char* d = dst; const unsigned char* s = src; while (n--) *d++ = *s++;
@@ -102,8 +108,32 @@ void font_draw_string(uint32_t x, uint32_t y, const char* text, uint32_t fg, uin
 static const char* message(void) { return toasts[0].body; }
 static void clear_message(void) { for (int i = 0; i < NOTIFY_MAX; i++) toasts[i].used = 0; }
 int main(void) {
+    CHECK(net_rate_selftest() == 0);
+    sample_bytes = 100000;
+    CHECK(wgt_sample_tick(100) && !wgt_net_bps);
+    sample_bytes += 1000;
+    CHECK(!wgt_sample_tick(599));
+    CHECK(wgt_sample_tick(600) && wgt_net_bps == 2000);
+    CHECK(wgt_cpu[WGT_N-1] == 7 && wgt_ram[WGT_N-1] == 20);
+    sample_bytes += 1000;
+    CHECK(wgt_sample_tick(5600) && wgt_net_bps == 200);
+    g_widget_on = 0;
+    CHECK(!wgt_sample_tick(5700) && !wgt_net_sample.ready && !wgt_net_bps);
+    for (int i = 0; i < WGT_N; i++) CHECK(!wgt_cpu[i] && !wgt_ram[i] && !wgt_net[i]);
+    sample_bytes += 500000;
+    g_widget_on = 1;
+    CHECK(wgt_sample_tick(60000) && !wgt_net_bps);
+    sample_bytes += 1000;
+    CHECK(wgt_sample_tick(60500) && wgt_net_bps == 2000);
+    reset_nyx_config();
+    CHECK(!wgt_net_sample.ready && !wgt_net_bps);
+    sample_bytes += 900000;
+    CHECK(wgt_sample_tick(61000) && !wgt_net_bps);
+    sample_bytes += 1000;
+    CHECK(wgt_sample_tick(61500) && wgt_net_bps == 2000);
     strcpy(system_config, "terminal_palette = nightfall\n");
     apply_nyx_config();
+    CHECK(!wgt_net_sample.ready && !wgt_net_bps);
     CHECK(!strcmp(terminal_palette_name(), "nightfall"));
     strcpy(alice, "terminal_palette = classic\n"); apply_nyx_config();
     CHECK(!strcmp(terminal_palette_name(), "classic"));

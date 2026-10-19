@@ -3787,8 +3787,39 @@ static void draw_icon_at(int i) {
 int g_widget_on = 1;              // set from /etc/nyx.conf (apply_nyx_config); default on
 int g_widget_pos = 0;             // 0=bottom-right (default) 1=bottom-left 2=top-right 3=top-left — nyx.conf `widget_pos`
 static uint8_t wgt_cpu[WGT_N], wgt_ram[WGT_N], wgt_net[WGT_N];
-static uint64_t wgt_net_last;         // net_total_bytes() at the previous sample
+typedef struct {
+    uint64_t bytes;
+    uint32_t ms;
+    int ready;
+} net_sample_t;
+static net_sample_t wgt_net_sample;
 static unsigned long wgt_net_bps;     // current NET rate (bytes/s) for the caption
+
+static unsigned long net_sample_rate(net_sample_t* sample, uint64_t total, uint32_t now) {
+    uint32_t elapsed = now - sample->ms;
+    if (!sample->ready || total < sample->bytes) {
+        *sample = (net_sample_t){total, now, 1};
+        return 0;
+    }
+    if (!elapsed) return 0;  // Keep bytes until a nonzero measurement interval.
+    uint64_t delta = total - sample->bytes;
+    *sample = (net_sample_t){total, now, 1};
+    // Divide first: neither delta * 1000 nor the final sum may wrap.
+    uint64_t whole = delta / elapsed, fraction = (delta % elapsed) * 1000u / elapsed;
+    if (whole > ~0UL / 1000u) return ~0UL;
+    unsigned long rate = (unsigned long)whole * 1000u;
+    return fraction > ~0UL - rate ? ~0UL : rate + (unsigned long)fraction;
+}
+
+static uint32_t net_rate_percent(unsigned long rate) {
+    return rate >= WGT_NET_REF ? 100u : (uint32_t)(rate * 100u / WGT_NET_REF);
+}
+
+static void wgt_reset_samples(void) {
+    wgt_net_sample = (net_sample_t){0};
+    wgt_net_bps = 0;
+    for (int i = 0; i < WGT_N; i++) wgt_cpu[i] = wgt_ram[i] = wgt_net[i] = 0;
+}
 
 // nyx.conf name <-> index for the widget corner (rice: place the monitor where you like).
 static const char* widget_pos_name(int p) {
@@ -3837,24 +3868,46 @@ int net_rate_selftest(void) {
     net_rate_str(1048575, b, sizeof b);  if (strcmp(b, "1023 KB/s") != 0) return 6;
     net_rate_str(1048576, b, sizeof b);  if (strcmp(b, "1 MB/s")    != 0) return 7;
     net_rate_str(5242880, b, sizeof b);  if (strcmp(b, "5 MB/s")    != 0) return 8;
+    net_sample_t s = {0};
+    if (net_sample_rate(&s, 100000, 100) != 0) return 9;
+    if (net_sample_rate(&s, 101000, 600) != 2000) return 10;
+    if (net_sample_rate(&s, 102000, 5600) != 200) return 11;
+    if (net_sample_rate(&s, 103000, 65600) != 16) return 12;
+    if (net_sample_rate(&s, 103500, 65600) != 0) return 13;
+    if (net_sample_rate(&s, 104000, 66100) != 2000) return 14;
+    if (net_sample_rate(&s, 10, 66600) != 0) return 15;
+    if (net_sample_rate(&s, 510, 67100) != 1000) return 16;
+    s = (net_sample_t){100, 0xffffff00u, 1};
+    if (net_sample_rate(&s, 600, 244) != 1000) return 17;
+    s = (net_sample_t){0, 0, 1};
+    if (net_sample_rate(&s, ~(uint64_t)0, 1) != ~0UL) return 18;
+    s = (net_sample_t){0, 0, 1};
+    if (net_sample_rate(&s, ~(uint64_t)0, 1000) != ~0UL) return 19;
+    if (net_rate_percent(~0UL) != 100 || net_rate_percent(WGT_NET_REF) != 100 ||
+        net_rate_percent(WGT_NET_REF / 2) != 50 || net_rate_percent(0) != 0) return 20;
     return 0;
 }
 
 // Push the current CPU%, RAM% and NET rate and scroll all three histories one sample left.
-static void wgt_push_sample(void) {
+static void wgt_push_sample(uint32_t now) {
     uint32_t c = perf_cpu_percent(); if (c > 100) c = 100;
     uint32_t r = wgt_ram_pct();      if (r > 100) r = 100;
-    // NET: bytes since the last sample -> a per-second rate over the WGT_SAMPLE_MS window,
-    // normalized against WGT_NET_REF for the 0..100 bar height. Counters only ever climb.
-    uint64_t tot = net_total_bytes();
-    uint64_t delta = (tot >= wgt_net_last) ? (tot - wgt_net_last) : 0;
-    wgt_net_last = tot;
-    wgt_net_bps = (unsigned long)(delta * 1000u / WGT_SAMPLE_MS);
-    uint32_t np = (uint32_t)(wgt_net_bps * 100u / WGT_NET_REF); if (np > 100) np = 100;
+    wgt_net_bps = net_sample_rate(&wgt_net_sample, net_total_bytes(), now);
+    uint32_t np = net_rate_percent(wgt_net_bps);
     for (int i = 1; i < WGT_N; i++) { wgt_cpu[i-1] = wgt_cpu[i]; wgt_ram[i-1] = wgt_ram[i]; wgt_net[i-1] = wgt_net[i]; }
     wgt_cpu[WGT_N - 1] = (uint8_t)c;
     wgt_ram[WGT_N - 1] = (uint8_t)r;
     wgt_net[WGT_N - 1] = (uint8_t)np;
+}
+
+static int wgt_sample_tick(uint32_t now) {
+    if (!g_widget_on) {
+        if (wgt_net_sample.ready) wgt_reset_samples();
+        return 0;
+    }
+    if (wgt_net_sample.ready && now - wgt_net_sample.ms < WGT_SAMPLE_MS) return 0;
+    wgt_push_sample(now);
+    return 1;
 }
 
 // Does any visible window overlap the widget's rect? (If so, skip its partial repaint — it
@@ -4163,6 +4216,7 @@ void reset_nyx_config(void) {
     wallpaper_set_color(0);
     theme_set_accent(wallpaper_base_color());
     g_widget_on = 1; g_widget_pos = 0;
+    wgt_reset_samples();
     g_clock_12h = 0; g_desktop_icons_visible = 0; g_gaps = 0;
     g_border_color = 0; g_border_inactive = 0; g_panel_tint = 0;
     g_corner_radius = WIN_RADIUS; g_shadows = 1;
@@ -5205,10 +5259,7 @@ done_click:
         // full recomposite is already happening (redraw) it repaints with the frame; else,
         // when the widget isn't covered by a window, flag a widget-only partial repaint (its
         // ~180x76 rect, not the whole screen) so the graph animates without a full present.
-        static uint32_t wgt_ms = 0;
-        if (g_widget_on && now - wgt_ms >= WGT_SAMPLE_MS) {
-            wgt_ms = now;
-            wgt_push_sample();
+        if (wgt_sample_tick(now)) {
             if (!redraw && !widget_covered()) widget_only = 1;
         }
 
