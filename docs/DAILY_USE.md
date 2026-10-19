@@ -139,6 +139,12 @@ The immediate data and desktop priorities are:
     feedback. [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) documents per-user persistence,
     failure notices and Reset behaviour.
 
+14. Development version 6.5.209 rejects N++ input seek/tell/read/close failures
+    before opening the output. Main files and imported modules share the checked
+    path; ordinary and empty regular-file lowering remain supported. The
+    [N++ compiler reference](../lang/nppc/README.md) records per-file size bounds,
+    cleanup, host fault injection, and the separate target Workbench evidence.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

@@ -23,6 +23,38 @@ printing exactly what its host run prints — see *verified three ways* in
 
 ## Build and use
 
+Since NyxOS 6.5.209, reading a main file or imported module checks both seeks,
+`tell`, the complete read, the stream error flag and close. A failed read reports
+`cannot read`, releases its temporary buffer and stops before opening the output.
+A stream that cannot seek (for example a pipe-backed `/dev/stdin`) is rejected;
+this does not add stdin compilation. Empty regular files remain accepted.
+
+Each input file is limited to 2147483647 bytes (`NPP_SOURCE_MAX`), matching the
+lexer's signed 32-bit span representation. A size outside that range is rejected
+before allocation, and allocation failure closes the input. The extra end-of-file
+check detects growth past the measured size. This is not a memory-availability
+promise, an aggregate module-expansion limit or a concurrent-file snapshot.
+Same-size replacement during reading is not detected.
+
+`python3 lang/nppc/tests/test_input_io.py` runs 23 host scenarios under ASan/UBSan,
+with injected seek/tell/read/error/close/allocation failures, size boundaries,
+cleanup, real main/import pipe refusal and preservation of a pre-existing output.
+`--compare-ref 69a0643` adds four comparisons: the previous main/import buffer
+underflow and unchanged ordinary/empty input. The reader harness checks allocation
+cleanup; whole-compiler runs exclude process-lifetime parse arenas from leak
+checking. Four argument-format buffers also grow to accommodate the full integer
+range under strict compiler diagnostics; the 25 previous examples retain their
+behaviour. Current-source builds keep warnings as errors, while optional historical
+baseline compilation permits its existing warnings.
+
+The module, Workbench and 30 output-error checks pass; the NyxOS-libc compilation
+path is checked separately. A host-lowered Workbench ELF runs inside NyxOS with its
+exact 301-byte trace on serial and redirected disk output, exit 0. The versioned
+kernel builds without warnings, passes 230 tests and reaches four-CPU login.
+The input fault injection is host evidence; this does not claim that N++ lowering
+ran inside NyxOS, or add a GUI/hardware qualification. Failed output writes still
+have the direct-replacement limits below.
+
 Since NyxOS 6.5.195, the bootstrap driver checks the emitted byte count,
 stream error state and close result before printing `OK`. Output failures
 exit with status 1 and name the destination. The Linux/WSL regression

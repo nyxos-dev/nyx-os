@@ -30,6 +30,9 @@ jobs:
           set -o pipefail
           make -C kernel 2>&1 | tee build.log
 
+      - name: Test N++ input errors and source bounds
+        run: python3 lang/nppc/tests/test_input_io.py
+
       - name: Test N++ module isolation
         run: python3 lang/nppc/tests/test_modules.py
 

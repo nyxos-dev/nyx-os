@@ -1329,15 +1329,24 @@ static int visible(int from, int to) {
     return 0;
 }
 
+/* Lexer spans use signed 32-bit offsets; this is a per-file bound. */
+#define NPP_SOURCE_MAX 2147483647L
+
 static char* read_file(const char* path, long* out_len) {
+    *out_len = 0;
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* buf = xmalloc((size_t)sz + 1);
-    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); return NULL; }
-    fclose(f);
+    if (sz < 0 || sz > NPP_SOURCE_MAX || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f); return NULL;
+    }
+    char* buf = calloc(1, (size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    int failed = fread(buf, 1, (size_t)sz, f) != (size_t)sz || ferror(f);
+    if (!failed && (fgetc(f) != EOF || ferror(f))) failed = 1;
+    if (fclose(f) != 0) failed = 1;
+    if (failed) { free(buf); return NULL; }
     buf[sz] = 0;
     *out_len = sz;
     return buf;
@@ -1461,7 +1470,7 @@ static char* resolve_text(const char* path, const char* text, long len, int myid
             long ilen;
             char* itext = read_file(full, &ilen);
             if (!itext)
-                die("%s:%d: cannot open \"%s\" (looked for %s)", path, uline[u], upath[u], full);
+                die("%s:%d: cannot read \"%s\" (looked for %s)", path, uline[u], upath[u], full);
             int before = NMOD, cid = NUSED;   /* the id resolve_file will assign */
             add_edge(myid, cid, upub[u]);
             char* inner = resolve_file(full, itext, ilen);
@@ -2717,7 +2726,7 @@ static void reg_sigs(int t, int e, char** nm, char** tx, int* n) {
         apps(&b, &len, &cap, "(f: ");
         apps(&b, &len, &cap, name);
         for (int p = 0; p < np; p++) {
-            char pn[16];
+            char pn[32];
             sprintf(pn, ", a%d: ", p);
             apps(&b, &len, &cap, pn);
             render_type(pts[p], pte[p], &b, &len, &cap);
@@ -2726,7 +2735,7 @@ static void reg_sigs(int t, int e, char** nm, char** tx, int* n) {
         if (rts >= 0) { apps(&b, &len, &cap, " -> "); render_type(rts, rte, &b, &len, &cap); }
         apps(&b, &len, &cap, rts >= 0 ? " {\n    r := f.call(f.env" : " {\n    f.call(f.env");
         for (int p = 0; p < np; p++) {
-            char pn[16];
+            char pn[32];
             sprintf(pn, ", a%d", p);
             apps(&b, &len, &cap, pn);
         }
@@ -3004,7 +3013,7 @@ static char* closure_pass(const char* prog) {
                 apps(&b, &len, &cap, name);
                 apps(&b, &len, &cap, "(_env: addr");
                 for (int p = 0; p < np; p++) {
-                    char pn[16];
+                    char pn[32];
                     sprintf(pn, ", a%d: ", p);
                     apps(&b, &len, &cap, pn);
                     render_type(pts[p], pte[p], &b, &len, &cap);
@@ -3015,7 +3024,7 @@ static char* closure_pass(const char* prog) {
                 app(&b, &len, &cap, TOKS[as].s, (size_t)TOKS[as].slen);
                 apps(&b, &len, &cap, "(");
                 for (int p = 0; p < np; p++) {
-                    char pn[16];
+                    char pn[32];
                     sprintf(pn, "%sa%d", p ? ", " : "", p);
                     apps(&b, &len, &cap, pn);
                 }
@@ -3090,7 +3099,7 @@ int main(int argc, char** argv) {
     long sz;
     char* source_path = normalize_path(FILENAME);
     char* buf = read_file(source_path, &sz);
-    if (!buf) die("nppc: cannot open '%s'", FILENAME);
+    if (!buf) die("nppc: cannot read '%s'", FILENAME);
 
     /* Modules first (M6.5): the program is the main file with every `use`
      * inlined. A file with no directives resolves to itself byte-for-byte. */
