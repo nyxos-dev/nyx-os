@@ -101,9 +101,64 @@ int main(void) {
 '''
 
 
+SETFG_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+typedef struct {uint32_t pid;} process_t;
+static process_t targets[]={{42},{UINT32_MAX}};
+uint32_t g_foreground_pid;
+static int lookups;
+static process_t* find_process(uint64_t pid) {
+    lookups++;
+    for(unsigned i=0;i<sizeof(targets)/sizeof(targets[0]);i++)
+        if(targets[i].pid==pid)return &targets[i];
+    return NULL;
+}
+static int setfg_call(uint64_t a1) {
+@BODY@
+}
+static int checks;
+#define VERIFY(x) do {checks++;if(!(x)){fprintf(stderr,"FAIL foreground: %s\n",#x);return 1;}} while(0)
+int main(void) {
+    const uint32_t low[]={0,42,UINT32_MAX,99};
+    const uint32_t high[]={1,2,0x7fffffff,0x80000000,0xffffffff};
+    for(unsigned i=0;i<sizeof(high)/sizeof(high[0]);i++)
+        for(unsigned j=0;j<sizeof(low)/sizeof(low[0]);j++) {
+            g_foreground_pid=42;lookups=0;
+            uint64_t pid=((uint64_t)high[i]<<32)|low[j];
+            VERIFY(setfg_call(pid)==-1);
+            VERIFY(g_foreground_pid==42);
+        }
+    for(unsigned i=0;i<sizeof(low)/sizeof(low[0]);i++) {
+        g_foreground_pid=42;lookups=0;
+        int valid=low[i]!=99;
+        VERIFY(setfg_call(low[i])==(valid?0:-1));
+        VERIFY(g_foreground_pid==(valid?low[i]:42));
+    }
+    printf("PASS %d foreground PID width and unchanged-target checks\n",checks);
+    return 0;
+}
+"""
+
+def setfg_suite(work, cc, reference=None):
+    code=(subprocess.check_output(['git','show',reference+':kernel/core/syscall.c'],cwd=ROOT,text=True)
+          if reference else (ROOT/'kernel/core/syscall.c').read_text(encoding='utf-8'))
+    start=code.index('case SYS_SETFG: {')+len('case SYS_SETFG: {')
+    end=code.index('\n        case SYS_GETTIMEOFDAY:',start)
+    body=code[start:end].rsplit('}',1)[0]
+    src=work/('setfg-old.c' if reference else 'setfg.c')
+    src.write_text(SETFG_HARNESS.replace('@BODY@',body),encoding='utf-8')
+    binary=src.with_suffix('')
+    subprocess.run([*cc,'-std=gnu99','-Wall','-Wextra','-Werror','-O1','-no-pie',
+                    '-fsanitize=address,undefined',str(src),'-o',str(binary)],check=True)
+    return subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'kernel/drivers/input/keyboard.c')
+    parser.add_argument('--compare-setfg-ref')
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64"):
         raise SystemExit("Run this test on Linux x86_64 or WSL")
@@ -122,6 +177,14 @@ def main():
                 raise RuntimeError(result.stdout + result.stderr)
             if result.stdout:
                 print(result.stdout.strip())
+        result=setfg_suite(work,cc)
+        if result.returncode: raise RuntimeError(result.stdout+result.stderr)
+        print(result.stdout.strip())
+        if args.compare_setfg_ref:
+            result=setfg_suite(work,cc,args.compare_setfg_ref)
+            assert result.returncode and 'FAIL foreground: setfg_call(pid)==-1' in result.stderr,result.stdout+result.stderr
+            print('PASS baseline accepts truncated foreground PID')
+
 
 
 if __name__ == "__main__":

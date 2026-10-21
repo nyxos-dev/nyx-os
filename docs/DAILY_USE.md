@@ -309,6 +309,19 @@ The immediate data and desktop priorities are:
     still non-atomic; exclusive creation, crash recovery and hardware qualification
     remain open.
 
+35. Development version 6.5.230 rejects foreground process identifiers with bits
+    outside the 32-bit PID range before changing the signal target. Previously,
+    those bits were discarded, so an invalid value could select another process.
+    The existing keyboard runner adds 48 sanitizer checks and reproduces the old
+    failure. Keyboard and 369 timeout checks, warning-free GCC 14, 230 kernel
+    tests and four-CPU login pass. Actual GUI input verifies four rejected values,
+    Ctrl+C reaching the original caller, and shell input after a child exits.
+    A focused GUI continuation verifies scheduler counters, another command and
+    window movement after correcting a test-script output marker. See
+    [SYSCALLS.md](SYSCALLS.md). Foreground ownership remains global; the separately
+    reproduced desktop input stall during synchronous foreground execution is
+    still open.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

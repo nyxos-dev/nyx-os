@@ -549,7 +549,8 @@ static inline int usleep(long usec) {
 /* setfg(pid): make `pid` the terminal foreground process, so keyboard signals (Ctrl-C
  * -> SIGINT, Ctrl-Z -> SIGTSTP) target it instead of the shell. The shell points this
  * at a job while it runs in the foreground, then back at itself (pid 0 clears it).
- * The mechanism behind job control. Returns 0, or -1 for an unknown pid. */
+ * The mechanism behind job control. Returns 0, or -1 for an unknown pid or a
+ * value outside the unsigned 32-bit PID range, without changing the target. */
 static inline long setfg(long pid) {
     return syscall1(SYS_SETFG, pid);
 }

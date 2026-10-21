@@ -39,6 +39,43 @@ issue `syscall` directly — libc provides thin wrappers (`open`, `read`, `fork`
 | 27 | `SYS_GETPROCS` | `getprocs(buf, max)` | snapshot the process table (backs `ps`) |
 | 33 | `SYS_SETFG` | `setfg(pid)` | set the foreground job (signal delivery target) |
 
+### Foreground PID validation (6.5.230)
+
+`setfg` accepts an existing process ID representable as an unsigned 32-bit
+value, or exactly zero to clear the foreground target. Values outside that
+range, including negative values passed through the 64-bit syscall argument,
+return `-1` without changing the target. Unknown IDs also return `-1`.
+The range check precedes narrowing: a high-bit value whose low bits name a
+real process must not silently select that process.
+
+The preceding 6.5.229 kernel accepts both `0x100000000 | self_pid` and
+`0xffffffff00000000 | self_pid`, as reproduced by the actual ring-3 probe.
+The correction validates the complete argument before assignment. It preserves
+the existing zero-clear and userspace shell child/self handoff behavior.
+This is numeric validation, not terminal ownership or permission enforcement;
+foreground state remains global, and foreground GUI input responsiveness is
+still separate work. Existing-process lookup is not a new lifetime guarantee.
+
+The existing keyboard runner includes 48 ASan/UBSan checks of the actual syscall
+case with process lookup stubs: high-bit aliases, negative encodings, exact
+32-bit boundaries, missing IDs, zero clear and unchanged state on refusal.
+The old syscall case fails the new assertion. Existing US/ES IRQ/poll control
+and Escape checks, plus 369 timeout-command checks, continue to pass.
+
+`exec /keyevtest.elf --foreground` runs the target PID-range probe.
+`exec /keyevtest.elf --foreground-signal` additionally waits for Ctrl+C after
+rejecting a high-bit alias of another existing PID; the signal must still reach
+the caller. Without these options, the original raw make/break probe is unchanged.
+
+The four-CPU QEMU GUI trial rejects all four invalid values, delivers one real
+PS/2 Ctrl+C to the original caller, and returns to interactive shell input after
+a child exits. The first script then stopped on an incorrect `mtdemo` output
+marker; a focused continuation with the correct marker verifies increasing
+thread counters, subsequent terminal input and window movement. Its two disk
+fixtures remain byte-identical. Both VMs were closed. The packaged build has
+zero GCC 14 warnings, passes 230 kernel self-tests and reaches four-CPU login.
+These are bounded host and VM checks; no physical hardware trial is claimed.
+
 ## Files & directories (VFS)
 
 | # | Name | Sketch | Notes |

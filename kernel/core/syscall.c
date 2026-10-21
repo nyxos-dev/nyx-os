@@ -1457,10 +1457,12 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // setfg(pid): make `pid` the terminal foreground process, so keyboard
             // signals (Ctrl-C -> SIGINT, Ctrl-Z -> SIGTSTP) target it. The shell
             // points this at its current foreground child while it runs, then back at
-            // itself — the mechanism behind job control. Only a live pid (or 0 to
-            // clear) is accepted. Returns 0, or -1.
+            // itself — the mechanism behind job control. Only an existing pid (or 0 to
+            // clear) is accepted. Reject wider values before narrowing the PID.
+            // Returns 0, or -1 without changing the current foreground target.
             extern uint32_t g_foreground_pid;
-            if (a1 != 0 && !find_process((uint32_t)a1)) return -1;
+            if (a1 != (uint32_t)a1) return -1;
+            if (a1 != 0 && !find_process(a1)) return -1;
             g_foreground_pid = (uint32_t)a1;
             return 0;
         }
