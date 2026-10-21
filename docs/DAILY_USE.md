@@ -248,6 +248,16 @@ The immediate data and desktop priorities are:
     This corrects measurement after a delayed update; foreground shell commands
     can still block desktop event processing until they return.
 
+30. Development version 6.5.225 lowers explicitly indexed N++ callback chains,
+    such as `ui[i].buttons[j].on_click(...)`, with one evaluation per index.
+    Each intermediate pointer field must refer to a known struct. Value roots,
+    additional indexed levels and generic dispatch use existing type metadata.
+    `python3 lang/nppc/tests/test_indexed_calls.py` checks 28 executable cases
+    and ten invalid inputs. The eleven new cases also run as host-compiled ELFs
+    in QEMU, with exact redirected EXT2 output. This provides building blocks
+    for callback-based applications; it does not establish GUI event dispatch,
+    bounds checking, implicit pointer field access or closure lifetime safety.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

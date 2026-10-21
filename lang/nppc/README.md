@@ -532,6 +532,28 @@ The build has zero compiler warnings, passes 230 kernel tests and reaches
 four-CPU login. N++/N lowering ran on the host; this does not claim
 in-OS compiler execution, GUI dispatch or hardware qualification.
 
+**Chained indexed receivers (NyxOS 6.5.225).** Known pointer fields can continue
+after an index: `ui[i].buttons[j].on_click(...)` and
+`root[i].panels[j].buttons[k].on_click(...)`. A value root can start the chain,
+as in `root.panels[i].buttons[j].on_click(...)`. Every intermediate field must
+point to a known struct; pointers require explicit indexing. The front end walks
+the existing struct metadata and passes the entire callback receiver to the same
+invocation helper once. Each index expression executes once, including in generic
+holders and dispatch functions. There is no new runtime allocation for invocation.
+[`chained_callbacks.npp`](../examples/chained_callbacks.npp) is a worked example.
+
+The focused regression covers 28 executable cases and ten invalid receiver/type/
+arity cases through both N checkers. Both emitters produce identical C and matching
+host executions. `--compare-chains-ref 3e1590f` confirms the preceding front end
+cannot compile the eleven new cases. The Workbench, 28-example corpus and module
+tests pass. On NyxOS 6.5.225, those eleven host-compiled ELFs each exit 0 on the
+serial console and with output redirected to EXT2; 284 extracted bytes match
+exactly. GCC14 builds without warnings, 230 kernel tests pass and four-CPU boot
+reaches login. This is host lowering and target ELF evidence, not in-OS compiler
+or GUI dispatch evidence. Arbitrary receiver expressions, implicit pointer field
+access, index bounds, `FnMut`, argument evaluation order and closure environment
+lifetime remain outside this extension; `FnOnce` keeps its existing owning path.
+
 **Owning closures — `FnOnce` (M6.4c6).** `FnOnce(A…) -> R` is the
 closure type that owns: a lambda in a FnOnce slot (a parameter, a
 local bound from a call, a return type) may capture `own` locals, the

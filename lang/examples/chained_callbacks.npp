@@ -1,0 +1,29 @@
+// Each index in a hierarchy of callback arrays is evaluated once.
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn sys_sbrk(incr: i64) -> i64 = 7
+}
+struct Button { on_click: Fn(i64) -> i64 }
+fn index(counter: *i64) -> i64 {
+    counter[0] = counter[0] + 1;
+    0
+}
+struct Ui { buttons: *Button }
+fn dispatch(ui: *Ui, counter: *i64) -> i64 {
+    ui[index(counter)].buttons[index(counter)].on_click(7)
+}
+fn main() -> i64 {
+    counter := sys_sbrk(8) as *i64;
+    counter[0] = 0;
+    bs := sys_sbrk(16) as *Button;
+    base := 10;
+    bs[0] = Button{ on_click: fn(x: i64) -> i64 { base + x } };
+    ui := sys_sbrk(8) as *Ui;
+    ui[0] = Ui{ buttons: bs };
+    result := dispatch(ui, counter);
+    count := counter[0];
+    text := "result {result}, index calls {count}
+";
+    write(1, text.ptr as *u8, text.len as isize);
+    0
+}

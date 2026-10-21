@@ -255,6 +255,17 @@ evaluates the indexed receiver once. See [field_callbacks.npp](examples/field_ca
 and the [nppc contract and verification](nppc/README.md) for supported local and
 generic types, host/target evidence and the remaining inference/lifetime limits.
 
+## Chained indexed callbacks (NyxOS 6.5.225)
+
+N++ supports `ui[i].buttons[j].on_click(...)` and deeper explicitly indexed
+pointer-field chains when each intermediate struct type is known. Each index
+expression executes once through the existing invocation helper. Value roots,
+generic holders and generic dispatch functions use the same lowering path.
+See [chained_callbacks.npp](examples/chained_callbacks.npp) and the
+[nppc contract and verification](nppc/README.md) for host and target evidence.
+This does not add implicit pointer dereferencing, bounds checks, argument
+evaluation order or closure lifetime guarantees.
+
 ## Documentation policy
 
 Everything in `lang/` is documented to the same bar: every public construct

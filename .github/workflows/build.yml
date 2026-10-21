@@ -33,7 +33,7 @@ jobs:
       - name: Test N++ input errors and source bounds
         run: python3 lang/nppc/tests/test_input_io.py
 
-      - name: Test N++ indexed and pointer-field callback evaluation
+      - name: Test N++ indexed callback chains and single evaluation
         run: python3 lang/nppc/tests/test_indexed_calls.py
 
       - name: Test N++ module isolation

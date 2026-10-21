@@ -2972,27 +2972,38 @@ static char* closure_pass(const char* prog) {
                         }
                 index_at = u + 3;
             }
-            if (indexed_struct >= 0) { /* Both bs[i] and ui.buttons[i] evaluate the receiver once. */
+            if (indexed_struct >= 0) { /* Walk indexed pointer fields without duplicating the receiver. */
                 int s = indexed_struct;
-                int v = index_at, d = 0;     /* the matching `]` */
-                for (; TOKS[v].k != T_EOF; v++) {
-                    if (TOKS[v].k == T_LBRACK) d++;
-                    else if (TOKS[v].k == T_RBRACK && --d == 0) break;
+                for (;;) {
+                    int v = index_at, d = 0;     /* the matching `]` */
+                    for (; TOKS[v].k != T_EOF; v++) {
+                        if (TOKS[v].k == T_LBRACK) d++;
+                        else if (TOKS[v].k == T_RBRACK && --d == 0) break;
+                    }
+                    if (TOKS[v].k != T_RBRACK || TOKS[v + 1].k != T_DOT || TOKS[v + 2].k != T_IDENT) break;
+                    int fld = -1;
+                    for (int q = 0; q < STT[s].np && fld < 0; q++) if (tokspan_eq(STT[s].pname[q], v + 2)) fld = q;
+                    if (fld < 0) break;
+                    if (TOKS[v + 3].k == T_LBRACK) {
+                        int next = ptr_struct(STT[s].pts[fld], STT[s].pte[fld]);
+                        if (next < 0) break;
+                        s = next;
+                        index_at = v + 3;
+                        continue;
+                    }
+                    if (TOKS[v + 3].k != T_LP || !range_is_Fn(STT[s].pts[fld], STT[s].pte[fld])) break;
+                    int pl = TOKS[v].end - TOKS[u].start;   /* entire receiver, verbatim from the source */
+                    const char* ps = prog + TOKS[u].start;
+                    char* sig = sig_name(STT[s].pts[fld], STT[s].pte[fld]);
+                    char* r = xmalloc((size_t)(pl + TOKS[v + 2].slen) + strlen(sig) + 24);
+                    sprintf(r, "__invoke_%s(%.*s.%.*s%s", sig + 2,
+                            pl, ps, TOKS[v + 2].slen, TOKS[v + 2].s,
+                            TOKS[v + 4].k == T_RP ? "" : ", ");
+                    if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+                    ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[v + 3].end; ced[ne].repl = r; ne++;
+                    u = v + 3;
+                    break;
                 }
-                if (TOKS[v].k != T_RBRACK || TOKS[v + 1].k != T_DOT || TOKS[v + 2].k != T_IDENT || TOKS[v + 3].k != T_LP) continue;
-                int fld = -1;
-                for (int q = 0; q < STT[s].np && fld < 0; q++) if (tokspan_eq(STT[s].pname[q], v + 2)) fld = q;
-                if (fld < 0 || !range_is_Fn(STT[s].pts[fld], STT[s].pte[fld])) continue;
-                int pl = TOKS[v].end - TOKS[u].start;   /* `bs[i]`, verbatim from the source */
-                const char* ps = prog + TOKS[u].start;
-                char* sig = sig_name(STT[s].pts[fld], STT[s].pte[fld]);
-                char* r = xmalloc((size_t)(pl + TOKS[v + 2].slen) + strlen(sig) + 24);
-                sprintf(r, "__invoke_%s(%.*s.%.*s%s", sig + 2,
-                        pl, ps, TOKS[v + 2].slen, TOKS[v + 2].s,
-                        TOKS[v + 4].k == T_RP ? "" : ", ");
-                if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
-                ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[v + 3].end; ced[ne].repl = r; ne++;
-                u = v + 3;
                 continue;
             }
             if (TOKS[u + 1].k == T_DOT && TOKS[u + 2].k == T_IDENT && TOKS[u + 3].k == T_LP) {
