@@ -176,10 +176,22 @@ int64_t uwin_destroy(int id) {
     return 0;
 }
 
+int uwin_can_present(int id, uint32_t w, uint32_t h) {
+    user_win_t* s = uwin_slot(id);
+    return s && w == s->w && h == s->h;
+}
+
+int uwin_can_present_rect(int id, int rx, int ry, int rw, int rh) {
+    user_win_t* s = uwin_slot(id);
+    if (!s || rx < 0 || ry < 0 || rw <= 0 || rh <= 0) return 0;
+    return (uint32_t)rx < s->w && (uint32_t)ry < s->h &&
+           (uint32_t)rw <= s->w - (uint32_t)rx &&
+           (uint32_t)rh <= s->h - (uint32_t)ry;
+}
+
 int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h) {
     user_win_t* s = uwin_slot(id);
-    if (!s || !px) return -1;
-    if (w != s->w || h != s->h) return -1;              /* whole client-area blit only */
+    if (!s || !px || !uwin_can_present(id, w, h)) return -1;
     if (!s->backing) {
         s->backing = (uint32_t*)kmalloc((size_t)s->w * s->h * 4);
         if (!s->backing) return -1;
@@ -195,9 +207,7 @@ int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h) {
  * area. If nothing has been presented yet the backing is allocated and cleared first. */
 int64_t uwin_present_rect(int id, const uint32_t* px, int rx, int ry, int rw, int rh) {
     user_win_t* s = uwin_slot(id);
-    if (!s || !px || rw <= 0 || rh <= 0) return -1;
-    if (rx < 0 || ry < 0 ||
-        (uint32_t)(rx + rw) > s->w || (uint32_t)(ry + rh) > s->h) return -1;   /* out of bounds */
+    if (!s || !px || !uwin_can_present_rect(id, rx, ry, rw, rh)) return -1;
     if (!s->backing) {
         s->backing = (uint32_t*)kmalloc((size_t)s->w * s->h * 4);
         if (!s->backing) return -1;

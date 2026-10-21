@@ -258,6 +258,18 @@ The immediate data and desktop priorities are:
     for callback-based applications; it does not establish GUI event dispatch,
     bounds checking, implicit pointer field access or closure lifetime safety.
 
+31. Development version 6.5.226 validates user-window presentation handles and
+    dimensions before scratch allocation or user-buffer copying. Rejected full
+    and rectangle updates preserve the existing pixels and do not grow scratch
+    buffers. The 43-check sanitized syscall/registry regression includes stale
+    handles, invalid extents, resize and allocation/copy failures. In one-CPU
+    QEMU, 32 invalid-request cycles leave settled kernel heap use at 46 KiB;
+    the same workload on 225 raises it to 8,238 KiB. Further invalid requests
+    after valid full/rectangle/resize/close leave it at 113 KiB. A separate GUI
+    check verifies full and partial drawing, close/exit, terminal commands and
+    drag. Valid calls still retain scratch memory, and window ownership,
+    exit cleanup and concurrent lifetime safety remain separate work.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

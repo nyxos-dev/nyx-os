@@ -143,6 +143,21 @@ words), and closes it with `win_destroy`. `user/wintest.c` is the end-to-end exa
 kernel copies the title and pixel buffer across the boundary (bounds-checked before use), so
 a handler never dereferences a user pointer.
 
+As of development 6.5.226, both presentation syscalls check the live handle and
+window dimensions before growing their scratch buffer or copying pixels. Whole
+presentation requires the exact client size; a damage rectangle must fit inside
+it. Invalid/stale handles and mismatched or out-of-bounds dimensions return `-1`
+without that allocation or copy. The registry checks again at presentation time.
+This preflight does not pin the window or add process ownership or synchronization
+for concurrent resize/close. Valid presentations still retain reusable scratch
+buffers; a later allocation or copy failure can still return `-1`.
+
+`tools/test_userwin_present.py` runs the actual syscall bodies and registry with
+sanitizers, checks rejected requests before and after valid drawing, and injects
+allocation/copy failures. Target heap comparisons must let background child
+reaping complete: the kernel shell advances one background task per iteration,
+and an immediate sample may include an exited process awaiting cleanup.
+
 ---
 
 *Cross-references: [ARCHITECTURE.md](ARCHITECTURE.md) (privilege model), [PROCESS.md](PROCESS.md)

@@ -50,6 +50,10 @@ int  uwin_evq_pop(uwin_evq_t* q, uwin_event_t* out);   /* 1 = got one, 0 = empty
  * the handle space makes create fail; IDs are not ownership capabilities. */
 int64_t uwin_create(uint32_t w, uint32_t h, const char* title); /* id (>=0) or -1  */
 int64_t uwin_destroy(int id);                                   /* 0 (idempotent)   */
+/* Allocation-free preflight for syscall scratch growth. Present checks again;
+ * these predicates do not pin a window or establish concurrent ownership. */
+int uwin_can_present(int id, uint32_t w, uint32_t h);
+int uwin_can_present_rect(int id, int rx, int ry, int rw, int rh);
 int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h); /* 0 / -1 */
 int64_t uwin_present_rect(int id, const uint32_t* px, int rx, int ry, int rw, int rh); /* dirty-rect update; 0 / -1 */
 int64_t uwin_poll_event(int id, uwin_event_t* out);             /* 1 / 0 / -1       */

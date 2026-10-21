@@ -1572,6 +1572,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             int id = (int)a1;
             uint32_t w = (uint32_t)a3, h = (uint32_t)a4;
             if (w == 0 || h == 0 || w > USERWIN_MAX_W || h > USERWIN_MAX_H) return -1;
+            if (!uwin_can_present(id, w, h)) return -1;
             uint64_t bytes = (uint64_t)w * h * 4;       // <= 2048*2048*4, no overflow
             if (!user_ptr_ok(a2, bytes)) return -1;
             if (bytes > win_scratch_sz) {
@@ -1602,6 +1603,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             uint32_t rx = (uint32_t)(a3 & 0xFFFF), ry = (uint32_t)((a3 >> 16) & 0xFFFF);
             uint32_t rw = (uint32_t)(a4 & 0xFFFF), rh = (uint32_t)((a4 >> 16) & 0xFFFF);
             if (rw == 0 || rh == 0 || rw > USERWIN_MAX_W || rh > USERWIN_MAX_H) return -1;
+            if (!uwin_can_present_rect(id, (int)rx, (int)ry, (int)rw, (int)rh)) return -1;
             uint64_t bytes = (uint64_t)rw * rh * 4;     // <= 2048*2048*4, no overflow
             if (!user_ptr_ok(a2, bytes)) return -1;
             if (bytes > rect_scratch_sz) {
