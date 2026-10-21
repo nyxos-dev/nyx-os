@@ -3,12 +3,35 @@
 Mnemosyne is the built-in text editor. Its development-version 6.5.194 I/O repair
 preserves the bytes of files within the contract below and rejects files that it
 cannot represent before replacing the current document. Host and target GUI checks
-pass; a save/reboot acceptance session remains to be completed. This page
+pass. A bounded save/reopen/cold-boot check also passes on 6.5.226; broader
+persistence acceptance remains open. This page
 does not declare the editor or the wider desktop ready for daily use.
 
 Implementation: [editor_win.c](../kernel/gui/apps/editor_win.c) and
 [editor_win.h](../kernel/gui/apps/editor_win.h). The broader acceptance plan is
 [DAILY_USE.md](DAILY_USE.md).
+
+## Cold-boot verification on 6.5.226
+
+Two separate QEMU sessions used four CPUs, 5 GiB RAM and a private 16 MiB
+EXT2 disk. Through the actual GUI, Mnemosyne replaced a CRLF document with
+`persisted`, CRLF, and `second line`, with no final separator. Save and reopen
+preserved all 22 bytes. A fresh VM opened the first session's extracted disk
+and recovered the same document.
+
+After Open in each session, the terminal replaced the backing file with a
+sentinel. Ctrl+S then restored the loaded editor buffer, so an unchanged fixture
+or missed save could not pass. Both extracted outputs had SHA-256
+`922cfabfa6819b1553d09ad809f9372d52b0c28890ccac03ce19cdf2fadf7651`.
+The saved/reopened screenshots were inspected and both VMs closed. The ISO hash
+was `816bfccefb6be450f74d3483cb67da9aeeaf09dab7c307b05c5f2201cec4dece`,
+built from `accad1ceeb13f3584e6b83d55f1260f746693708`.
+
+Initial automation attempts lost focus or minimized the terminal; the final
+harness activated exposed terminal content and confirmed the US keyboard layout.
+This verification does not claim an input repair. One file through one cold boot
+does not establish power-loss safety, large-file reboot coverage, hardware
+durability or long-session stability. The broader daily-use gate remains open.
 
 ## File representation
 

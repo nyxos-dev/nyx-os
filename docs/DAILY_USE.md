@@ -76,16 +76,18 @@ do not relabel an unmeasured interactive check as a soak test.
 The immediate data and desktop priorities are:
 
 1. Mnemosyne's bounded text I/O repair is implemented for development version
-   6.5.194; host and target GUI checks pass, while reboot acceptance remains open. The host regression
+   6.5.194; host and target GUI checks pass. A bounded 6.5.226 GUI check also
+   recovers one 22-byte CRLF document through a fresh QEMU boot. The host regression
    passes 76 byte-exact, boundary and failure cases against the actual editor
    functions. Empty files, final LF present/absent and uniform CRLF round-trip;
    unrepresentable files and incomplete mounted images are rejected before replacing
    the document. The model allows 255 bytes per row and 512 rows, counting a final
    empty row. See [EDITOR.md](EDITOR.md) for the complete contract and remaining
    limits. A four-CPU QEMU session verified exact saved bytes, rejection with the
-   edited document preserved, Ctrl+A/replacement and PS/2 Ctrl+Z. Close the broader
-   persistence gate only after save/reopen/reboot checks; disk extraction after a
-   single session does not establish that gate. Failed writes are not atomic.
+   edited document preserved, Ctrl+A/replacement and PS/2 Ctrl+Z. The newer
+   save/reopen/cold-boot check covers one document; large-file reboot coverage,
+   repeated daily-use sessions and power-loss safety remain open. Failed writes
+   are not atomic.
 2. Development version 6.5.196 connects desktop configuration to per-user storage,
    checks writes/readback and distinguishes disk, RAM and failure notifications.
    [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md) records the load/save contract and evidence.
