@@ -391,6 +391,62 @@ done:
     return result;
 }
 
+int editor_win_can_close(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (!ed || !ed->modified || ed->close_discard) return 1;
+    if (!ed->close_pending) ed->close_failed = 0;
+    ed->close_pending = 1;
+    ed->selecting = 0;
+    return 0;
+}
+
+static void editor_close_choice(window_t* win, int choice) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (!ed || !ed->close_pending) return;
+    if (choice == 0) {
+        editor_save(ed);
+        if (ed->modified) { ed->close_failed = 1; return; }
+    } else if (choice == 1) {
+        ed->close_discard = 1;
+    } else {
+        ed->close_pending = ed->close_discard = ed->close_failed = 0;
+        win->close_requested = 0;
+        snprintf(ed->status, sizeof(ed->status), "Close cancelled");
+        return;
+    }
+    window_request_close(win->id);
+}
+
+static void editor_close_box(window_t* win, int* x, int* y, int* w) {
+    *w = win->w >= 304 ? 304 : 120;
+    *x = WIN_CLIENT_X(win) + ((int)win->w - *w) / 2;
+    *y = WIN_CLIENT_Y(win) + ((int)win->h - 80) / 2;
+}
+
+static void editor_close_button(int x, int y, int w, int i, int* bx, int* by, int* bw) {
+    *bx = x + (w == 304 ? 12 + i * 96 : 8);
+    *by = y + (w == 304 ? 42 : 22 + i * 18);
+    *bw = w == 304 ? 88 : 104;
+}
+
+static void editor_draw_close(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    int x, y, w;
+    editor_close_box(win, &x, &y, &w);
+    fb_fill_rect(x, y, w, 80, THEME_WINDOW_BG);
+    const char* caption = ed->close_failed ? "Save failed" : "Save changes?";
+    font_draw_string(x + (w - (int)strlen(caption) * FONT_WIDTH) / 2, y + 4,
+                     caption, THEME_TEXT, THEME_WINDOW_BG);
+    const char* labels[] = {"Save (S)", "Discard(D)", "Cancel Esc"};
+    for (int i = 0; i < 3; i++) {
+        int bx, by, bw;
+        editor_close_button(x, y, w, i, &bx, &by, &bw);
+        fb_fill_rect(bx, by, bw, 16, THEME_SELECTION);
+        font_draw_string(bx + (bw - (int)strlen(labels[i]) * FONT_WIDTH) / 2, by,
+                         labels[i], fb_rgb(255,255,255), THEME_SELECTION);
+    }
+}
+
 void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
@@ -475,6 +531,7 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int px = cx + (int)cw - 6 - pw;
     if (px < cx + 4) px = cx + 4;
     font_draw_string((uint32_t)px, (uint32_t)status_y + 2, pos, fb_rgb(150,185,215), THEME_WINDOW_BG);
+    if (ed->close_pending) editor_draw_close(win);
 }
 
 static void editor_point_cursor(editor_win_t* ed, window_t* win, int mx, int my) {
@@ -495,6 +552,19 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed || btn != 1) return;
     ed->selecting = 0;
+    if (ed->close_pending) {
+        int x, y, w;
+        editor_close_box(win, &x, &y, &w);
+        for (int i = 0; i < 3; i++) {
+            int bx, by, bw;
+            editor_close_button(x, y, w, i, &bx, &by, &bw);
+            if (mx >= bx && mx < bx + bw && my >= by && my < by + 16) {
+                editor_close_choice(win, i);
+                return;
+            }
+        }
+        return;
+    }
     // Toolbar click
     if (my >= WIN_CLIENT_Y(win) && my < WIN_CLIENT_Y(win) + TOOLBAR_H) {
         int rx = mx - WIN_CLIENT_X(win);
@@ -856,6 +926,12 @@ void editor_win_close(window_t* win) {
 void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
+    if (ed->close_pending) {
+        if (key == 27) editor_close_choice(win, 2);
+        else if (key == 0x13 || key == 's' || key == 'S') editor_close_choice(win, 0);
+        else if (key == 'd' || key == 'D') editor_close_choice(win, 1);
+        return;
+    }
 
     editor_clamp_cursor(ed);
     ed->selecting = 0;

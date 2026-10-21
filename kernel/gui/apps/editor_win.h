@@ -22,6 +22,7 @@ typedef struct {
     int selecting;                 // left-button drag started in the text area
     char filename[64];
     int modified;
+    int close_pending, close_discard, close_failed;
     char status[64];
     uint32_t cursor_tick;
     int  find_active;          // Ctrl+F find mode: capturing a search pattern
@@ -46,6 +47,7 @@ void editor_win_pressed(window_t* win, int mx, int my, int btn);
 void editor_win_mousemove(window_t* win, int mx, int my, int btns);
 void editor_win_key(window_t* win, int key);
 void editor_win_close(window_t* win);   // on_close: free the undo snapshots before the ctx is kfree'd
+int editor_win_can_close(window_t* win);
 void editor_load_file(editor_win_t* ed, const char* path);  // load `path` into this editor
 int  editor_find_selftest(void);                            // KAT for the Ctrl+F search core (editor_win.c)
 int  editor_replace_selftest(void);                         // KAT for the Ctrl+R replace core (editor_win.c)

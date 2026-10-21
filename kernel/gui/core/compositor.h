@@ -97,6 +97,8 @@ struct window {
     void (*on_resize)(struct window* win, int w, int h);   // client area resized (fired on drag-release); w,h = new CLIENT size
     int  (*on_tick)(struct window* win);   // periodic ~30fps tick; returns 1 if it changed something needing a redraw (0 = idle, no repaint)
     void (*on_close)(struct window* win);  // optional: called by window_destroy BEFORE freeing `reserved`, so an app can release ctx sub-allocations
+    int (*can_close)(struct window* win);  // user close only; may show a prompt, must not destroy the window
+    int close_requested;
     void* reserved;
 };
 
@@ -113,6 +115,7 @@ void theme_set_accent(uint32_t rgb);   // set the runtime UI accent (the wallpap
 void save_nyx_config(void);            // save in the current home and report disk/RAM/error
 void reset_nyx_config(void);           // reset every desktop config knob before load or GUI reset
 void window_destroy(int id);
+void window_request_close(int id);
 void window_focus(int id);
 void window_move(int id, int x, int y);
 void window_resize(int id, uint32_t w, uint32_t h);

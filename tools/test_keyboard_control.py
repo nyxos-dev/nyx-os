@@ -56,10 +56,16 @@ static int key(uint8_t sc, int irq) {
 static int sequence(int ctrl_irq, int char_irq, int foreground) {
     signal_count = 0; last_signal = 0;
     g_foreground_pid = foreground ? 42 : 0;
+    CHECK(key(0x01, char_irq) == 27);          /* Escape make */
+    CHECK(key(0x81, char_irq) == 0);           /* Escape break */
     CHECK(key(0x1D, ctrl_irq) == 0);           /* Ctrl down */
+    CHECK(key(0x01, char_irq) == 27);
+    CHECK(key(0x81, char_irq) == 0);
     CHECK(key(0x20, char_irq) == 4);           /* Ctrl-D */
     CHECK(signal_count == 0);
     CHECK(key(0x2A, ctrl_irq) == 0);           /* Shift down */
+    CHECK(key(0x01, char_irq) == 27);
+    CHECK(key(0x81, char_irq) == 0);
     CHECK(key(0x20, char_irq) == 4);           /* Ctrl-Shift-D */
     CHECK(key(0xAA, ctrl_irq) == 0);           /* Shift up */
     CHECK(key(0x2E, char_irq) == (foreground ? 0 : 3));
@@ -70,6 +76,12 @@ static int sequence(int ctrl_irq, int char_irq, int foreground) {
     CHECK(key(0x2D, char_irq) == 24);          /* Ctrl-X */
     CHECK(key(0x9D, ctrl_irq) == 0);           /* Ctrl up */
     CHECK(key(0x20, char_irq) == 'd');
+    CHECK(key(0xE0, ctrl_irq) == 0);
+    CHECK(key(0x38, ctrl_irq) == 0);           /* AltGr down */
+    CHECK(key(0x01, char_irq) == 27);
+    CHECK(key(0x81, char_irq) == 0);
+    CHECK(key(0xE0, ctrl_irq) == 0);
+    CHECK(key(0xB8, ctrl_irq) == 0);           /* AltGr up */
     CHECK(signal_count == 2 * foreground && !bad_lock && !kbd_lock.locked);
     return 0;
 }
@@ -83,7 +95,7 @@ int main(void) {
                 for (int foreground = 0; foreground < 2; foreground++)
                     CHECK(sequence(ctrl_irq, char_irq, foreground) == 0);
     }
-    printf("OK: US/ES Ctrl keys through IRQ, polling and mixed paths; Ctrl-Z Undo/job signal; signals after unlock\n");
+    printf("OK: US/ES Escape make/break and Ctrl keys through IRQ, polling and mixed paths; Ctrl-Z Undo/job signal; signals after unlock\n");
     return 0;
 }
 '''

@@ -267,6 +267,9 @@ char scancode_to_ascii(uint8_t sc) {
     // Si es una tecla liberada, no generar carácter
     if (!pressed) return 0;
 
+    // Escape is a layout-independent control byte, including with modifiers.
+    if (sc == 0x01) return 0x1B;
+
     // --- Seleccionar tabla según layout (lookup puro, ver kbd_translate) ---
     return kbd_translate(keyboard_layout, sc, shift_pressed, altgr_pressed, caps_lock);
 }

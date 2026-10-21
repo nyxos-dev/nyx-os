@@ -11,6 +11,35 @@ Implementation: [editor_win.c](../kernel/gui/apps/editor_win.c) and
 [editor_win.h](../kernel/gui/apps/editor_win.h). The broader acceptance plan is
 [DAILY_USE.md](DAILY_USE.md).
 
+## Closing a document with unsaved changes (6.5.227)
+
+The title-bar close button and Alt+F4 ask how to handle a modified Mnemosyne
+document. A clean document closes without a prompt.
+
+| Choice | Input | Result |
+|---|---|---|
+| Save | Button, S or Ctrl+S | Save to the established path and close only after a complete successful write. |
+| Discard | Button or D | Close without writing the pending edits. |
+| Cancel | Button or Escape | Return to the same document, selection and undo history. |
+
+While the prompt is open, ordinary typing and text clicks do not edit the
+document. A failed Save keeps the prompt and dirty document open; the status
+message retains the write/path/allocation error. Cancel allows continued editing
+or another save attempt. The prompt switches to a vertical layout in narrow
+windows and fits the minimum 120-by-80 client area.
+
+The PS/2 driver delivers Escape as byte 27 on press, independently of the US/ES
+layout and modifiers, and emits no character on release. The first GUI trial
+exposed the previous omission: its scancode mapped to zero, so a host-only
+editor test could cancel while the real key could not.
+
+The compositor queues user close requests and resolves them after input
+callbacks return. This keeps the window context alive through both click and
+held-press callbacks. `window_destroy` remains the forced cleanup operation;
+the confirmation does not cover logout, shutdown, forced destruction or Open /
+Ctrl+O reload. Save remains non-atomic and new unnamed documents retain the
+existing `untitled.txt` default; this does not add Save As or crash recovery.
+
 ## Cold-boot verification on 6.5.226
 
 Two separate QEMU sessions used four CPUs, 5 GiB RAM and a private 16 MiB
@@ -148,6 +177,38 @@ shared clipboard is global: per-login clearing, ownership and synchronization
 between concurrent writers remain separate work.
 
 ## Evidence and acceptance
+
+### Close decisions, development version 6.5.227
+
+`python3 tools/test_editor_close.py --compare-ref accad1ce` passes 72 sanitized
+checks against the real editor and extracted compositor close functions. The
+preceding immediate-close route fails the deferred-lifetime assertion. The
+checks cover Save/Discard/Cancel, allocation and write failures, unchanged text
+and undo history, narrow button geometry, clean documents and forced cleanup.
+The existing 76 I/O, 53 clipboard, 961 compositor-close and 43 presentation
+checks pass. US/ES IRQ, polling and mixed input tests include Escape press and
+release with Ctrl, Shift and AltGr; this regression fails on the previous driver.
+
+The final GCC 14 build has no compiler warnings. QEMU passes 230 kernel tests
+with one CPU and reaches login with four CPUs. These host and boot checks do not
+establish concurrent window lifetime safety or power-loss durability.
+
+A four-CPU, 5 GiB QEMU GUI run verifies X/Alt+F4, mouse choices, physical Escape,
+blocked typing in the prompt, clean close and the minimum-size vertical layout.
+Extracted files match the 13-byte CRLF saved edit, the 11-byte LF file after
+Discard, and the original 10 bytes of a RAM file copied out after a denied Save.
+The failure caption and subsequent successful 12-byte Save are visible, and
+terminal commands and dragging still work. The recovery-export command in this
+run had a stray character before `cp`; its failed byte assertion is retained,
+and that export is excluded from these results.
+
+A separate recovery-only GUI run clears the terminal input before each command,
+confirms the permission changes and reads back both states. Disk extraction
+matches the original 10 bytes after denied Save and the edited 12 bytes after
+write permission is restored. Screenshots show the failed-save prompt, retained
+text and successful Save. All VMs are closed, with no kernel fault markers.
+Earlier attempts used unsupported mounted `chmod` or lost focus and were
+discarded; these checks do not establish a general input/focus timing repair.
 
 ### Clipboard, development version 6.5.199
 

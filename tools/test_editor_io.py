@@ -61,6 +61,9 @@ void memcpy_asm(void* dst, const void* src, size_t size) {
     uint8_t* d = dst; const uint8_t* s = src; while (size--) *d++ = *s++;
 }
 uint32_t get_ticks(void) { return 0; }
+#ifndef EDITOR_CLOSE_REGISTRY
+void window_request_close(int id) { (void)id; }
+#endif
 const char* vfs_getcwd(void) { return cwd; }
 int vfs_readlink(const char* path, char* target, int cap) {
     if (!linked_path || strcmp(path, linked_path)) return -1;

@@ -272,6 +272,17 @@ The immediate data and desktop priorities are:
     drag. Valid calls still retain scratch memory, and window ownership,
     exit cleanup and concurrent lifetime safety remain separate work.
 
+32. Development version 6.5.227 asks Save/Discard/Cancel before closing a dirty
+    Mnemosyne document with X or Alt+F4. Failed writes leave the document open;
+    user-close destruction waits until input callbacks return. Physical Escape
+    reaches the editor through the shared IRQ/poll decoder. There are 72 new
+    sanitized close checks, existing I/O/clipboard/window regressions, 230 kernel
+    tests and four-CPU login. GUI checks exercise the choices, retained edits,
+    exact saved/discarded bytes, minimum-size prompt and terminal dragging.
+    See [EDITOR.md](EDITOR.md) for scoped results and rejected capture attempts.
+    Forced cleanup, logout/shutdown and Open/Ctrl+O reload remain unguarded;
+    Save remains non-atomic and no Save As or crash recovery is added.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
