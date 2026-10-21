@@ -39,6 +39,8 @@ typedef struct {
     char output_buf[TERM_OUTPUT_MAX];
     int output_len;
     int capturing;
+    uint64_t session_id;
+    int esc_state, esc_p[2], esc_np;
     int visible_rows;
     // Cursor-addressed "screen mode" for full-screen TUIs (edit, top). Entered when
     // a captured program emits a CSI cursor sequence (ESC[H / ESC[2J); the lines[]
@@ -73,6 +75,8 @@ void terminal_set_palette(const char* name);
 const char* terminal_palette_name(void);
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void terminal_win_key(window_t* win, int key);
+int terminal_win_tick(window_t* win);
+void terminal_win_close(window_t* win);
 int terminal_capture_putchar(int c);
 void terminal_capture_reset(terminal_win_t* t);   // leave screen mode when a cmd ends
 int term_input_paste(char* input, int* input_len, int* cursor_pos, int cap,

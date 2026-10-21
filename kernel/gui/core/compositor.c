@@ -2327,6 +2327,8 @@ void launch_nyxflex(void) {
         tw->reserved = terminal_create_ctx();
         if (tw->reserved) {
             tw->on_key = terminal_win_key;
+            tw->on_tick = terminal_win_tick;
+            tw->on_close = terminal_win_close;
             for (const char* c = "nyxfetch\n"; *c; c++) terminal_win_key(tw, (unsigned char)*c);
         } else window_destroy(tw->id);
     }
@@ -2572,7 +2574,11 @@ static void do_start_menu_action(int idx) {
                 if (twin) {
                     twin->cursor_shape = CURSOR_IBEAM;   // Erebus: text area -> I-beam pointer
                     twin->reserved = terminal_create_ctx();
-                    twin->on_key = terminal_win_key;
+                    if (twin->reserved) {
+                        twin->on_key = terminal_win_key;
+                        twin->on_tick = terminal_win_tick;
+                        twin->on_close = terminal_win_close;
+                    } else window_destroy(twin->id);
                 }
             }
             break;

@@ -26,6 +26,79 @@ static spinlock_t capture_lock = SPINLOCK_INIT;
 static uint64_t capture_sequence;
 static uint64_t console_capture_id, pipe_capture_id;
 static uint32_t console_owner_pid, pipe_owner_pid;
+static uint64_t capture_session_id;
+
+#define CONSOLE_SESSIONS 32
+#define CONSOLE_QUEUE_BYTES 8192
+typedef struct {
+    uint64_t id;
+    uint32_t head, count, omitted;
+    char bytes[CONSOLE_QUEUE_BYTES];
+} console_session_t;
+static console_session_t console_sessions[CONSOLE_SESSIONS];
+static uint64_t session_sequence;
+
+// Callers hold capture_lock; no window or process pointers cross this boundary.
+static console_session_t* session_find(uint64_t id) {
+    if (!id) return NULL;
+    for (int i = 0; i < CONSOLE_SESSIONS; i++)
+        if (console_sessions[i].id == id) return &console_sessions[i];
+    return NULL;
+}
+
+uint64_t console_session_open(void) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    uint64_t id = 0;
+    if (session_sequence != ~(uint64_t)0) {
+        for (int i = 0; i < CONSOLE_SESSIONS; i++) {
+            console_session_t* s = &console_sessions[i];
+            if (s->id) continue;
+            s->id = id = ++session_sequence;
+            s->head = s->count = s->omitted = 0;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&capture_lock, flags);
+    return id;
+}
+
+void console_session_close(uint64_t id) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    console_session_t* s = session_find(id);
+    if (s) { s->id = 0; s->head = s->count = s->omitted = 0; }
+    spin_unlock_irqrestore(&capture_lock, flags);
+}
+
+static void session_putchar(uint64_t id, int c) {
+    console_session_t* s = session_find(id);
+    if (!s) return;
+    // After overflow, discard until the retained prefix is drained. The reader
+    // receives one explicit loss count and can reset its escape parser safely.
+    if (s->count == CONSOLE_QUEUE_BYTES || s->omitted) {
+        if (s->omitted != ~(uint32_t)0) s->omitted++;
+        return;
+    }
+    s->bytes[(s->head + s->count) % CONSOLE_QUEUE_BYTES] = (char)c;
+    s->count++;
+}
+
+int console_session_read(uint64_t id, char* out, int cap, uint32_t* omitted) {
+    if (omitted) *omitted = 0;
+    if (!out || cap <= 0) return 0;
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    console_session_t* s = session_find(id);
+    int n = 0;
+    if (s) {
+        while (n < cap && s->count) {
+            out[n++] = s->bytes[s->head];
+            s->head = (s->head + 1) % CONSOLE_QUEUE_BYTES;
+            s->count--;
+        }
+        if (!s->count && omitted) { *omitted = s->omitted; s->omitted = 0; }
+    }
+    spin_unlock_irqrestore(&capture_lock, flags);
+    return n;
+}
 
 // A command's descendants may write only to the captures they inherited.
 // Never recycle an exhausted token; zero permits only the capture's owner.
@@ -46,16 +119,23 @@ void console_capture_inherit(process_t* child) {
         ? console_capture_id : (parent ? parent->console_capture_id : 0);
     child->pipe_capture_id = pipe_active && pid == pipe_owner_pid
         ? pipe_capture_id : (parent ? parent->pipe_capture_id : 0);
+    child->console_session_id = putchar_hook && pid == console_owner_pid
+        ? capture_session_id : (parent ? parent->console_session_id : 0);
     spin_unlock_irqrestore(&capture_lock, flags);
 }
 
-void set_putchar_hook(int (*hook)(int c)) {
+void set_putchar_hook_session(int (*hook)(int c), uint64_t session) {
     uint64_t flags = spin_lock_irqsave(&capture_lock);
     process_t* owner = get_current_process();
     console_owner_pid = owner ? owner->pid : 0;
     console_capture_id = hook ? capture_next_id() : 0;
+    capture_session_id = hook && session_find(session) ? session : 0;
     putchar_hook = hook;
     spin_unlock_irqrestore(&capture_lock, flags);
+}
+
+void set_putchar_hook(int (*hook)(int c)) {
+    set_putchar_hook_session(hook, 0);
 }
 
 void pipe_start(void) {
@@ -83,7 +163,7 @@ int pipe_stop(void) {
 // can then release its terminal state without an in-flight producer using it.
 static int capture_putchar(int c) {
     uint64_t flags = spin_lock_irqsave(&capture_lock);
-    process_t* proc = (pipe_active || putchar_hook) ? get_current_process() : NULL;
+    process_t* proc = (pipe_active || putchar_hook || session_sequence) ? get_current_process() : NULL;
     if (pipe_active && capture_matches(proc, pipe_owner_pid, pipe_capture_id,
                                       proc ? proc->pipe_capture_id : 0)) {
         if (pipe_pos < 4096) pipe_buffer[pipe_pos++] = (char)c;
@@ -94,6 +174,8 @@ static int capture_putchar(int c) {
     if (putchar_hook && capture_matches(proc, console_owner_pid, console_capture_id,
                                        proc ? proc->console_capture_id : 0))
         putchar_hook(c);
+    else if (proc && proc->console_session_id)
+        session_putchar(proc->console_session_id, c);
     spin_unlock_irqrestore(&capture_lock, flags);
     return 0;
 }

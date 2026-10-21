@@ -220,10 +220,11 @@ Removing a hook waits for an in-flight callback; the callback must not yield,
 print recursively or call capture management functions. The existing terminal
 callback meets that requirement. This does not serialize every framebuffer draw.
 
-Output excluded from both captures still goes to serial/VGA. It is not queued for
-the originating terminal. Per-terminal background routing, input ownership and
-asynchronous foreground execution remain future work; foreground jobs can still
-stall desktop input. The kernel pipe retains its 4096-byte capacity; since
+Output excluded from both captures still goes to serial/VGA. Since 6.5.233 it
+also enters the originating terminal's session queue while that session remains
+open. Input ownership and asynchronous foreground execution remain future work;
+foreground jobs can still stall desktop input. The kernel pipe retains its
+4096-byte capacity; since
 6.5.232, overflow aborts the consumer instead of passing truncated output (see
 [SHELL_ENTRY.md](SHELL_ENTRY.md)). Descriptor-based userspace pipes/redirection
 retain their existing semantics.
@@ -235,6 +236,31 @@ contamination test without depending on host typing speed. The host terminal
 runner checks expired identifiers, descendants, serial fallback, pipe bounds and
 hook removal with a pthread mutex standing in for the IRQ-saving lock. That host
 model is not a proof of hardware interrupt or general SMP correctness.
+
+### Terminal output sessions (6.5.233)
+
+Each Erebus window owns a numeric session. Process creation, fork and clone
+inherit the session; exec retains it. Producers retain no window pointer. Closing
+the window invalidates its session under the capture lock, so surviving children
+cannot write into a later window reusing its slot. Output still reaches serial
+after closure. Session identifiers never wrap or recycle; exhaustion rejects a
+new terminal instead of reconnecting stale producers.
+
+| Bound | Value | Behaviour |
+|---|---|---|
+| Concurrent sessions | 32 | Fixed slots in `screen.c`; allocation fails when full |
+| Queue per session | 8192 bytes | Static storage; producers do not allocate or wait for a reader |
+| One GUI drain | 512 bytes | Tick/draw consumes pending output when that terminal is not capturing |
+| Omitted counter | Saturating 32-bit unsigned | Reported after the retained prefix drains |
+
+When a queue fills, it preserves its prefix and discards subsequent bytes until
+that prefix drains. Erebus then resets that window's ANSI parser and displays an
+explicit omitted-byte warning. Serial retains the output. This is bounded output
+loss, not producer backpressure or unlimited scrollback. Hidden windows and a
+terminal running a synchronous foreground command can accumulate queued output.
+Each window owns its ANSI parser and displays partial lines without modifying
+its editable input. Descriptor redirection and pipe capture take precedence over
+session routing; foreground capture keeps its existing synchronous callback.
 
 ## 10. Limits and non-goals
 

@@ -8,7 +8,20 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
 #include "@ROOT@/kernel/gui/apps/terminal_win.c"
+#include "@ROOT@/kernel/core/ansi.c"
 extern int puts(const char*);
+void memset_asm(void* p, uint8_t v, size_t n) { unsigned char* d=p; while(n--) *d++=v; }
+void memcpy_asm(void* p, const void* q, size_t n) { unsigned char* d=p; const unsigned char* s=q; while(n--) *d++=*s++; }
+static const char* queued;
+static uint32_t lost;
+static int reads;
+static uint64_t closed;
+int console_session_read(uint64_t id, char* out, int cap, uint32_t* omitted) {
+    (void)id; reads++; int n=0;
+    while (queued && *queued && n<cap) out[n++]=*queued++;
+    *omitted=lost; lost=0; return n;
+}
+void console_session_close(uint64_t id) { closed=id; }
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b) { return (r<<16)|(g<<8)|b; }
 static uint32_t fill, fg[2], bg[2];
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
@@ -63,6 +76,30 @@ int main(void) {
     CHECK(!strcmp(terminal_palette_name(), "nightfall"));
     terminal_set_palette("classic");
     CHECK(!strcmp(terminal_palette_name(), "classic"));
+    static terminal_win_t other;
+    memset_asm(&term,0,sizeof(term));
+    term.cur_color=other.cur_color=TERM_DEFAULT_COLOR;
+    const char* a="\033[3";
+    while (*a) terminal_output_putchar(&term,*a++);
+    terminal_output_putchar(&other,'B'); terminal_output_putchar(&other,'\n');
+    a="1mA\n"; while (*a) terminal_output_putchar(&term,*a++);
+    CHECK(term.lines[0][0]=='A' && term.colors[0][0]==VGA_RED);
+    CHECK(other.lines[0][0]=='B' && other.colors[0][0]==TERM_DEFAULT_COLOR);
+    term.session_id=42; term.input[0]='x'; term.input_len=term.cursor_pos=1;
+    queued="BG\n"; term.capturing=1; int before=reads;
+    CHECK(terminal_win_tick(&win)==0 && reads==before);
+    term.capturing=0; CHECK(terminal_win_tick(&win)==1);
+    CHECK(term.lines[1][0]=='B' && term.lines[1][1]=='G');
+    CHECK(term.input[0]=='x' && term.input_len==1 && term.cursor_pos==1);
+    queued="tail"; CHECK(terminal_win_tick(&win)==1 && term.output_len==4);
+    terminal_win_draw(&win,0,0,8,32);
+    CHECK(fg[0]==vga_to_rgb(VGA_RED));
+    terminal_flush_pending(&term);
+    CHECK(term.output_len==0 && !strncmp(term.lines[2],"tail",4));
+    term.esc_state=2; lost=17;
+    CHECK(terminal_win_tick(&win)==1 && term.esc_state==0);
+    CHECK(!strncmp(term.lines[3],"[terminal: 17 bytes omitted;",27));
+    terminal_win_close(&win); CHECK(closed==42 && term.session_id==0);
     char result[64]; snprintf(result, sizeof result, "PASS %d terminal palette checks", checks); puts(result);
     return 0;
 }
@@ -84,7 +121,7 @@ static __attribute__((unused)) void spin_unlock_irqrestore(spinlock_t* lock, uin
 CAPTURE_TEST = r'''
 static __thread process_t* current;
 process_t* get_current_process(void) { return current; }
-static char serial_bytes[16384], hook_bytes[16384];
+static char serial_bytes[65536], hook_bytes[65536];
 static int serial_n, hook_n, checks;
 static uint16_t display[80*25];
 void serial_putchar(char c) { serial_bytes[serial_n++] = c; }
@@ -177,6 +214,55 @@ int main(void) {
     __atomic_store_n(&release_hook,1,__ATOMIC_RELEASE);
     CHECK(pthread_join(writer,NULL)==0 && pthread_join(closer,NULL)==0);
     CHECK(clear_done && putchar_hook == NULL);
+    uint64_t sa=console_session_open(), sb=console_session_open();
+    CHECK(sa && sb && sa!=sb);
+    current=&owner; set_putchar_hook_session(hook,sa); console_capture_inherit(&child);
+    current=&child; console_capture_inherit(&descendant);
+    CHECK(child.console_session_id==sa && descendant.console_session_id==sa);
+    current=&owner; set_putchar_hook(NULL); current=&child; screen_putchar('a');
+    current=&owner; set_putchar_hook_session(hook,sb); console_capture_inherit(&later);
+    current=&child; screen_putchar('b');
+    clear_recording(); current=&later; screen_putchar('d');
+    CHECK(hook_n==1 && hook_bytes[0]=='d');
+    current=&owner; set_putchar_hook(NULL); current=&later; screen_putchar('e');
+    char buffer[511]; uint32_t omitted=99;
+    CHECK(console_session_read(sa,buffer,sizeof(buffer),&omitted)==2 && !omitted && buffer[0]=='a' && buffer[1]=='b');
+    current=&descendant; screen_putchar('c');
+    CHECK(console_session_read(sa,buffer,sizeof(buffer),&omitted)==1 && buffer[0]=='c');
+    CHECK(console_session_read(sb,buffer,sizeof(buffer),&omitted)==1 && buffer[0]=='e');
+    console_session_close(sa); uint64_t sc=console_session_open(); CHECK(sc && sc!=sa);
+    current=&child; screen_putchar('x');
+    CHECK(console_session_read(sc,buffer,sizeof(buffer),&omitted)==0 && !omitted);
+    clear_recording(); current=&later;
+    for (int i=0;i<8192+17;i++) screen_putchar('q');
+    CHECK(serial_n==8192+17);
+    CHECK(console_session_read(sb,NULL,5,&omitted)==0 && !omitted);
+    CHECK(console_session_read(sb,buffer,0,&omitted)==0 && !omitted);
+    int retained=0, n;
+    while ((n=console_session_read(sb,buffer,sizeof(buffer),&omitted))) {
+        retained+=n;
+        for (int i=0;i<n;i++) CHECK(buffer[i]=='q');
+        CHECK(omitted==(retained==8192 ? 17u : 0u));
+    }
+    CHECK(retained==8192 && !omitted);
+    screen_putchar('z');
+    CHECK(console_session_read(sb,buffer,sizeof(buffer),&omitted)==1 && buffer[0]=='z' && !omitted);
+    for (int i=0;i<6000;i++) screen_putchar('a');
+    for (int i=0;i<10;i++) CHECK(console_session_read(sb,buffer,500,&omitted)==500 && !omitted);
+    for (int i=0;i<6000;i++) screen_putchar('b');
+    retained=0;
+    while ((n=console_session_read(sb,buffer,sizeof(buffer),&omitted))) {
+        for (int i=0;i<n;i++) { CHECK(buffer[i]==(retained<1000 ? 'a' : 'b')); retained++; }
+        CHECK(!omitted);
+    }
+    CHECK(retained==7000);
+    console_session_close(sb); console_session_close(sc);
+    uint64_t slots[32];
+    for (int i=0;i<32;i++) { slots[i]=console_session_open(); CHECK(slots[i]); }
+    CHECK(console_session_open()==0);
+    for (int i=0;i<32;i++) console_session_close(slots[i]);
+    session_sequence=~(uint64_t)0-1; sa=console_session_open(); CHECK(sa==~(uint64_t)0);
+    console_session_close(sa); CHECK(console_session_open()==0);
 #endif
     printf("PASS %d console capture ownership checks\n",checks); return 0;
 }

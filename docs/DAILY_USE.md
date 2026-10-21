@@ -358,7 +358,26 @@ The immediate data and desktop priorities are:
     after a source read error; that particular target was already preserved.
     See [SHELL_ENTRY.md](SHELL_ENTRY.md). The producer can already have side effects,
     the temporary file is not transactional, and later semicolon segments still
-    execute. Per-terminal background routing remains planned work.
+    execute. Per-terminal background routing follows in 6.5.233.
+
+38. Development version 6.5.233 gives Erebus 1.4 numeric output sessions with
+    bounded queues. A background child can write to its originating window while
+    another terminal runs a foreground command. Closing the original window
+    invalidates its session, so a newly opened terminal does not receive that
+    child's output. Each terminal owns its ANSI parser; pending output leaves
+    the editable input intact. Host sanitizers pass 15,312 capture/session,
+    241 renderer/parser and 16 kernel-pipe checks, including slot reuse, queue
+    wrap, overflow recovery and identifier exhaustion. GCC14 emits no warnings;
+    230 kernel tests and four-CPU login pass. Actual PS/2 GUI checks show output
+    in window A while B sleeps, serial-only output after A closes, then a new
+    terminal, `mtdemo`, continued commands and window dragging. A second VM
+    displays a 3073-byte omission warning after its 8192-byte queue fills;
+    serial retains all 800 `QUEUE_PAYLOAD` lines. Both VMs preserve the two disk
+    fixtures and close. The test readers report an ancillary socket reset during
+    QEMU shutdown; both runners finish successfully. See [PROCESS.md](PROCESS.md).
+    This provides neither lossless queues nor asynchronous foreground input:
+    foreground jobs can still stall desktop input, and existing scrollback and
+    line-length limits remain.
 
 ### Oneiros numerical failure handling (6.5.208)
 

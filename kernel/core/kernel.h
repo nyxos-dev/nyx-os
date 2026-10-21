@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.232"
+#define KERNEL_VERSION "6.5.233"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -29,7 +29,7 @@
 #define COMPOSITOR_NAME    "Hemera"
 #define COMPOSITOR_VERSION "3.34"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
-#define TERMINAL_VERSION   "1.3"      // Erebus: the terminal emulator
+#define TERMINAL_VERSION   "1.4"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
 #define SELENE_VERSION     "1.3"      // Selene: the web browser
 #define EDITOR_NAME        "Mnemosyne"
@@ -408,6 +408,7 @@ typedef struct process {
     uint32_t tty_raw;
     uint64_t console_capture_id;
     uint64_t pipe_capture_id;
+    uint64_t console_session_id;
     // FPU/SSE (XMM) state saved across context switches (#40). fxsave/fxrstor need a
     // 16-byte-aligned 512-byte area; process_t is kmalloc'd (only 8-aligned), so we keep
     // 16 bytes of slack and align at runtime (fpu_area_of()). fpu_ready is 0 until this
@@ -1030,7 +1031,11 @@ void init_screen(void);
 int putchar(int c);
 int puts(const char* str);
 void set_putchar_hook(int (*hook)(int c));
+void set_putchar_hook_session(int (*hook)(int c), uint64_t session);
 void console_capture_inherit(process_t* child);
+uint64_t console_session_open(void);
+void console_session_close(uint64_t id);
+int console_session_read(uint64_t id, char* out, int cap, uint32_t* omitted);
 
 // System text clipboard (kernel.c). One shared buffer; the `clip` command and the
 // GUI terminal/editor copy/paste through it. clipboard_get copies up to `cap` bytes

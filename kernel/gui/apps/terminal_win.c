@@ -224,6 +224,8 @@ terminal_win_t* terminal_create_ctx(void) {
     terminal_win_t* term = (terminal_win_t*)kmalloc(sizeof(terminal_win_t));
     if (!term) return NULL;
     memset_asm(term, 0, sizeof(terminal_win_t));
+    term->session_id = console_session_open();
+    if (!term->session_id) { kfree(term); return NULL; }
     term->hist.nav = -1;                  // start editing a fresh line, not navigating history
     term->cwd = login_home_node();        // each terminal starts in the user's home dir
     term_set_prompt(term);
@@ -246,9 +248,6 @@ static terminal_win_t* capture_term = NULL;
 // The first cursor/clear sequence flips the terminal into screen_mode, where the
 // lines[] grid becomes a fixed cell screen addressed by (out_row,out_col) with a
 // drawn block cursor — this is what a full-screen editor draws onto.
-static int esc_state = 0;
-static int esc_p[2];       // collected CSI params
-static int esc_np;         // current param index (0 or 1)
 
 // Enter/refresh screen mode: blank the addressable grid, home the output cursor.
 static void term_screen_clear(terminal_win_t* t) {
@@ -265,32 +264,29 @@ static void term_screen_clear(terminal_win_t* t) {
 
 // Reset back to scrollback mode (called when a command finishes).
 void terminal_capture_reset(terminal_win_t* t) {
-    esc_state = 0;
-    if (t) { t->cur_color = TERM_DEFAULT_COLOR; if (t->screen_mode) { t->screen_mode = 0; t->line_count = 0; } }
+    if (t) { t->esc_state = 0; t->cur_color = TERM_DEFAULT_COLOR; if (t->screen_mode) { t->screen_mode = 0; t->line_count = 0; } }
 }
 
-int terminal_capture_putchar(int c) {
-    if (!capture_term || !capture_term->capturing) return c;
-    terminal_win_t* t = capture_term;
+static int terminal_output_putchar(terminal_win_t* t, int c) {
 
-    if (esc_state == 1) {                        // saw ESC: a CSI opens with '['
-        if (c == '[') { esc_state = 2; esc_p[0] = esc_p[1] = 0; esc_np = 0; }
-        else esc_state = 0;
+    if (t->esc_state == 1) {                        // saw ESC: a CSI opens with '['
+        if (c == '[') { t->esc_state = 2; t->esc_p[0] = t->esc_p[1] = 0; t->esc_np = 0; }
+        else t->esc_state = 0;
         return c;
     }
-    if (esc_state == 2) {                         // inside CSI
+    if (t->esc_state == 2) {                         // inside CSI
         if (c >= '0' && c <= '9') {               // accumulate a numeric param (saturating)
-            int i = esc_np < 2 ? esc_np : 1;
-            esc_p[i] = csi_param_accum(esc_p[i], c - '0');
+            int i = t->esc_np < 2 ? t->esc_np : 1;
+            t->esc_p[i] = csi_param_accum(t->esc_p[i], c - '0');
             return c;
         }
-        if (c == ';') { esc_np++; return c; }
+        if (c == ';') { if (t->esc_np < 2) t->esc_np++; return c; }
         if (c == 'H' || c == 'f') {               // cursor position (1-based -> 0-based)
             if (!t->screen_mode) term_screen_clear(t);
-            t->out_row = esc_p[0] > 0 ? esc_p[0] - 1 : 0;
-            t->out_col = esc_p[1] > 0 ? esc_p[1] - 1 : 0;
+            t->out_row = t->esc_p[0] > 0 ? t->esc_p[0] - 1 : 0;
+            t->out_col = t->esc_p[1] > 0 ? t->esc_p[1] - 1 : 0;
         } else if (c == 'J') {                    // erase display
-            if (esc_p[0] == 3) {                  // ESC[3J: wipe scrollback, return to the prompt
+            if (t->esc_p[0] == 3) {                  // ESC[3J: wipe scrollback, return to the prompt
                 t->line_count = 0;                    // (userspace `clear` — composes in the shell)
                 t->scroll_offset = 0;
                 t->output_len = 0;
@@ -306,12 +302,12 @@ int terminal_capture_putchar(int c) {
                     t->colors[t->out_row][x] = t->cur_color;
                 }
         } else if (c == 'm') {                    // SGR: set color (fg/bg)
-            term_apply_sgr(t, esc_p, (esc_np + 1 > 2) ? 2 : esc_np + 1);
+            term_apply_sgr(t, t->esc_p, (t->esc_np + 1 > 2) ? 2 : t->esc_np + 1);
         }
-        esc_state = 0;                            // any other final is swallowed
+        t->esc_state = 0;                            // any other final is swallowed
         return c;
     }
-    if (c == 0x1B) { esc_state = 1; return c; }   // ESC begins a sequence
+    if (c == 0x1B) { t->esc_state = 1; return c; }   // ESC begins a sequence
 
     if (t->screen_mode) {                         // cursor-addressed cell writes
         if (c == '\n') { t->out_row++; t->out_col = 0; }
@@ -347,15 +343,47 @@ int terminal_capture_putchar(int c) {
     }
     return c;
 }
+int terminal_capture_putchar(int c) {
+    if (!capture_term || !capture_term->capturing) return c;
+    return terminal_output_putchar(capture_term, c);
+}
+
+static void terminal_flush_pending(terminal_win_t* t) {
+    if (t->output_len && !t->screen_mode) {
+        term_add_line_c(t, t->output_buf, t->out_color, t->output_len);
+        t->output_len = 0;
+    }
+}
+
+int terminal_win_tick(window_t* win) {
+    terminal_win_t* t = win ? (terminal_win_t*)win->reserved : NULL;
+    if (!t || t->capturing || !t->session_id) return 0;
+    char pending[512];
+    uint32_t omitted;
+    int n = console_session_read(t->session_id, pending, sizeof(pending), &omitted);
+    for (int i = 0; i < n; i++) terminal_output_putchar(t, (unsigned char)pending[i]);
+    if (omitted) {
+        terminal_capture_reset(t);
+        terminal_flush_pending(t);
+        char message[80];
+        snprintf(message, sizeof(message), "[terminal: %u bytes omitted; full output on serial]", omitted);
+        term_add_line(t, message, VGA_LIGHT_RED | (VGA_BLACK << 4));
+    }
+    return n || omitted;
+}
+
+void terminal_win_close(window_t* win) {
+    terminal_win_t* t = win ? (terminal_win_t*)win->reserved : NULL;
+    if (t) { console_session_close(t->session_id); t->session_id = 0; }
+}
+
 int term_clear_selftest(void) {
     terminal_win_t* t = (terminal_win_t*)kmalloc(sizeof(*t));
     if (!t) return 1;
     memset_asm(t, 0, sizeof(*t));
     terminal_win_t* saved = capture_term;
-    int saved_state = esc_state, saved_np = esc_np;
-    int saved_p0 = esc_p[0], saved_p1 = esc_p[1];
     capture_term = t;
-    esc_state = 0;
+    t->esc_state = 0;
     t->capturing = 1;
     t->cur_color = TERM_DEFAULT_COLOR;
     t->input[0] = 'x';
@@ -370,8 +398,6 @@ int term_clear_selftest(void) {
     if (t->line_count != 1 || strncmp(t->lines[0], "new", 3) != 0 || t->lines[0][3] != ' ') result = 3;
     if (t->input_len != 1 || t->input[0] != 'x' || t->hist.count != 1) result = 4;
     capture_term = saved;
-    esc_state = saved_state; esc_np = saved_np;
-    esc_p[0] = saved_p0; esc_p[1] = saved_p1;
     kfree(t);
     return result;
 }
@@ -379,6 +405,7 @@ int term_clear_selftest(void) {
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
+    terminal_win_tick(win);
 
     uint32_t canvas = vga_to_rgb(VGA_BLACK);
     uint32_t input_fg = terminal_nightfall ? vga_to_rgb(VGA_LIGHT_GREEN) : fb_rgb(0,255,0);
@@ -402,17 +429,19 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
     // start_line's off-by-one hid a second line above it.)
     int sb_rows = term->screen_mode ? rows : rows - 1;
     if (sb_rows < 1) sb_rows = 1;
+    int total_lines = term->line_count + (!term->screen_mode && term->output_len > 0);
     int start_line = term->screen_mode ? 0
-                     : term->line_count - sb_rows - term->scroll_offset;
+                     : total_lines - sb_rows - term->scroll_offset;
     if (start_line < 0) start_line = 0;
 
-    for (int r = 0; r < sb_rows && start_line + r < term->line_count; r++) {
+    for (int r = 0; r < sb_rows && start_line + r < total_lines; r++) {
         int li = start_line + r;
         int y = cy + r * char_h;
         for (int c = 0; c < cols; c++) {
-            char ch_char = term->lines[li][c];
+            int pending_line = li == term->line_count;
+            char ch_char = pending_line ? (c < term->output_len ? term->output_buf[c] : ' ') : term->lines[li][c];
             if (!ch_char) ch_char = ' ';
-            uint8_t col = term->colors[li][c];
+            uint8_t col = pending_line ? (c < term->output_len ? term->out_color[c] : TERM_DEFAULT_COLOR) : term->colors[li][c];
             uint32_t fg = vga_to_rgb(col & 0x0F);
             uint32_t bg = vga_to_rgb((col >> 4) & 0x0F);   // background from the high nibble
             // Block cursor in screen mode: invert the cell at (out_row,out_col).
@@ -817,6 +846,9 @@ void terminal_win_key(window_t* win, int key) {
     }
 
     if (c == '\n' || c == '\r') {
+        terminal_win_tick(win);
+        terminal_flush_pending(term);
+        terminal_capture_reset(term);
         term->input[term->input_len] = '\0';
         char full_line[TERM_COLS + TERM_INPUT_MAX];
         int fl = 0;
@@ -836,7 +868,7 @@ void terminal_win_key(window_t* win, int key) {
             term->output_len = 0;
             term->cur_color = TERM_DEFAULT_COLOR;   // fresh color state per command
             vfs_setcwd_node(term->cwd);       // run in THIS shell's directory
-            set_putchar_hook(terminal_capture_putchar);
+            set_putchar_hook_session(terminal_capture_putchar, term->session_id);
             execute_command(term->input);
             set_putchar_hook(NULL);
             term->capturing = 0;
