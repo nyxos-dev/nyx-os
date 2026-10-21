@@ -3,6 +3,7 @@
 // Tema negro con soporte de cambio de color
 // ============================================================
 #include "../../core/kernel.h"
+#include "../../core/spinlock.h"
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
@@ -20,20 +21,78 @@ static int pipe_active = 0;
 
 // Terminal capture hook
 static int (*putchar_hook)(int c) = NULL;
+static spinlock_t capture_lock = SPINLOCK_INIT;
+static uint64_t capture_sequence;
+static uint64_t console_capture_id, pipe_capture_id;
+static uint32_t console_owner_pid, pipe_owner_pid;
+
+// A command's descendants may write only to the captures they inherited.
+// Never recycle an exhausted token; zero permits only the capture's owner.
+static uint64_t capture_next_id(void) {
+    if (capture_sequence == ~(uint64_t)0) return 0;
+    return ++capture_sequence;
+}
+
+static int capture_matches(process_t* proc, uint32_t owner, uint64_t id, uint64_t inherited) {
+    return (proc ? proc->pid : 0) == owner || (id && inherited == id);
+}
+
+void console_capture_inherit(process_t* child) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    process_t* parent = get_current_process();
+    uint32_t pid = parent ? parent->pid : 0;
+    child->console_capture_id = putchar_hook && pid == console_owner_pid
+        ? console_capture_id : (parent ? parent->console_capture_id : 0);
+    child->pipe_capture_id = pipe_active && pid == pipe_owner_pid
+        ? pipe_capture_id : (parent ? parent->pipe_capture_id : 0);
+    spin_unlock_irqrestore(&capture_lock, flags);
+}
 
 void set_putchar_hook(int (*hook)(int c)) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    process_t* owner = get_current_process();
+    console_owner_pid = owner ? owner->pid : 0;
+    console_capture_id = hook ? capture_next_id() : 0;
     putchar_hook = hook;
+    spin_unlock_irqrestore(&capture_lock, flags);
 }
 
 void pipe_start(void) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    process_t* owner = get_current_process();
+    pipe_owner_pid = owner ? owner->pid : 0;
+    pipe_capture_id = capture_next_id();
     pipe_pos = 0;
     pipe_active = 1;
+    spin_unlock_irqrestore(&capture_lock, flags);
 }
 
 int pipe_stop(void) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
     pipe_active = 0;
+    pipe_capture_id = 0;
     if (pipe_pos < 4096) pipe_buffer[pipe_pos] = '\0';
-    return pipe_pos;
+    int count = pipe_pos;
+    spin_unlock_irqrestore(&capture_lock, flags);
+    return count;
+}
+
+// Keep hook removal and each callback mutually exclusive. A completed command
+// can then release its terminal state without an in-flight producer using it.
+static int capture_putchar(int c) {
+    uint64_t flags = spin_lock_irqsave(&capture_lock);
+    process_t* proc = (pipe_active || putchar_hook) ? get_current_process() : NULL;
+    if (pipe_active && capture_matches(proc, pipe_owner_pid, pipe_capture_id,
+                                      proc ? proc->pipe_capture_id : 0)) {
+        if (pipe_pos < 4096) pipe_buffer[pipe_pos++] = (char)c;
+        spin_unlock_irqrestore(&capture_lock, flags);
+        return 1;
+    }
+    if (putchar_hook && capture_matches(proc, console_owner_pid, console_capture_id,
+                                       proc ? proc->console_capture_id : 0))
+        putchar_hook(c);
+    spin_unlock_irqrestore(&capture_lock, flags);
+    return 0;
 }
 
 const char* pipe_get_data(void) {
@@ -93,11 +152,7 @@ int putchar(int c) {
     // it (to the terminal hook, serial, or VGA) — the left output belongs to the pipe, not
     // the screen. Without this a pipe tees (`ls | grep x` would show all of ls). pipe_stop()
     // clears pipe_active, so the right command prints normally.
-    if (pipe_active) {
-        if (pipe_pos < 4096) pipe_buffer[pipe_pos++] = ch;
-        return c;
-    }
-    if (putchar_hook) putchar_hook(c);
+    if (capture_putchar(c)) return c;
     serial_putchar(ch);
     if (ch == '\n') {
         cursor_x = 0;

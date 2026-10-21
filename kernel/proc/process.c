@@ -186,6 +186,7 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     process_t* p = (process_t*)kmalloc(sizeof(process_t));
     if (!p) return NULL;
     memset_asm(p, 0, sizeof(process_t));
+    console_capture_inherit(p);
     p->pid = next_pid++;
     p->state = 1;
     p->page_directory = page_dir;
@@ -305,6 +306,7 @@ int do_fork(void) {
     memset_asm(child, 0, sizeof(process_t));
     child->pid = next_pid++;
     child->ppid = parent->pid;
+    console_capture_inherit(child);
     child->state = PROC_RUN;
     child->page_directory = child_pml4;
     child->heap_start    = parent->heap_start;       // ...same lazy-sbrk window
@@ -495,6 +497,7 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
     memset_asm(t, 0, sizeof(process_t));
     t->pid   = next_pid++;
     t->ppid  = self->pid;
+    console_capture_inherit(t);
     t->state = PROC_RUN;
     t->page_directory = self->page_directory;   // <- THE thread property: shared VM
     // Join the creator's thread group (a thread cloning a thread still points at the one

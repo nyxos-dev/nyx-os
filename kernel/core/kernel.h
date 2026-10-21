@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.230"
+#define KERNEL_VERSION "6.5.231"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -406,6 +406,8 @@ typedef struct process {
     // reads with arrows as ANSI escapes. NOT inherited on fork, reset by execve —
     // only the process that asked for raw mode sees it.
     uint32_t tty_raw;
+    uint64_t console_capture_id;
+    uint64_t pipe_capture_id;
     // FPU/SSE (XMM) state saved across context switches (#40). fxsave/fxrstor need a
     // 16-byte-aligned 512-byte area; process_t is kmalloc'd (only 8-aligned), so we keep
     // 16 bytes of slack and align at runtime (fpu_area_of()). fpu_ready is 0 until this
@@ -1028,6 +1030,7 @@ void init_screen(void);
 int putchar(int c);
 int puts(const char* str);
 void set_putchar_hook(int (*hook)(int c));
+void console_capture_inherit(process_t* child);
 
 // System text clipboard (kernel.c). One shared buffer; the `clip` command and the
 // GUI terminal/editor copy/paste through it. clipboard_get copies up to `cap` bytes

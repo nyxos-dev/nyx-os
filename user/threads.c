@@ -152,9 +152,58 @@ static int fault_tests(void) {
     return failures ? 1 : 0;
 }
 
+static void capture_worker(void* unused) {
+    (void)unused;
+    print("CAPTURE_CLONE\n");
+    exit(0);
+}
+
+static int capture_tests(void) {
+    if (write(1, "CAPTURE_STDOUT\n", 15) != 15 ||
+        write(2, "CAPTURE_STDERR\n", 15) != 15) return 1;
+    print("CAPTURE_LEGACY\n");
+    int status = -1;
+    long tid = clone((void*)capture_worker, fault_stack + sizeof(fault_stack), 0, CLONE_VM);
+    if (tid < 0 || waitpid(tid, &status) != tid || status) return 2;
+    long child = fork();
+    if (child < 0) return 3;
+    if (!child) {
+        print("CAPTURE_FORK\n");
+        char* args[] = {"sh", "-c", "echo CAPTURE_EXEC", NULL};
+        execve("/sh.elf", args, NULL);
+        exit(4);
+    }
+    status = -1;
+    if (waitpid(child, &status) != child || status) return 5;
+    print("CAPTURE_DONE\n");
+    return 0;
+}
+
+static nyx_procinfo_t capture_procs[128];
+static int capture_wait(void) {
+    long self = getpid();
+    print("CAPTURE_WAIT_READY\n");
+    // Wait for the test's later foreground sleep, not a host wall-clock delay.
+    for (int attempt = 0; attempt < 24000; attempt++) {
+        long count = getprocs(capture_procs, 128);
+        for (long i = 0; i < count; i++) {
+            if (capture_procs[i].pid > (unsigned long)self &&
+                !strcmp(capture_procs[i].comm, "sleep")) {
+                print("BACKGROUND_ORIGIN_A\n");
+                return 0;
+            }
+        }
+        usleep(5000);
+    }
+    print("CAPTURE_WAIT_TIMEOUT\n");
+    return 1;
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && !strcmp(argv[1], "--faults")) return fault_tests();
-    if (argc != 1) { printf("Usage: threads [--faults]\n"); return 1; }
+    if (argc == 2 && !strcmp(argv[1], "--capture")) return capture_tests();
+    if (argc == 2 && !strcmp(argv[1], "--capture-wait")) return capture_wait();
+    if (argc != 1) { printf("Usage: threads [--faults|--capture|--capture-wait]\n"); return 1; }
     printf("threads: spawning %d threads x %d increments each (shared address space)\n",
            NTHREADS, ITERS);
     for (long i = 0; i < NTHREADS; i++) {

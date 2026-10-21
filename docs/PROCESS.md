@@ -204,6 +204,37 @@ path), never asynchronously inside the kernel:
 
 ---
 
+### Command output capture (6.5.231)
+
+The kernel terminal hook and the kernel shell's 4096-byte pipe capture each have
+an owner PID and a monotonically assigned capture identifier. User-process
+creation, `fork` and `clone` inherit the creator's identifiers; `execve` keeps
+them. A capture accepts its owner and descendants carrying its current identifier.
+An older background task therefore cannot append to a later command's terminal
+capture or kernel pipe. Identifier exhaustion does not recycle an old identifier:
+only the owner remains eligible. These identifiers are routing state, not access
+control credentials.
+
+An IRQ-saving lock serializes capture changes, pipe appends and hook callbacks.
+Removing a hook waits for an in-flight callback; the callback must not yield,
+print recursively or call capture management functions. The existing terminal
+callback meets that requirement. This does not serialize every framebuffer draw.
+
+Output excluded from both captures still goes to serial/VGA. It is not queued for
+the originating terminal. Per-terminal background routing, input ownership and
+asynchronous foreground execution remain future work; foreground jobs can still
+stall desktop input. The kernel pipe retains its existing 4096-byte truncation
+limit, and descriptor-based userspace pipes/redirection retain their existing
+semantics.
+
+The existing `threads` diagnostic has `--capture` for stdout, stderr, legacy print,
+clone, fork and exec output. Its separate `--capture-wait` probe emits a marker
+after observing a newer process named `sleep`, allowing a bounded two-terminal
+contamination test without depending on host typing speed. The host terminal
+runner checks expired identifiers, descendants, serial fallback, pipe bounds and
+hook removal with a pthread mutex standing in for the IRQ-saving lock. That host
+model is not a proof of hardware interrupt or general SMP correctness.
+
 ## 10. Limits and non-goals
 
 - Up to **512** tasks and **32** open fds per process — fixed arrays, no dynamic

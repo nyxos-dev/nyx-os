@@ -99,7 +99,7 @@ jobs:
       - name: Test desktop config persistence and session isolation
         run: python3 tools/test_desktop_config.py
 
-      - name: Test terminal palettes and ANSI rendering
+      - name: Test terminal palettes, ANSI rendering and console capture ownership
         run: python3 tools/test_terminal_palette.py
 
       - name: Test Selene lazy page memory and allocation failures

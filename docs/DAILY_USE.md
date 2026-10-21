@@ -322,6 +322,25 @@ The immediate data and desktop priorities are:
     reproduced desktop input stall during synchronous foreground execution is
     still open.
 
+36. Development version 6.5.231 prevents older background tasks from writing into
+    a later command's terminal capture or kernel pipe. Capture identifiers are
+    inherited through user-process creation, fork and clone, and retained by exec;
+    hook removal waits for an in-flight callback. The existing terminal runner
+    passes 26 capture and 229 renderer checks under sanitizers; the old capture
+    code fails the expired-child assertion. GCC 14 builds without warnings, 230
+    kernel tests and four-CPU login pass. Actual GUI tests preserve foreground
+    stdout/stderr, legacy print, clone, fork and exec output; a second terminal
+    excludes the first one's delayed background output. Scheduler counters,
+    subsequent commands and window movement pass. A synchronized four-CPU pipe
+    comparison extracts the background marker from the old kernel's output file,
+    while the new kernel sends that marker only to serial/VGA and keeps it out of
+    the file. Redirected stdout/stderr match their expected 15 bytes each, and two
+    disk fixtures remain unchanged. An earlier timed pipe test missed the overlap;
+    a redirection retry used the direct ELF command supported by the kernel shell.
+    All test VMs are closed. See [PROCESS.md](PROCESS.md). Background output is not
+    delivered back to its original window; global input ownership, synchronous
+    foreground stalls and the existing 4096-byte kernel pipe limit remain open.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
