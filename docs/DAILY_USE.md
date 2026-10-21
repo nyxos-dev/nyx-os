@@ -280,8 +280,20 @@ The immediate data and desktop priorities are:
     tests and four-CPU login. GUI checks exercise the choices, retained edits,
     exact saved/discarded bytes, minimum-size prompt and terminal dragging.
     See [EDITOR.md](EDITOR.md) for scoped results and rejected capture attempts.
-    Forced cleanup, logout/shutdown and Open/Ctrl+O reload remain unguarded;
+    In 227, forced cleanup, logout/shutdown and Open/Ctrl+O reload are unguarded;
     Save remains non-atomic and no Save As or crash recovery is added.
+
+33. Development version 6.5.228 extends Save/Discard/Cancel to toolbar Open and
+    Ctrl+O when the document is modified. Cancel preserves text/selection/undo;
+    failed Save blocks reload; failed Open after Discard retains the dirty buffer.
+    The pending target survives an unnamed document's default Save path. Close
+    requests do not replace a pending reload. The existing host runner adds 304
+    sanitized reload checks, and the 227 baseline fails the confirmation check.
+    Existing editor/window regressions, 230 kernel tests and four-CPU login pass.
+    A four-CPU GUI run exercises both reload inputs and compares five exact disk
+    outputs, including recovery after denied Save and removal of the target.
+    See [EDITOR.md](EDITOR.md) for behaviour and verification scope. Forced cleanup,
+    logout/shutdown, atomic Save and crash recovery remain separate work.
 
 ### Oneiros numerical failure handling (6.5.208)
 

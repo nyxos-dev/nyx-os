@@ -23,6 +23,8 @@ typedef struct {
     char filename[64];
     int modified;
     int close_pending, close_discard, close_failed;
+    int reload_pending;
+    char reload_path[64];
     char status[64];
     uint32_t cursor_tick;
     int  find_active;          // Ctrl+F find mode: capturing a search pattern

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise dirty-editor decisions with the real deferred compositor close path."""
+"""Exercise dirty-editor close/reload decisions and deferred compositor lifetime."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -107,6 +107,96 @@ int main(void) {
 '''
 
 
+
+RELOAD_CASES = r'''
+extern int fflush(void* stream);
+#undef CHECK
+#define CHECK(x) do { checks++; if (!(x)) { printf("FAIL %d: %s\n", __LINE__, #x); fflush(NULL); return 1; } } while (0)
+static void release_editor(window_t* win) { destroyed++; editor_win_close(win); }
+static void reload_request(window_t* w, int route) {
+    if (route == 0) editor_win_key(w, 15);
+    else editor_win_click(w, WIN_CLIENT_X(w)+10, WIN_CLIENT_Y(w)+5, 1);
+}
+int main(void) {
+    static uint8_t disk[4096];
+    output_fd = open("/dev/null", 1); CHECK(output_fd >= 0);
+    input_data = disk;
+    strcpy(mount.mount_point,"/mnt"); mount.resolve=backing_resolve; mount.get_size=backing_size;
+    for (int route=0; route<3; route++) for (int choice=0; choice<7; choice++) {
+        strcpy((char*)disk,"disk\nfile"); input_size=image_size=9;
+        window_t* w=kmalloc(sizeof(*w)); CHECK(w);
+        memset_asm(w,0,sizeof(*w)); w->id=7; w->w=600; w->h=400;
+        w->reserved=editor_create_ctx(); w->on_close=release_editor; w->can_close=editor_win_can_close;
+        windows[0]=w; window_count=1; focused_id=7;
+        editor_win_t* ed=w->reserved; seed(ed);
+        if (route==2) ed->filename[0]=0;
+        editor_win_t* before=malloc(sizeof(*before)); CHECK(before);
+        memcpy_asm(before,ed,sizeof(*ed)); before->selecting=0;
+        int old_writes=writes, old_opens=opens;
+        reload_request(w,route);
+        CHECK(ed->close_pending && ed->reload_pending && ed->modified);
+        CHECK(!strcmp(ed->reload_path,route==2 ? "/home/test.txt" : "/mnt/original.txt"));
+        CHECK(ed->undo_n==before->undo_n && same(ed->lines,before->lines,sizeof(ed->lines)));
+        CHECK(opens==old_opens+(route==2) && writes==old_writes && !handles);
+        editor_win_key(w,'x'); editor_win_key(w,26); reload_request(w,route);
+        window_request_close(7); window_process_close_requests();
+        CHECK(windows[0]==w && ed->reload_pending && !w->close_requested);
+        CHECK(ed->selection_active==before->selection_active && ed->cursor_x==before->cursor_x);
+        if (choice==0) {
+            editor_win_key(w,27);
+            /* Ignore the inactive path's stale bytes and cursor blink tick only. */
+            memcpy_asm(before->reload_path,ed->reload_path,sizeof(ed->reload_path));
+            before->cursor_tick=ed->cursor_tick;
+            CHECK(state_preserved(ed,before));
+        } else if (choice<=3) {
+            no_alloc=choice==1; write_mode=choice==2 ? 1 : choice==3 ? 2 : 0;
+            editor_win_key(w,'s');
+            CHECK(ed->close_pending && ed->reload_pending && ed->close_failed && ed->modified);
+            CHECK(ed->undo_n==before->undo_n && same(ed->lines,before->lines,sizeof(ed->lines)));
+            CHECK(!w->close_requested && windows[0]==w && !handles);
+            no_alloc=write_mode=0; editor_win_key(w,27);
+            CHECK(!ed->close_pending && !ed->reload_pending && !ed->close_discard);
+        } else if (choice==4) {
+            /* The target disappears after the prompt; Discard must not erase RAM. */
+            no_open=1; editor_win_key(w,'d'); no_open=0;
+            CHECK(ed->modified && ed->undo_n==before->undo_n);
+            CHECK(same(ed->lines,before->lines,sizeof(ed->lines)) && !strcmp(ed->filename,before->filename));
+            CHECK(writes==old_writes && !ed->close_pending && !ed->close_discard);
+            /* A later Close must still ask, even after a failed Discard/reload. */
+            window_request_close(7); window_process_close_requests();
+            CHECK(windows[0]==w && ed->close_pending && !ed->reload_pending);
+            editor_win_key(w,27);
+        } else if (choice==5) {
+            editor_win_key(w,'d');
+            CHECK(!ed->modified && !ed->undo_n && !strcmp(ed->lines[0],"disk"));
+            CHECK(writes==old_writes && !strcmp(ed->filename,route==2 ? "/home/test.txt" : "/mnt/original.txt"));
+        } else {
+            /* VFS write mock updates only the named target, never the fallback file. */
+            editor_win_key(w,19);
+            CHECK(writes==old_writes+1 && !ed->modified && !ed->undo_n);
+            CHECK(!strcmp(saved_path,route==2 ? "/mnt/home/test/untitled.txt" : "/mnt/original.txt"));
+            CHECK(!strcmp(ed->filename,route==2 ? "/home/test.txt" : "/mnt/original.txt"));
+            CHECK(!strcmp(ed->lines[0],route==2 ? "disk" : "previous"));
+        }
+        CHECK(windows[0]==w && !ed->close_pending && !ed->reload_pending && !w->close_requested);
+        editor_win_pressed(w,10,10,1); CHECK(!ed->selecting);
+        window_destroy(7); free(before);
+        CHECK(!live_allocs && !guard_error && !handles && !bad_fd);
+    }
+    /* Clean documents reload immediately; malformed input preserves a dirty one. */
+    window_t w; memset_asm(&w,0,sizeof(w)); w.w=600; w.h=400;
+    editor_win_t* ed=editor_create_ctx(); w.reserved=ed; seed(ed); ed->modified=0;
+    strcpy((char*)disk,"clean"); input_size=image_size=5;
+    reload_request(&w,0); CHECK(!ed->close_pending && !strcmp(ed->lines[0],"clean"));
+    ed->modified=1; editor_push_undo(ed);
+    reload_request(&w,1); disk[1]=0; editor_win_key(&w,'d');
+    CHECK(ed->modified && ed->undo_n==1 && !strcmp(ed->lines[0],"clean"));
+    editor_win_close(&w); kfree(ed);
+    CHECK(!live_allocs && !guard_error && !handles && !bad_fd);
+    close(output_fd); printf("PASS %d editor reload checks\n",checks); return 0;
+}
+'''
+
 def extract(source, signature):
     start = source.index(signature)
     end = source.index('\n}\n', start) + 3
@@ -116,6 +206,7 @@ def extract(source, signature):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare-ref')
+    parser.add_argument('--compare-reload-ref')
     args = parser.parse_args()
     vfs = (ROOT/'kernel/fs/vfs.c').read_text()
     paths = function_source(vfs, 'join_mount_relative')+'\n'+function_source(vfs, 'vfs_realpath')
@@ -128,8 +219,12 @@ def main():
     queue = extract(compositor, 'void window_request_close(int id) {')+'\n'+extract(compositor,'static int window_process_close_requests(void) {')
     with tempfile.TemporaryDirectory(prefix='nyx-editor-close-') as temp:
         work = Path(temp)
-        def run(label, destroy_body, queue_body):
-            src = work/(label+'.c'); src.write_text(base+REGISTRY+destroy_body+queue_body+CASES)
+        def run(label, destroy_body, queue_body, editor_source=None, reload=False):
+            source = base if editor_source is None else base.replace(str(ROOT/'kernel/gui/apps/editor_win.c'),str(editor_source))
+            if reload:
+                source = source.replace('return (int)write(output_fd, data, len);',
+                    'if (!write_mode && !strcmp(path, "/mnt/original.txt")) { memcpy_asm(input_data,data,len); input_size=image_size=len; }\n    return (int)write(output_fd, data, len);')
+            src = work/(label+'.c'); src.write_text(source+REGISTRY+destroy_body+queue_body+(RELOAD_CASES if reload else CASES))
             binary = work/label
             subprocess.run(['gcc','-std=gnu99','-O0','-ffreestanding','-Wall','-Wextra','-Werror',
                 '-ffunction-sections','-fdata-sections','-no-pie','-Wl,--gc-sections','-fsanitize=address,undefined',
@@ -137,6 +232,14 @@ def main():
             return subprocess.run([str(binary)],capture_output=True,text=True)
         result=run('current',destroy,queue); print(result.stdout+result.stderr,end='')
         if result.returncode: raise SystemExit(result.returncode)
+        result=run('reload',destroy,queue,reload=True); print(result.stdout+result.stderr,end='')
+        if result.returncode: raise SystemExit(result.returncode)
+        if args.compare_reload_ref:
+            old_source=work/'old-editor.c'
+            old_source.write_text(subprocess.check_output(['git','show',args.compare_reload_ref+':kernel/gui/apps/editor_win.c'],cwd=ROOT,text=True))
+            result=run('reload-baseline',destroy,queue,editor_source=old_source,reload=True)
+            assert result.returncode and 'ed->close_pending && ed->reload_pending && ed->modified' in result.stdout,result.stdout+result.stderr
+            print('PASS baseline reload loses dirty buffer without confirmation')
         if args.compare_ref:
             old=subprocess.check_output(['git','show',args.compare_ref+':kernel/gui/core/compositor.c'],cwd=ROOT,text=True)
             assert 'window_destroy(hit->id);' in old and 'window_destroy(awin->id);' in old

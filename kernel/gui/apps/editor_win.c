@@ -393,11 +393,22 @@ done:
 
 int editor_win_can_close(window_t* win) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (ed && ed->close_pending && ed->reload_pending) return 0;
     if (!ed || !ed->modified || ed->close_discard) return 1;
     if (!ed->close_pending) ed->close_failed = 0;
     ed->close_pending = 1;
     ed->selecting = 0;
     return 0;
+}
+
+static void editor_request_reload(window_t* win, const char* path) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (ed->close_pending) return;
+    if (!ed->modified) { editor_open(ed, path); return; }
+    snprintf(ed->reload_path, sizeof(ed->reload_path), "%s", path);
+    ed->reload_pending = ed->close_pending = 1;
+    ed->close_failed = ed->close_discard = ed->selecting = 0;
+    snprintf(ed->status, sizeof(ed->status), "Reload: save, discard or cancel");
 }
 
 static void editor_close_choice(window_t* win, int choice) {
@@ -406,14 +417,23 @@ static void editor_close_choice(window_t* win, int choice) {
     if (choice == 0) {
         editor_save(ed);
         if (ed->modified) { ed->close_failed = 1; return; }
-    } else if (choice == 1) {
-        ed->close_discard = 1;
-    } else {
+    } else if (choice != 1) {
+        snprintf(ed->status, sizeof(ed->status), "%s cancelled",
+                 ed->reload_pending ? "Reload" : "Close");
         ed->close_pending = ed->close_discard = ed->close_failed = 0;
+        ed->reload_pending = 0;
+        ed->reload_path[0] = 0;
         win->close_requested = 0;
-        snprintf(ed->status, sizeof(ed->status), "Close cancelled");
         return;
     }
+    if (ed->reload_pending) {
+        ed->reload_pending = ed->close_pending = ed->close_failed = 0;
+        win->close_requested = 0;
+        editor_open(ed, ed->reload_path);
+        ed->reload_path[0] = 0;
+        return;
+    }
+    if (choice == 1) ed->close_discard = 1;
     window_request_close(win->id);
 }
 
@@ -434,7 +454,8 @@ static void editor_draw_close(window_t* win) {
     int x, y, w;
     editor_close_box(win, &x, &y, &w);
     fb_fill_rect(x, y, w, 80, THEME_WINDOW_BG);
-    const char* caption = ed->close_failed ? "Save failed" : "Save changes?";
+    const char* caption = ed->close_failed ? "Save failed" :
+                          ed->reload_pending ? "Reload file?" : "Save changes?";
     font_draw_string(x + (w - (int)strlen(caption) * FONT_WIDTH) / 2, y + 4,
                      caption, THEME_TEXT, THEME_WINDOW_BG);
     const char* labels[] = {"Save (S)", "Discard(D)", "Cancel Esc"};
@@ -578,7 +599,7 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
                     int fd = vfs_open(paths[i], 0, 0);
                     if (fd >= 0) {
                         vfs_close(fd);
-                        editor_open(ed, paths[i]);
+                        editor_request_reload(win, paths[i]);
                         found = 1;
                         break;
                     }
@@ -586,7 +607,7 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
                 if (!found)
                     snprintf(ed->status, sizeof(ed->status), "No file found. Type path and press Ctrl+O");
             } else {
-                editor_open(ed, ed->filename);
+                editor_request_reload(win, ed->filename);
             }
             return;
         }
@@ -1098,7 +1119,7 @@ void editor_win_key(window_t* win, int key) {
     if (key == 0x0F) { // Ctrl+O
         // Open: if filename ends in .txt or similar, open it
         if (ed->filename[0]) {
-            editor_open(ed, ed->filename);
+            editor_request_reload(win, ed->filename);
         } else {
             snprintf(ed->status, sizeof(ed->status), "Save file first to set filename, then Ctrl+O to reopen");
         }

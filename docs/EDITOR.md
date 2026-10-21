@@ -36,9 +36,53 @@ editor test could cancel while the real key could not.
 The compositor queues user close requests and resolves them after input
 callbacks return. This keeps the window context alive through both click and
 held-press callbacks. `window_destroy` remains the forced cleanup operation;
-the confirmation does not cover logout, shutdown, forced destruction or Open /
-Ctrl+O reload. Save remains non-atomic and new unnamed documents retain the
+the close confirmation does not cover logout, shutdown or forced destruction.
+Open / Ctrl+O has a separate pending reload decision since 6.5.228 (below).
+Save remains non-atomic and new unnamed documents retain the
 existing `untitled.txt` default; this does not add Save As or crash recovery.
+
+## Reloading a modified document (6.5.228)
+
+Toolbar Open and Ctrl+O ask Save/Discard/Cancel before replacing modified text.
+Clean documents reload directly. Cancel retains the text, filename, selection
+and undo history. Save must complete before the reload proceeds; failed writes
+or allocation leave the prompt and dirty document intact. Discard reloads
+without saving, but an unavailable or invalid target still leaves the edited
+buffer and undo intact. After a failed reload, closing the window asks again.
+
+The pending target is captured when the prompt opens. In an unnamed document,
+Open keeps its existing fallback search (`/home/test.txt`, `/test.txt`,
+`/shell.txt`, `/README.txt`). Save writes the unnamed document to the usual
+`untitled.txt` path before loading that captured fallback; it does not redirect
+the reload to the new save path. Ctrl+O still requires an established filename.
+This is not a file picker or Save As.
+
+The prompt reads `Reload file?`. While it is open, X or Alt+F4 keeps the pending
+reload decision instead of changing its action. Cancel the reload before
+requesting Close. A completed reload keeps the same window alive through the
+remaining input callbacks; it never queues window destruction.
+
+The existing `tools/test_editor_close.py` now also runs **304 reload checks**
+under ASan/UBSan with the real editor callbacks, real deferred-close functions,
+simulated VFS and guarded allocator. It covers named keyboard/button routes,
+unnamed fallback capture, all choices, write/allocation failure, disappearing
+and malformed input, clean reload, selection/undo retention and competing close
+requests. The 6.5.227 editor fails the dirty-reload confirmation assertion.
+The 72 close, 76 I/O, 53 clipboard, 961 compositor-close and 43 presentation
+checks still pass. GCC 14 builds without warnings; QEMU passes 230 kernel tests
+and reaches login with four CPUs.
+
+A four-CPU, 5 GiB QEMU GUI run exercises physical Ctrl+O and toolbar Open.
+Five extracted EXT2 outputs match exactly: Cancel retains a 12-byte CRLF edit;
+Discard reload followed by one appended byte produces 13 bytes; Save/reload
+followed by an appended byte produces 14 bytes. A denied RAM-file Save blocks
+reload and retains edits until write permission is restored. Removing the
+reload target while its prompt is open also retains edited text after Discard.
+Both recovered RAM files are copied to EXT2 and match their 12-byte expected
+contents. Screenshots confirm the prompt, decisions and failed-save/open status;
+there are no kernel fault markers and the VM is closed. Unnamed fallback and
+malformed-input combinations have host coverage only. This is not a new reboot,
+power-loss, hardware or long-session qualification.
 
 ## Cold-boot verification on 6.5.226
 
