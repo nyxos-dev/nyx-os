@@ -341,6 +341,25 @@ The immediate data and desktop priorities are:
     delivered back to its original window; global input ownership, synchronous
     foreground stalls and the existing 4096-byte kernel pipe limit remain open.
 
+37. Development version 6.5.232 stops a kernel-shell pipe before running its
+    consumer when capture exceeds 4096 bytes or the temporary file cannot be
+    opened/written completely. It also rejects a right-hand command that would
+    be shortened when appending the temporary path. The existing terminal runner
+    passes 30 capture, 16 pipeline-dispatch and 229 renderer sanitizer checks;
+    injected open/short-write failures leave the consumer uncalled. Existing cat
+    checks, warning-free GCC 14, RTC/ELF contracts, 230 kernel tests and four-CPU
+    login pass. In actual GUI tests, the old kernel replaces a destination with
+    a truncated 4096-byte prefix from a 4097-byte producer. The corrected kernel
+    preserves the original 15-byte destination. A non-writable temporary path
+    also skips the consumer and preserves its 11-byte destination; exact 4096-byte
+    and empty captures remain usable. Six extracted files match, subsequent input
+    and window dragging work, and both VMs close. Offline verification corrected
+    the baseline script's mistaken expectation that cat would truncate its target
+    after a source read error; that particular target was already preserved.
+    See [SHELL_ENTRY.md](SHELL_ENTRY.md). The producer can already have side effects,
+    the temporary file is not transactional, and later semicolon segments still
+    execute. Per-terminal background routing remains planned work.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

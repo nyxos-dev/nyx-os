@@ -96,6 +96,41 @@ survivor and four output files. Both test modes pass and the VM is closed.
 The earlier isolated candidate trial is separate from this packaged-kernel
 result. This increment adds no GUI, hardware or long-duration qualification.
 
+## Kernel-shell pipe failures (6.5.232)
+
+The kernel shell used by the GUI terminal supports a single buffered pipe. It
+captures the left command, writes that output to `/tmp/pipe`, and appends the
+temporary path as the right command's file argument. This is separate from the
+descriptor-based pipelines implemented by `/sh.elf`.
+
+The capture holds at most 4096 bytes. Exactly 4096 bytes and an empty capture
+remain valid. Any additional eligible byte marks the capture as failed;
+`pipe_stop()` returns -1 and disables capture. The kernel shell then reports
+`pipe: output exceeds 4096 bytes; right command not run`, without opening the
+temporary file or running the consumer. A new capture clears the error state.
+Unrelated background output, already excluded by 6.5.231, cannot overflow it.
+
+Opening the temporary file must succeed, and a nonempty capture must be written
+completely in one existing VFS write. A negative, zero or short write aborts the
+consumer after closing the handle. These failures therefore do not open or
+truncate a redirection destination belonging to the right command. Right-hand
+command text longer than 245 bytes is rejected before running the producer,
+leaving room for the appended temporary path and terminator.
+
+The existing terminal host runner checks exact capacity, overflow and reset in
+the actual capture implementation, and exercises the actual kernel pipeline
+dispatcher with injected open/write failures. The existing userspace `cat`
+streaming tests remain applicable. Source references:
+`kernel/drivers/video/screen.c` and `kernel/core/kernel.c`.
+
+This does not implement streaming pipes, transactional commands or crash-safe
+temporary files. The left command has already run when capture or I/O fails;
+the temporary file may have been truncated or partly written. Later semicolon
+segments still run. The kernel command entry remains void rather than exposing
+a new shell exit-status contract. Physical storage callbacks may not report
+every hardware failure, and concurrent reuse of `/tmp/pipe` remains outside this
+bounded fix. The existing top-level command length limit is unchanged.
+
 ## Remaining limits
 
 The first target trial exposed the earlier 63-byte `execve` truncation and failed

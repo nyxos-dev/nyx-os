@@ -223,9 +223,10 @@ callback meets that requirement. This does not serialize every framebuffer draw.
 Output excluded from both captures still goes to serial/VGA. It is not queued for
 the originating terminal. Per-terminal background routing, input ownership and
 asynchronous foreground execution remain future work; foreground jobs can still
-stall desktop input. The kernel pipe retains its existing 4096-byte truncation
-limit, and descriptor-based userspace pipes/redirection retain their existing
-semantics.
+stall desktop input. The kernel pipe retains its 4096-byte capacity; since
+6.5.232, overflow aborts the consumer instead of passing truncated output (see
+[SHELL_ENTRY.md](SHELL_ENTRY.md)). Descriptor-based userspace pipes/redirection
+retain their existing semantics.
 
 The existing `threads` diagnostic has `--capture` for stdout, stderr, legacy print,
 clone, fork and exec output. Its separate `--capture-wait` probe emits a marker

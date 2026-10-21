@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.231"
+#define KERNEL_VERSION "6.5.232"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1055,7 +1055,7 @@ uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg);
 void set_terminal_color(uint8_t color);
 uint8_t get_terminal_color(void);
 void pipe_start(void);
-int pipe_stop(void);
+int pipe_stop(void); // captured length, or -1 if output exceeded the fixed buffer
 const char* pipe_get_data(void);
 int pipe_get_len(void);
 

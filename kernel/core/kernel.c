@@ -1032,11 +1032,28 @@ static void execute_segment(char* seg) {
     *bar = '\0';
     char* right = bar + 1;
     while (*right == ' ') right++;
+    if (strlen(right) > 245) {
+        printf("pipe: right command is too long\n");
+        return;
+    }
     pipe_start();                                  // capture the left command's stdout
     execute_one_command(seg);
     int plen = pipe_stop();
+    if (plen < 0) {
+        printf("pipe: output exceeds 4096 bytes; right command not run\n");
+        return;
+    }
     int fd = vfs_open("/tmp/pipe", O_CREAT | O_TRUNC, 0);
-    if (fd >= 0) { if (plen > 0) vfs_pwrite(fd, pipe_get_data(), (uint32_t)plen, 0); vfs_close(fd); }
+    if (fd < 0) {
+        printf("pipe: cannot open temporary file; right command not run\n");
+        return;
+    }
+    int written = plen ? vfs_pwrite(fd, pipe_get_data(), (uint32_t)plen, 0) : 0;
+    vfs_close(fd);
+    if (written != plen) {
+        printf("pipe: cannot write complete temporary file; right command not run\n");
+        return;
+    }
     // Right command + " /tmp/pipe": execute_one_command re-tokenizes, so the temp file
     // becomes the right command's last argument (readers wc/cat/grep/sort take a file).
     char rbuf[256];

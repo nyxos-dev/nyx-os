@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the real terminal renderer and ANSI state with a recording framebuffer."""
+"""Exercise terminal rendering, capture ownership and kernel pipe failure handling."""
 from pathlib import Path
 import argparse
 import subprocess
@@ -144,10 +144,18 @@ int main(void) {
     current = &owner; set_putchar_hook(NULL); clear_recording(); current = &later;
     screen_putchar('Z'); CHECK(hook_n == 0 && serial_n == 1);
 #ifndef BASELINE
-    // Full kernel-pipe behavior stays bounded at its existing 4096-byte limit.
+    // Oversized captures fail, while the exact boundary remains usable.
     current = &owner; pipe_start(); console_capture_inherit(&child); current = &child;
-    for (int i=0; i<4100; i++) screen_putchar('p');
+    for (int i=0; i<4096; i++) screen_putchar('p');
     current = &owner; CHECK(pipe_stop() == 4096);
+    pipe_start(); console_capture_inherit(&child); current = &child;
+    for (int i=0; i<4097; i++) screen_putchar('p');
+    current = &owner; CHECK(pipe_stop() == -1);
+    CHECK(pipe_get_len() == 4096);
+    pipe_start(); CHECK(pipe_stop() == 0);
+    pipe_start(); current = &unrelated;
+    for (int i=0; i<4100; i++) screen_putchar('u');
+    current = &owner; CHECK(pipe_stop() == 0);
     // No token wrap can make a stale descendant eligible again.
     capture_sequence = ~(uint64_t)0 - 1;
     set_putchar_hook(hook); console_capture_inherit(&child);
@@ -193,9 +201,73 @@ def capture_suite(directory, reference=None):
     return subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
 
 
+PIPE_DISPATCH = r'''
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#define O_CREAT 64
+#define O_TRUNC 512
+static int length, open_result, write_result;
+static int calls, starts, stops, opens, writes, closes, checks;
+static char command[256];
+static char* shell_find_pipe(char* s) { return strchr(s, '|'); }
+static void execute_one_command(const char* s) { calls++; snprintf(command,sizeof command,"%s",s); }
+static void pipe_start(void) { starts++; }
+static int pipe_stop(void) { stops++; return length; }
+static const char* pipe_get_data(void) { return "data"; }
+static int vfs_open(const char* path, int flags, int mode) {
+    (void)path; (void)flags; (void)mode; opens++; return open_result;
+}
+static int vfs_pwrite(int fd, const void* data, uint32_t count, uint32_t offset) {
+    (void)fd; (void)data; (void)count; (void)offset; writes++; return write_result;
+}
+static void vfs_close(int fd) { (void)fd; closes++; }
+@SEGMENT@
+#define CHECK(x) do { checks++; if (!(x)) { printf("FAIL pipe dispatch: %s\n",#x); return 1; } } while (0)
+static void run(int len,int fd,int written) {
+    calls=starts=stops=opens=writes=closes=0;
+    length=len;open_result=fd;write_result=written;
+    char segment[]="left | cat > protected.txt"; execute_segment(segment);
+}
+int main(void) {
+    run(-1,3,4); CHECK(calls==1 && opens==0 && writes==0 && closes==0);
+    CHECK(starts==1 && stops==1);
+    run(4,-1,4); CHECK(calls==1 && opens==1 && writes==0 && closes==0);
+    for (int n=-1;n<4;n++) {
+        run(4,3,n); CHECK(calls==1 && writes==1 && closes==1);
+    }
+    run(4,3,5); CHECK(calls==1 && writes==1 && closes==1);
+    run(0,3,0); CHECK(calls==2 && writes==0 && closes==1);
+    CHECK(!strcmp(command,"cat > protected.txt /tmp/pipe"));
+    run(4,3,4); CHECK(calls==2 && writes==1 && closes==1);
+    run(4096,3,4096); CHECK(calls==2 && writes==1 && closes==1);
+    calls=starts=stops=0; char plain[]="normal"; execute_segment(plain);
+    CHECK(calls==1 && starts==0 && stops==0 && !strcmp(command,"normal"));
+    char longcmd[256]; longcmd[0]='|'; memset(longcmd+1,'a',246);longcmd[247]=0;
+    calls=starts=0;execute_segment(longcmd);CHECK(calls==0 && starts==0);
+    longcmd[0]='|';longcmd[246]=0;calls=starts=0;execute_segment(longcmd);
+    CHECK(calls==2 && starts==1 && strlen(command)==255);
+    printf("PASS %d kernel pipe dispatch checks\n",checks);return 0;
+}
+'''
+
+
+def pipe_dispatch_suite(directory, reference=None):
+    source = (subprocess.check_output(['git','show',reference+':kernel/core/kernel.c'],cwd=ROOT,text=True)
+              if reference else (ROOT/'kernel/core/kernel.c').read_text(encoding='utf-8'))
+    start=source.index('static void execute_segment(char* seg) {')
+    end=source.index('\nstatic int shell_dispatch_selftest',start)
+    path=directory/'dispatch.c';binary=directory/'dispatch'
+    path.write_text(PIPE_DISPATCH.replace('@SEGMENT@',source[start:end]),encoding='utf-8')
+    subprocess.run(['gcc','-std=gnu99','-O1','-Wall','-Wextra','-Werror','-no-pie',
+                    '-fsanitize=address,undefined',str(path),'-o',str(binary)],check=True)
+    return subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare-capture-ref')
+    parser.add_argument('--compare-pipe-ref')
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='nyx-terminal-palette-') as temp:
         directory = Path(temp)
@@ -212,6 +284,13 @@ def main():
             result=capture_suite(directory,args.compare_capture_ref)
             assert result.returncode and 'FAIL capture: hook_n == 0 && serial_n == 1' in result.stdout,result.stdout+result.stderr
             print('PASS baseline routes an expired child into the next terminal capture')
+        result=pipe_dispatch_suite(directory)
+        if result.returncode: raise RuntimeError(result.stdout+result.stderr)
+        print(result.stdout.strip())
+        if args.compare_pipe_ref:
+            result=pipe_dispatch_suite(directory,args.compare_pipe_ref)
+            assert result.returncode and 'FAIL pipe dispatch: calls==1 && opens==0' in result.stdout,result.stdout+result.stderr
+            print('PASS baseline runs the right command after failed capture')
 
 
 if __name__ == '__main__':

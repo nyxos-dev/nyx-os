@@ -18,6 +18,7 @@ static uint8_t terminal_color = 0x0F;
 static char pipe_buffer[4096];
 static int pipe_pos = 0;
 static int pipe_active = 0;
+static int pipe_overflow = 0;
 
 // Terminal capture hook
 static int (*putchar_hook)(int c) = NULL;
@@ -63,6 +64,7 @@ void pipe_start(void) {
     pipe_owner_pid = owner ? owner->pid : 0;
     pipe_capture_id = capture_next_id();
     pipe_pos = 0;
+    pipe_overflow = 0;
     pipe_active = 1;
     spin_unlock_irqrestore(&capture_lock, flags);
 }
@@ -72,7 +74,7 @@ int pipe_stop(void) {
     pipe_active = 0;
     pipe_capture_id = 0;
     if (pipe_pos < 4096) pipe_buffer[pipe_pos] = '\0';
-    int count = pipe_pos;
+    int count = pipe_overflow ? -1 : pipe_pos;
     spin_unlock_irqrestore(&capture_lock, flags);
     return count;
 }
@@ -85,6 +87,7 @@ static int capture_putchar(int c) {
     if (pipe_active && capture_matches(proc, pipe_owner_pid, pipe_capture_id,
                                       proc ? proc->pipe_capture_id : 0)) {
         if (pipe_pos < 4096) pipe_buffer[pipe_pos++] = (char)c;
+        else pipe_overflow = 1;
         spin_unlock_irqrestore(&capture_lock, flags);
         return 1;
     }
