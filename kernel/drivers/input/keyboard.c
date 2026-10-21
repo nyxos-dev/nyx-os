@@ -16,19 +16,25 @@ static int e0_prefix = 0;          // Flag para el prefijo 0xE0
 static int e1_swallow = 0;         // Pause/Break (0xE1 1D 45 / 0xE1 9D C5): bytes left to eat
 
 // ------------------------------------------------------------
-// Buffer circular para caracteres (ISR -> getchar)
+// One cooked queue preserves the arrival order of bytes and navigation keys.
 // ------------------------------------------------------------
 #define KBD_BUFFER_SIZE 256
-volatile char kbd_buffer[KBD_BUFFER_SIZE];
-volatile int kbd_head = 0;
-volatile int kbd_tail = 0;
+// Layout bytes can overlap KEY_* values; tag them until the reader chooses its API.
+#define KBD_BYTE_TAG 0x10000
+static volatile int kbd_buffer[KBD_BUFFER_SIZE];
+static volatile int kbd_head = 0;
+static volatile int kbd_tail = 0;
 
-static volatile int kbd_keycodes[KBD_BUFFER_SIZE];
-static volatile int kbd_kc_head = 0;
-static volatile int kbd_kc_tail = 0;
+static void kbd_enqueue(int key) {
+    int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
+    if (key && next != kbd_tail) {
+        kbd_buffer[kbd_head] = key;
+        kbd_head = next;
+    }
+}
 
-// Raw key-EVENT ring (v5.9.30 — the DOOM DG_GetKey enabler). Unlike the two rings
-// above (cooked ASCII / press-only keycodes), this carries EVERY make AND break so a
+// Raw key-EVENT ring (v5.9.30 — the DOOM DG_GetKey enabler). Unlike the cooked queue
+// above (bytes / press-only keycodes), this carries EVERY make AND break so a
 // fullscreen app / game knows when a key is released. Codes are LAYOUT-INDEPENDENT
 // Set-1 scancodes (physical key positions): bits 0-6 the scancode, bit 7 = E0-extended
 // (arrows / nav). Packed event = (pressed << 8) | code. Filled by the IRQ handler and
@@ -38,7 +44,7 @@ static volatile int kbd_ev_head = 0;
 static volatile int kbd_ev_tail = 0;
 static int kbd_ev_e0 = 0;                  // E0 seen on the previous scancode byte
 
-// SMP: both rings above (chars for stdin, keycodes for window management) and the
+// SMP: the cooked and raw event rings above and the
 // modifier state machine inside scancode_to_ascii become shared the moment
 // smpbalance spreads work off the BSP. The producer is the IRQ1 handler; consumers
 // (getchar_poll, getkey_poll) can run on any AP, and getchar_poll's hardware-poll
@@ -162,7 +168,7 @@ void init_keyboard(void) {
 // Conversión de scancode a carácter
 // ============================================================
 // CALLER MUST HOLD kbd_lock: this updates the shared modifier state machine
-// (shift/ctrl/alt/caps/altgr/e0) and enqueues into the keycode ring, and it runs
+// (shift/ctrl/alt/caps/altgr/e0) and enqueues into the cooked queue, and it runs
 // from both the IRQ handler and getchar_poll's poll-direct fallback — i.e. from
 // potentially two cores once smpbalance is on.
 char scancode_to_ascii(uint8_t sc) {
@@ -177,7 +183,7 @@ char scancode_to_ascii(uint8_t sc) {
     // --- 0xE0 prefix (extended keys) ---
     // Checked on the RAW byte, before the press-bit masking below: 0xE0 & 0x7F is
     // 0x60, so the old post-mask comparison could never match and extended keys
-    // (arrows/home/end) never reached the keycode ring at all.
+    // (arrows/home/end) never reached the cooked queue at all.
     if (sc == 0xE0) {
         e0_prefix = 1;
         return 0;
@@ -210,13 +216,7 @@ char scancode_to_ascii(uint8_t sc) {
             case 0x52: keycode = KEY_INSERT;break;
             case 0x53: keycode = KEY_DEL;   break;
         }
-        if (keycode && pressed) {
-            int next = (kbd_kc_head + 1) % KBD_BUFFER_SIZE;
-            if (next != kbd_kc_tail) {
-                kbd_keycodes[kbd_kc_head] = keycode;
-                kbd_kc_head = next;
-            }
-        }
+        if (pressed) kbd_enqueue(keycode);
         return 0;
     }
 
@@ -253,13 +253,7 @@ char scancode_to_ascii(uint8_t sc) {
             case 0x57: fkey = KEY_F11; break;  case 0x58: fkey = KEY_F12; break;
         }
         if (fkey) {
-            if (pressed) {
-                int next = (kbd_kc_head + 1) % KBD_BUFFER_SIZE;
-                if (next != kbd_kc_tail) {
-                    kbd_keycodes[kbd_kc_head] = fkey;
-                    kbd_kc_head = next;
-                }
-            }
+            if (pressed) kbd_enqueue(fkey);
             return 0;
         }
     }
@@ -279,15 +273,14 @@ char scancode_to_ascii(uint8_t sc) {
 // ============================================================
 void keyboard_irq_handler(void* unused) {
     (void)unused;
-    uint8_t st = inb(0x64);
-    if ((st & 0x21) != 0x01) return;   // OBF=1, mouse bit=0 → keyboard data; else ignore
-    uint8_t sc = inb(0x60);
-
-    // Decode + buffer under kbd_lock so a consumer on another core can't race the
-    // char ring or the modifier state. Ctrl-C/Ctrl-Z resolve to a signal delivered
-    // AFTER the lock is released (signal_send_foreground walks the process table).
     int sig = 0;
     uint64_t fl = spin_lock_irqsave(&kbd_lock);
+    uint8_t st = inb(0x64);
+    if ((st & 0x21) != 0x01) {
+        spin_unlock_irqrestore(&kbd_lock, fl);
+        return;
+    }
+    uint8_t sc = inb(0x60);
 
     // Raw key-event ring: record every make/break (with the E0 flag for extended
     // keys) so a fullscreen app polling SYS_GETKEYEVENT sees press AND release. This
@@ -304,13 +297,7 @@ void keyboard_irq_handler(void* unused) {
 
     char c = scancode_to_ascii(sc);
     c = kbd_control_char(c, ctrl_pressed, g_foreground_pid != 0, &sig);
-    if (c) {
-        int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
-        if (next != kbd_tail) {
-            kbd_buffer[kbd_head] = c;
-            kbd_head = next;
-        }
-    }
+    kbd_enqueue(c ? KBD_BYTE_TAG | (unsigned char)c : 0);
     spin_unlock_irqrestore(&kbd_lock, fl);
 
     if (sig) signal_send_foreground(sig);   // to the foreground process, lock released
@@ -319,46 +306,47 @@ void keyboard_irq_handler(void* unused) {
 // ============================================================
 // Funciones de lectura
 // ============================================================
-static inline char kbd_poll_direct(int* sig) {
-    if (inb(0x64) & 0x01) {
+static inline void kbd_poll_direct(int* sig) {
+    if ((inb(0x64) & 0x21) == 0x01) {
         uint8_t sc = inb(0x60);
         char c = scancode_to_ascii(sc);
-        return kbd_control_char(c, ctrl_pressed, g_foreground_pid != 0, sig);
+        c = kbd_control_char(c, ctrl_pressed, g_foreground_pid != 0, sig);
+        kbd_enqueue(c ? KBD_BYTE_TAG | (unsigned char)c : 0);
     }
-    return 0;
 }
 
-// poll(): 1 if getchar_poll() would return a byte now (a buffered key, an i8042
-// scancode, or serial input) without consuming it — for stdin (fd 0) readiness.
+// Readiness includes navigation keys. A pending hardware scancode may still be
+// a release/modifier rather than a cooked key; this is a non-consuming hint.
 int keyboard_has_input(void) {
     uint64_t fl = spin_lock_irqsave(&kbd_lock);
     int ring = (kbd_tail != kbd_head);       // consistent snapshot of the software ring
     spin_unlock_irqrestore(&kbd_lock, fl);
     if (ring) return 1;
-    if (inb(0x64) & 0x01) return 1;          // i8042 output buffer full (scancode waiting)
+    if ((inb(0x64) & 0x21) == 0x01) return 1; // keyboard scancode waiting
     if (inb(0x3FD) & 0x01) return 1;         // COM1 LSR bit 0: serial input available
     return 0;
 }
 
-char getchar_poll(void) {
+static int kbd_read_cooked(int bytes_only) {
     uint64_t fl = spin_lock_irqsave(&kbd_lock);
-    if (kbd_tail != kbd_head) {
-        char c = kbd_buffer[kbd_tail];
+    int sig = 0, key = 0;
+    if (kbd_tail == kbd_head) kbd_poll_direct(&sig);
+    while (kbd_tail != kbd_head) {
+        key = kbd_buffer[kbd_tail];
         kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;
-        spin_unlock_irqrestore(&kbd_lock, fl);
-        return c;
+        if (key & KBD_BYTE_TAG) { key = (char)(key & 0xFF); break; }
+        if (!bytes_only) break;
+        key = 0;
     }
-    // Ring empty: the hardware-poll fallback re-enters scancode_to_ascii (modifier
-    // state + keycode ring), so it stays under the lock; serial touches no keyboard
-    // state, so release first.
-    int sig = 0;
-    char c = kbd_poll_direct(&sig);
     spin_unlock_irqrestore(&kbd_lock, fl);
     if (sig) signal_send_foreground(sig);
-    if (c) return c;
-    c = serial_getchar_nonblock();
-    if (c == 0x7F) return '\b';
-    return c;
+    if (key) return key;
+    unsigned char c = (unsigned char)serial_getchar_nonblock();
+    return c == 0x7F ? '\b' : (char)c;
+}
+
+char getchar_poll(void) {
+    return (char)kbd_read_cooked(1);
 }
 
 char getchar(void) {
@@ -370,20 +358,9 @@ char getchar(void) {
     }
 }
 
-// Returns extended keycodes (> 0x7F) from the keycode buffer,
-// or ASCII chars from the standard buffer, or 0 if nothing.
+// Bytes and extended keycodes share arrival order; raw make/break stays separate.
 int getkey_poll(void) {
-    uint64_t fl = spin_lock_irqsave(&kbd_lock);
-    if (kbd_kc_tail != kbd_kc_head) {
-        int kc = kbd_keycodes[kbd_kc_tail];
-        kbd_kc_tail = (kbd_kc_tail + 1) % KBD_BUFFER_SIZE;
-        spin_unlock_irqrestore(&kbd_lock, fl);
-        return kc;
-    }
-    spin_unlock_irqrestore(&kbd_lock, fl);   // release before getchar_poll re-locks
-    char c = getchar_poll();
-    if (c) return c;
-    return 0;
+    return kbd_read_cooked(0);
 }
 
 // SYS_GETKEYEVENT: pop the next raw key event, or -1 if the ring is empty. The value

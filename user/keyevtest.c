@@ -50,9 +50,12 @@ static int foreground_signal_test(void) {
     return foreground_interrupts == 1 ? 0 : 1;
 }
 
-static int raw_read_test(void) {
+static int raw_read_test(int ordered) {
     const int capacities[] = {1, 2, 3, 4, 16};
     const char* expected[] = {"\033[Az", "\033[Bz", "\033[Cz", "\033[Daz", "\033[A\033[B\033[C\033[D\033[H\033[Fz"};
+    const char* mixed[] = {"a\033[Az", "a\033[Bz", "a\033[Cz", "a\033[Dz",
+                           "a\033[Ab\033[Bc\033[Cd\033[De\033[Hf\033[Fz"};
+    if (ordered) for (int i = 0; i < 5; i++) expected[i] = mixed[i];
     long previous = ttymode(TTY_RAW);
     if (previous < 0) return 1;
     int failed = 0;
@@ -84,7 +87,8 @@ static int raw_read_test(void) {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 2 && !strcmp(argv[1], "--raw-reads")) return raw_read_test();
+    if (argc == 2 && !strcmp(argv[1], "--key-order")) return raw_read_test(1);
+    if (argc == 2 && !strcmp(argv[1], "--raw-reads")) return raw_read_test(0);
     if (argc == 2 && !strcmp(argv[1], "--foreground")) return foreground_test();
     if (argc == 2 && !strcmp(argv[1], "--foreground-signal")) return foreground_signal_test();
     int p, c;

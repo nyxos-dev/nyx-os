@@ -228,10 +228,26 @@ between the listed keys; `z` is the final ordinary character in each case.
 The host canonical/raw harness checks capacities 1 through 6, guard bytes,
 pending readiness, process isolation, mode changes and syscall scratch-state
 restoration under sanitizers. This does not give each terminal an input queue.
-The existing keyboard decoder also prioritises its extended-key ring over its
-ASCII ring: buffered mixed letter/arrow order can still change. A GUI trial
-exposed that separate limitation; the diagnostic sequences above avoid confusing
-it with loss at the raw-read byte boundary.
+The separate keyboard ordering defect found during that trial is corrected in
+6.5.235: one cooked PS/2 queue holds bytes and navigation/function keys in arrival
+order. IRQ reads and polling fallback hold the same lock through decode and enqueue.
+Buffered navigation also counts as input for `poll` and the compositor's idle check.
+
+Byte-only readers (including login and canonical stdin) consume and ignore navigation
+keys; they cannot leave an old arrow queued for a later GUI client. Internal byte tags
+preserve Spanish high-bit layout bytes in this path. The public `readkey` integer
+encoding is unchanged and is not a Unicode interface. Physical make/break events
+remain independent; this change does not add polling-fallback events to that API.
+
+`exec /keyevtest.elf --key-order` checks mixed sequences at capacities 1, 2, 3, 4
+and 16. After each ready message enter respectively: `a, Up, z`; `a, Down, z`;
+`a, Right, z`; `a, Left, z`; then `a, Up, b, Down, c, Right, d, Left, e, Home,
+f, End, z`. Do not type Enter. The six-second pause lets the keys queue first.
+
+The cooked queue holds 255 entries shared by bytes and navigation; new entries
+are dropped when it is full. There is no lossless-input guarantee or per-terminal
+input ownership. Serial remains a fallback after queued PS/2 input; no global
+arrival order between the two devices is promised.
 
 *Cross-references: [ARCHITECTURE.md](ARCHITECTURE.md) (privilege model), [PROCESS.md](PROCESS.md)
 (scheduling, fork/exec, signals), [FILESYSTEM.md](FILESYSTEM.md) (the VFS), [NETWORK.md](NETWORK.md)

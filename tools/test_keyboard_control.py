@@ -28,9 +28,12 @@ uint32_t g_foreground_pid;
 
 static int ready, bad_lock, signal_count, last_signal;
 static uint8_t scancode;
+static unsigned char serial_byte;
+static int serial_ready;
 static uint8_t test_inb(uint16_t port) {
     if (port == 0x64) return (uint8_t)ready;
-    if (port == 0x60) { ready = 0; return scancode; }
+    if (port == 0x3FD) return (uint8_t)serial_ready;
+    if (port == 0x60) { if (!kbd_lock.locked) bad_lock = 1; ready = 0; return scancode; }
     return 0;
 }
 static uint64_t test_lock(spinlock_t* lock) {
@@ -46,7 +49,7 @@ void signal_send_foreground(int sig) {
     if (kbd_lock.locked) bad_lock = 1;
     signal_count++; last_signal = sig;
 }
-char serial_getchar_nonblock(void) { return 0; }
+char serial_getchar_nonblock(void) { char c = (char)serial_byte; serial_byte = 0; serial_ready = 0; return c; }
 static int key(uint8_t sc, int irq) {
     ready = 1; scancode = sc;
     if (irq) keyboard_irq_handler(NULL);
@@ -85,6 +88,65 @@ static int sequence(int ctrl_irq, int char_irq, int foreground) {
     CHECK(signal_count == 2 * foreground && !bad_lock && !kbd_lock.locked);
     return 0;
 }
+static void irq_sc(unsigned char sc) {
+    ready = 1; scancode = sc; keyboard_irq_handler(NULL);
+}
+static void irq_key(unsigned char sc, int extended) {
+    if (extended) irq_sc(0xE0);
+    irq_sc(sc);
+    if (extended) irq_sc(0xE0);
+    irq_sc(sc | 0x80);
+}
+static int ordering(void) {
+    keyboard_layout = 0; g_foreground_pid = 0;
+    irq_key(0x1E, 0); irq_key(0x4B, 1); irq_key(0x2C, 0);
+    CHECK(getkey_poll() == 'a'); CHECK(getkey_poll() == KEY_LEFT);
+    CHECK(getkey_poll() == 'z'); CHECK(getkey_poll() == 0);
+    irq_key(0x48, 1);
+    CHECK(keyboard_has_input() == 1);
+    CHECK(getkey_poll() == KEY_UP); CHECK(keyboard_has_input() == 0);
+    /* Wrap repeatedly, including a full ring that rejects the newest key. */
+    for (int cycle = 0; cycle < 8; cycle++) {
+        for (int i = 0; i < 255; i++) irq_key(i % 2 ? 0x4B : 0x1E, i % 2);
+        irq_key(0x2C, 0);
+        for (int i = 0; i < 255; i++) CHECK(getkey_poll() == (i % 2 ? KEY_LEFT : 'a'));
+        CHECK(getkey_poll() == 0);
+    }
+    /* Byte-only login/canonical readers discard navigation; never leak it later. */
+    irq_key(0x4B, 1); irq_key(0x1E, 0); irq_key(0x3B, 0);
+    CHECK(getchar_poll() == 'a'); CHECK(getchar_poll() == 0);
+    CHECK(getkey_poll() == 0);
+    keyboard_layout = 1;
+    irq_key(0x27, 0); CHECK((unsigned char)getchar_poll() == 0xF1);
+    irq_key(0x27, 0); CHECK(getkey_poll() == (char)0xF1);
+    irq_sc(0xE0); irq_sc(0x38); irq_key(0x06, 0);
+    CHECK((unsigned char)getchar_poll() == 0x80); /* AltGr byte overlaps KEY_UP */
+    irq_sc(0xE0); irq_sc(0xB8);
+    keyboard_layout = 0;
+    /* Buffered input wins over the polling fallback, in one critical section. */
+    irq_key(0x1E, 0); ready = 1; scancode = 0x2C;
+    CHECK(getkey_poll() == 'a' && ready == 1);
+    CHECK(getkey_poll() == 'z' && ready == 0);
+    ready = 1; scancode = 0xE0; CHECK(getkey_poll() == 0);
+    ready = 1; scancode = 0x4B; CHECK(getkey_poll() == KEY_LEFT);
+    ready = 0x21; scancode = 0x1E; /* AUX packet belongs to the mouse. */
+    CHECK(!keyboard_has_input()); CHECK(getkey_poll() == 0 && ready == 0x21);
+    keyboard_irq_handler(NULL); CHECK(ready == 0x21); ready = 0;
+    serial_byte = 0x7F; serial_ready = 1;
+    CHECK(keyboard_has_input()); CHECK(getchar_poll() == '\b');
+    serial_byte = 's'; serial_ready = 1;
+    irq_key(0x1E, 0); CHECK(getkey_poll() == 'a'); CHECK(getkey_poll() == 's');
+    serial_byte = 0xF1; serial_ready = 1; CHECK(getkey_poll() == (char)0xF1);
+    /* Cooked reads do not consume physical press/release events. */
+    while (keyboard_next_event() != -1) { }
+    irq_key(0x1E, 0); irq_key(0x4B, 1);
+    CHECK(getkey_poll() == 'a'); CHECK(getkey_poll() == KEY_LEFT);
+    CHECK(keyboard_next_event() == 0x11E); CHECK(keyboard_next_event() == 0x1E);
+    CHECK(keyboard_next_event() == 0x1CB); CHECK(keyboard_next_event() == 0xCB);
+    CHECK(keyboard_next_event() == -1);
+    CHECK(!bad_lock && !kbd_lock.locked);
+    return 0;
+}
 int main(void) {
     CHECK(kbd_control_selftest() == 0);
     CHECK(kbd_translate_selftest() == 0);
@@ -95,6 +157,8 @@ int main(void) {
                 for (int foreground = 0; foreground < 2; foreground++)
                     CHECK(sequence(ctrl_irq, char_irq, foreground) == 0);
     }
+    CHECK(ordering() == 0);
+    printf("OK: ordered bytes/navigation, readiness, 8 full-ring wraps, byte-only readers, IRQ/poll, AUX, serial and independent events\n");
     printf("OK: US/ES Escape make/break and Ctrl keys through IRQ, polling and mixed paths; Ctrl-Z Undo/job signal; signals after unlock\n");
     return 0;
 }
@@ -168,7 +232,7 @@ def main():
         source = work / "keyboard_test.c"
         source.write_text(HARNESS.replace("@ROOT@", ROOT.as_posix()).replace("@SOURCE@", args.source.resolve().as_posix()), encoding="utf-8")
         flags = ["-std=gnu99", "-O2", "-ffreestanding", "-Wall", "-Wextra", "-Wshadow", "-Werror",
-                 "-ffunction-sections", "-fdata-sections", "-no-pie", "-Wl,--gc-sections",
+                 "-ffunction-sections", "-fdata-sections", "-no-pie", "-fsanitize=address,undefined", "-Wl,--gc-sections",
                  "-I", str(ROOT / "kernel/drivers/input")]
         for command in ([*cc, *flags, str(source), "-o", str(work / "keyboard_test")],
                         [str(work / "keyboard_test")]):

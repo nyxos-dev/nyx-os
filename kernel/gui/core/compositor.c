@@ -4520,7 +4520,6 @@ void compositor_run(void) {
     // window footprint, incl. drop shadow) each move so the present publishes just that rect
     // instead of the whole 3 MB screen. Reset every iteration.
     int drag_dmg_valid = 0, ddx = 0, ddy = 0, ddw = 0, ddh = 0;
-    extern volatile int kbd_head, kbd_tail;
     while (!quit) {
         drag_dmg_valid = 0;   // recomputed by the drag handler each iteration
         // Idle-yield: when nothing is happening — no key queued, no mouse button
@@ -4529,7 +4528,7 @@ void compositor_run(void) {
         // get the time. Any activity skips the sleep, so interactivity is unchanged;
         // the wakeup is within ~5ms (imperceptible). sleep() blocks via the scheduler
         // when it's running, or idles (hlt) to the tick otherwise.
-        if (kbd_head == kbd_tail && mouse_get_buttons() == 0 &&
+        if (!keyboard_has_input() && mouse_get_buttons() == 0 &&
             mouse_get_x() == mouse_x && mouse_get_y() == mouse_y &&
             mouse_get_z() == mouse_z &&
             !drag_id && !resize_id && drag_icon_idx < 0 &&

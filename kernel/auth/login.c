@@ -79,9 +79,6 @@ static uint32_t login_grad(uint32_t y, uint32_t fh) {
     return fb_rgb(r, g, b);
 }
 
-extern volatile char kbd_buffer[256];
-extern volatile int kbd_head;
-extern volatile int kbd_tail;
 
 // ---- Profile pictures -----------------------------------------------------
 // Four simple procedural "avatars": a coloured tile with a blocky face, each
@@ -288,13 +285,7 @@ int login_screen(void) {
 
         int submitted = 0;
         while (!submitted) {
-            __asm__ volatile("cli");
-            char c = 0;
-            if (kbd_tail != kbd_head) {
-                c = kbd_buffer[kbd_tail];
-                kbd_tail = (kbd_tail + 1) % 256;
-            }
-            __asm__ volatile("sti");
+            char c = getchar_poll();
 
             if (!c) {
                 rtc_time_t ct; rtc_read_time(&ct);        // tick the clock once per second

@@ -397,6 +397,23 @@ The immediate data and desktop priorities are:
     ordering issue from byte-boundary loss. See [SYSCALLS.md](SYSCALLS.md).
     Input queues remain global; this does not make foreground execution async.
 
+40. Development version 6.5.235 preserves buffered PS/2 letter/navigation order.
+    A single cooked queue replaces the extended-before-ASCII priority. IRQ port
+    reads, decode and enqueue share the polling lock; login uses the locked byte
+    reader, and compositor/readiness checks include navigation. Byte-only readers
+    consume unsupported navigation instead of leaving stale keys for the desktop.
+    Host sanitizer tests cover US/ES bytes, mixed order, eight full-ring wraps,
+    overflow, IRQ/polling, mouse-packet exclusion, serial fallback, independent
+    make/break events and control signals after unlocking. Canonical/raw boundary
+    tests and 48 foreground PID checks also pass. GCC14 emits no warnings;
+    RTC/ELF contracts, 230 KATs and four-CPU login pass. In QEMU, 234 returns
+    `ESC[Aaz` instead of `aESC[Az`; 235 passes mixed streams at capacities
+    1/2/3/4/16 (5/5/5/5/25 exact bytes), then `mtdemo`, command input and window
+    dragging. Two disk fixtures remain exact; both comparison VMs close.
+    The shared queue retains 255 entries and drops new keys when full. Input
+    ownership and foreground execution remain global/synchronous; this is not
+    lossless input or a Unicode/readkey ABI change. See [SYSCALLS.md](SYSCALLS.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
