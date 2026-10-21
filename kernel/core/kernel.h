@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.233"
+#define KERNEL_VERSION "6.5.234"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -406,6 +406,8 @@ typedef struct process {
     // reads with arrows as ANSI escapes. NOT inherited on fork, reset by execve —
     // only the process that asked for raw mode sees it.
     uint32_t tty_raw;
+    uint8_t tty_pending[3];
+    uint8_t tty_pending_len;
     uint64_t console_capture_id;
     uint64_t pipe_capture_id;
     uint64_t console_session_id;

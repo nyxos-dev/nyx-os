@@ -161,7 +161,7 @@ while waiting); the TCP receive window advertises real free space and caps the r
 | # | Name | Sketch | Notes |
 |---|------|--------|-------|
 | 2 | `SYS_PRINT` | `print(str)` | convenience console write |
-| 28 | `SYS_READKEY` | `readkey()` | next console key (line/raw per `ttymode`) |
+| 28 | `SYS_READKEY` | `readkey()` | next console key, independent of `ttymode` |
 | 54 | `SYS_FBINFO` | `fbinfo(out[3])` | screen width/height/bpp for a fullscreen app |
 | 55 | `SYS_FBPRESENT` | `fbpresent(buf, w, h)` | blit a 32bpp buffer to the screen, scaled |
 | 56 | `SYS_GETKEYEVENT` | `getkeyevent()` | next raw key event `(pressed<<8)|scancode`, or −1 |
@@ -196,6 +196,42 @@ reaping complete: the kernel shell advances one background task per iteration,
 and an immediate sample may include an exited process awaiting cleanup.
 
 ---
+
+## Raw stdin boundaries (6.5.234)
+
+For an unredirected fd 0 in `TTY_RAW`, arrows and Home/End produce three-byte
+ANSI escapes. The reader stops before fetching another key once the requested
+byte count is filled. A per-process three-byte pending buffer preserves an
+escape that does not fit. Requests of at least three bytes keep a newly encoded
+escape whole, returning the preceding bytes first if necessary. Requests of one
+or two bytes may split an escape; subsequent reads receive its remaining bytes.
+
+`poll` reports fd 0 readable while raw bytes remain pending. Changing tty mode
+discards pending bytes; setting the same mode again preserves them. Invalid modes
+do not change state. Exec resets the pending count with the canonical discipline;
+new processes and threads start with zeroed state. `readkey` and raw make/break
+events retain their separate interfaces. Redirected descriptors still use their
+file, pipe or socket implementation.
+
+The existing `keyevtest --raw-reads` diagnostic waits six seconds after each
+ready message, then checks the following buffered PS/2 sequences. Type no Enter
+between the listed keys; `z` is the final ordinary character in each case.
+
+| Read capacity | Keys after the ready message |
+|---|---|
+| 1 | Up, z |
+| 2 | Down, z |
+| 3 | Right, z |
+| 4 | Left, a, z |
+| 16 | Up, Down, Right, Left, Home, End, z |
+
+The host canonical/raw harness checks capacities 1 through 6, guard bytes,
+pending readiness, process isolation, mode changes and syscall scratch-state
+restoration under sanitizers. This does not give each terminal an input queue.
+The existing keyboard decoder also prioritises its extended-key ring over its
+ASCII ring: buffered mixed letter/arrow order can still change. A GUI trial
+exposed that separate limitation; the diagnostic sequences above avoid confusing
+it with loss at the raw-read byte boundary.
 
 *Cross-references: [ARCHITECTURE.md](ARCHITECTURE.md) (privilege model), [PROCESS.md](PROCESS.md)
 (scheduling, fork/exec, signals), [FILESYSTEM.md](FILESYSTEM.md) (the VFS), [NETWORK.md](NETWORK.md)

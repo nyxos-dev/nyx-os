@@ -379,6 +379,24 @@ The immediate data and desktop priorities are:
     foreground jobs can still stall desktop input, and existing scrollback and
     line-length limits remain.
 
+39. Development version 6.5.234 preserves raw stdin escapes across small reads.
+    The old reader loses a whole arrow for a one-byte request and consumes the
+    next key after an escape fills the buffer. A per-process pending buffer now
+    retains the suffix; reads of at least three bytes keep newly encoded escapes
+    whole. Readiness includes pending bytes, mode changes discard them and exec
+    clears them. Host canonical/raw sanitizer tests cover capacities 1 through 6,
+    guard bytes, process isolation and mode/readiness semantics. Keyboard controls
+    and 48 foreground PID checks also pass. GCC14 builds without warnings;
+    RTC/ELF contracts, 230 kernel tests and four-CPU login pass. In actual GUI
+    input, the old kernel returns zero of four expected bytes on the first test;
+    the final kernel passes capacities 1, 2, 3, 4 and 16 with exact byte streams.
+    `mtdemo`, subsequent input and window dragging pass; two unchanged disk files
+    match and both comparison VMs close. An initial candidate trial exposed the
+    separate existing prioritisation of extended keys over buffered ASCII; that
+    trial failed and is retained, and the final diagnostic distinguishes that
+    ordering issue from byte-boundary loss. See [SYSCALLS.md](SYSCALLS.md).
+    Input queues remain global; this does not make foreground execution async.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

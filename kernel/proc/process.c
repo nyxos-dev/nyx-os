@@ -749,6 +749,7 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc,
     }
     self->mmap_next = 0;
     self->tty_raw = 0;           // new image gets the canonical stdin discipline
+    self->tty_pending_len = 0;
     // Only release the old space if no sibling CLONE_VM thread is still running in it.
     if (old_pd && !addr_space_shared(old_pd, self)) free_page_directory(old_pd);
 

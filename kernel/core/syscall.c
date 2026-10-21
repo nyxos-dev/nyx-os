@@ -272,13 +272,23 @@ static int stdin_read_line(char* kbuf, int max) {
 /* Raw stdin (SYS_TTYMODE raw): block until at least one key, then return what is
  * immediately available — single bytes, NO echo (the caller renders its own line).
  * Extended keys become ANSI escapes: ESC [ A/B/C/D (up/down/right/left), H/F
- * (home/end) — 3 bytes, emitted only if they fit. Blocking follows the same
+ * (home/end). Retain an escape that does not fit until the next read; only a
+ * caller requesting fewer than three bytes receives a split escape. Blocking follows the same
  * discipline as stdin_read_line, and a pending signal interrupts with -EINTR. */
 static int stdin_read_raw(char* kbuf, int max) {
     process_t* self = get_cur_proc();
+    if (!self || max <= 0) return 0;
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     int len = 0;
-    for (;;) {
+    while (len < max) {
+        if (self->tty_pending_len) {
+            if (self->tty_pending_len == 3 && len && max - len < 3) break;
+            kbuf[len++] = self->tty_pending[0];
+            self->tty_pending_len--;
+            for (int i = 0; i < self->tty_pending_len; i++)
+                self->tty_pending[i] = self->tty_pending[i + 1];
+            continue;
+        }
         int k = getkey_poll();               /* extended keycode, ASCII, or 0 */
         if (!k) {
             if (len > 0) break;              /* drained all that was pending */
@@ -306,8 +316,10 @@ static int stdin_read_raw(char* kbuf, int max) {
                 case KEY_END:   x = 'F'; break;
                 default: continue;           /* PgUp/PgDn/Ins/Del: dropped for now */
             }
-            if (len + 3 > max) break;        /* no room for the full sequence */
-            kbuf[len++] = 0x1B; kbuf[len++] = '['; kbuf[len++] = x;
+            self->tty_pending[0] = 0x1B;
+            self->tty_pending[1] = '[';
+            self->tty_pending[2] = (uint8_t)x;
+            self->tty_pending_len = 3;
             continue;
         }
         char c = (char)k;
@@ -318,6 +330,19 @@ static int stdin_read_raw(char* kbuf, int max) {
     user_cr3 = saved_cr3;
     user_rsp = saved_ursp;
     return len;
+}
+
+static int stdin_has_input(void) {
+    process_t* self = get_cur_proc();
+    return (self && self->tty_raw && self->tty_pending_len) || keyboard_has_input();
+}
+
+static int stdin_set_mode(process_t* self, uint64_t mode) {
+    if (!self || (mode != TTY_CANON && mode != TTY_RAW)) return -1;
+    int previous = (int)self->tty_raw;
+    if (mode != self->tty_raw) self->tty_pending_len = 0;
+    self->tty_raw = (uint32_t)mode;
+    return previous;
 }
 
 /* Timed single-key read (SYS_READKEY). Block up to `timeout_ms` for one key and
@@ -1258,7 +1283,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                     int internal;
                     if (ufd_lookup(fd, &internal) != 0) {          // not in the fd table
                         if (fd == 0) {                             // stdin
-                            if ((ev & POLLIN) && keyboard_has_input()) rv |= POLLIN;
+                            if ((ev & POLLIN) && stdin_has_input()) rv |= POLLIN;
                         } else if (fd == 1 || fd == 2) {           // stdout/stderr: always writable
                             if (ev & POLLOUT) rv |= POLLOUT;
                         } else {
@@ -1366,11 +1391,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // TTY_RAW = byte-at-a-time, no echo, arrows as ANSI escapes. Per-process;
             // execve resets to canonical. Returns the previous mode.
             process_t* cur = get_cur_proc();
-            if (!cur) return -1;
-            uint32_t prev = cur->tty_raw;
-            if (a1 == TTY_CANON || a1 == TTY_RAW) cur->tty_raw = (uint32_t)a1;
-            else return -1;
-            return prev;
+            return (uint64_t)(int64_t)stdin_set_mode(cur, a1);
         }
         case SYS_UNLINK: {
             // unlink(path): remove a file (or empty-dir semantics of vfs_unlink —

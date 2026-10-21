@@ -50,7 +50,41 @@ static int foreground_signal_test(void) {
     return foreground_interrupts == 1 ? 0 : 1;
 }
 
+static int raw_read_test(void) {
+    const int capacities[] = {1, 2, 3, 4, 16};
+    const char* expected[] = {"\033[Az", "\033[Bz", "\033[Cz", "\033[Daz", "\033[A\033[B\033[C\033[D\033[H\033[Fz"};
+    long previous = ttymode(TTY_RAW);
+    if (previous < 0) return 1;
+    int failed = 0;
+    for (int test = 0; test < 5; test++) {
+        printf("keyevtest: raw capacity %d ready\n", capacities[test]);
+        usleep(6000000);  /* allow the documented key sequence to be buffered */
+        char result[32];
+        int used = 0, want = (int)strlen(expected[test]);
+        while (used < want) {
+            struct pollfd input = {0, POLLIN, 0};
+            if (poll(&input, 1, 1000) != 1 || !(input.revents & POLLIN)) break;
+            char chunk[16];
+            long n = read(0, chunk, capacities[test]);
+            if (n <= 0 || n > (long)sizeof(chunk) || used + n > (long)sizeof(result)) break;
+            memcpy(result + used, chunk, n);
+            used += (int)n;
+        }
+        int ok = used == want && !memcmp(result, expected[test], want);
+        printf("keyevtest: raw capacity %d %s (%d/%d bytes)\n",
+               capacities[test], ok ? "PASS" : "FAIL", used, want);
+        if (!ok) {
+            for (int i = 0; i < used; i++) printf(" %02x", (unsigned char)result[i]);
+            printf("\n"); failed++; break;
+        }
+    }
+    ttymode((int)previous);
+    printf("keyevtest: raw reads %s\n", failed ? "FAIL" : "PASS");
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc == 2 && !strcmp(argv[1], "--raw-reads")) return raw_read_test();
     if (argc == 2 && !strcmp(argv[1], "--foreground")) return foreground_test();
     if (argc == 2 && !strcmp(argv[1], "--foreground-signal")) return foreground_signal_test();
     int p, c;

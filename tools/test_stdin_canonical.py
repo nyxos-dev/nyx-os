@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the real canonical read loop with a scripted keyboard and echo sink.
+"""Exercise canonical/raw read loops with a scripted keyboard and echo sink.
 
 Run on Linux x86_64 or WSL. No process is scheduled and no privileged instruction
 executes; blocking, signal delivery and IRQ scheduling still require kernel tests.
@@ -29,7 +29,13 @@ int test_putchar(int c);
 static const char* input;
 static int input_pos, echo_len;
 static char echoed[128];
-process_t* get_current_process(void) { return NULL; }
+static process_t raw_process, other_process;
+static process_t* current_process;
+static const int* raw_keys;
+static int raw_pos, ready_calls;
+process_t* get_current_process(void) { return current_process; }
+int getkey_poll(void) { return raw_keys[raw_pos] ? raw_keys[raw_pos++] : 0; }
+int keyboard_has_input(void) { ready_calls++; return raw_keys && raw_keys[raw_pos]; }
 int signal_pending(process_t* p) { (void)p; return 0; }
 int signal_check_stop(process_t* p) { (void)p; return 0; }
 char test_getchar_poll(void) {
@@ -80,7 +86,44 @@ int main(void) {
     CHECK(!read_check(1, "a", 1, "a"));
     CHECK(!read_check(1, "b", 2, "ab"));
     CHECK(!read_check(1, "\n", 3, "ab\n"));
+    static const int mixed[] = {'a',KEY_UP,'b',KEY_DOWN,KEY_RIGHT,KEY_LEFT,KEY_HOME,KEY_END,'\r',0};
+    static const char expected[] = "a\033[Ab\033[B\033[C\033[D\033[H\033[F\n";
+    char raw[8];
+    current_process=&raw_process;
+    for (int capacity=1;capacity<=6;capacity++) {
+        raw_keys=mixed; raw_pos=0; raw_process.tty_pending_len=0;
+        raw_process.tty_raw=TTY_RAW; int total=0;
+        while (total<(int)sizeof(expected)-1) {
+            for (int i=0;i<8;i++) raw[i]='!';
+            test_cr3=0x1234; test_rsp=0x5678;
+            int n=stdin_read_raw(raw,capacity);
+            CHECK(n>0 && n<=capacity && raw[capacity]=='!');
+            CHECK(test_cr3==0x1234 && test_rsp==0x5678);
+            for (int i=0;i<n;i++) CHECK(raw[i]==expected[total++]);
+            if (capacity>=3) for (int i=0;i<n;i++) if (raw[i]==27) CHECK(i+2<n);
+        }
+        CHECK(total==(int)sizeof(expected)-1 && raw_pos==9 && !raw_process.tty_pending_len);
+    }
+    static const int arrow[] = {KEY_UP,'x',0}, letter[] = {'z',0}, empty[] = {0};
+    raw_keys=arrow; raw_pos=0;
+    CHECK(stdin_read_raw(raw,0)==0 && raw_pos==0);
+    CHECK(stdin_read_raw(raw,-1)==0 && raw_pos==0);
+    CHECK(stdin_read_raw(raw,3)==3 && raw_pos==1 && raw[2]=='A');
+    CHECK(stdin_read_raw(raw,1)==1 && raw[0]=='x' && raw_pos==2);
+    raw_pos=0; CHECK(stdin_read_raw(raw,1)==1 && raw[0]==27 && raw_process.tty_pending_len==2);
+    current_process=&other_process; raw_keys=letter; raw_pos=0;
+    CHECK(stdin_read_raw(raw,1)==1 && raw[0]=='z' && !other_process.tty_pending_len);
+    current_process=&raw_process; raw_keys=empty; raw_pos=0; ready_calls=0;
+    CHECK(stdin_has_input() && ready_calls==0);
+    CHECK(stdin_set_mode(&raw_process,TTY_RAW)==TTY_RAW && raw_process.tty_pending_len==2);
+    CHECK(stdin_set_mode(&raw_process,7)==-1 && raw_process.tty_pending_len==2);
+    CHECK(stdin_read_raw(raw,2)==2 && raw[0]=='[' && raw[1]=='A');
+    CHECK(!stdin_has_input() && ready_calls==1);
+    raw_process.tty_pending_len=2;
+    CHECK(stdin_set_mode(&raw_process,TTY_CANON)==TTY_RAW && !raw_process.tty_pending_len);
+    CHECK(stdin_set_mode(NULL,TTY_RAW)==-1);
     printf("OK: EOF, bounded reads without lost keys, editing, echo and scratch-slot restoration\n");
+    printf("OK: raw capacities1..6, atomic escapes when possible, pending bytes, poll, mode reset and process isolation\n");
     return 0;
 }
 '''
@@ -95,7 +138,7 @@ def main():
         source = work / "stdin_test.c"
         source.write_text(HARNESS.replace("@ROOT@", ROOT.as_posix()), encoding="utf-8")
         flags = ["-std=gnu99", "-O2", "-ffreestanding", "-Wall", "-Wextra", "-Wshadow", "-Werror",
-                 "-ffunction-sections", "-fdata-sections", "-no-pie", "-Wl,--gc-sections"]
+                 "-ffunction-sections", "-fdata-sections", "-no-pie", "-Wl,--gc-sections", "-fsanitize=address,undefined"]
         for command in ([*cc, *flags, str(source), "-o", str(work / "stdin_test")],
                         [str(work / "stdin_test")]):
             result = subprocess.run(command, capture_output=True, text=True, timeout=30)
