@@ -13,6 +13,11 @@ static void editor_clear_undo(editor_win_t* ed);   // defined below; a new file 
 #define BTN_H 20
 #define TEXT_LEFT 36
 #define TEXT_RIGHT 2
+#define SAVE_INPUT 1
+#define SAVE_CONFIRM 2
+#define SAVE_AS_X 124
+#define SAVE_AS_W 80
+#define SAVE_AS_MIN_WIDTH 208
 
 static void editor_clamp_cursor(editor_win_t* ed) {
     if (ed->cursor_y < 0) ed->cursor_y = 0;
@@ -126,12 +131,9 @@ static int editor_path(editor_win_t* ed, const char* path, char out[MAX_PATH]) {
     return 1;
 }
 
-static void editor_save(editor_win_t* ed) {
-    // New files retain the persistent-home default, but a name that cannot be
-    // stored intact must never be written using a silently shortened path.
-    char defbuf[128], filename[MAX_PATH];
-    snprintf(defbuf, sizeof(defbuf), "%s/untitled.txt", g_login_home[0] ? g_login_home : "/home");
-    if (!editor_path(ed, ed->filename[0] ? ed->filename : defbuf, filename)) return;
+static int editor_save_to(editor_win_t* ed, const char* path) {
+    char filename[MAX_PATH];
+    if (!editor_path(ed, path, filename)) return 0;
     int bytes = (ed->line_count - 1) * (ed->crlf ? 2 : 1);
     for (int i = 0; i < ed->line_count; i++) bytes += (int)strlen(ed->lines[i]);
     // Even an empty file gets a valid allocation for VFS; all text stays on the
@@ -139,7 +141,7 @@ static void editor_save(editor_win_t* ed) {
     char* buf = (char*)kmalloc((size_t)bytes + 1);
     if (!buf) {
         snprintf(ed->status, sizeof(ed->status), "Save failed: out of memory");
-        return;
+        return 0;
     }
     int pos = 0;
     for (int i = 0; i < ed->line_count; i++) {
@@ -164,6 +166,11 @@ static void editor_save(editor_win_t* ed) {
         snprintf(ed->status, sizeof(ed->status), "Save failed: wrote %d of %d bytes", written, pos);
     }
     kfree(buf);
+    return written == pos;
+}
+
+static void editor_save(editor_win_t* ed) {
+    editor_save_to(ed, ed->filename);
 }
 
 static void editor_open(editor_win_t* ed, const char* path) {
@@ -393,7 +400,7 @@ done:
 
 int editor_win_can_close(window_t* win) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
-    if (ed && ed->close_pending && ed->reload_pending) return 0;
+    if (ed && (ed->save_stage || (ed->close_pending && ed->reload_pending))) return 0;
     if (!ed || !ed->modified || ed->close_discard) return 1;
     if (!ed->close_pending) ed->close_failed = 0;
     ed->close_pending = 1;
@@ -411,21 +418,19 @@ static void editor_request_reload(window_t* win, const char* path) {
     snprintf(ed->status, sizeof(ed->status), "Reload: save, discard or cancel");
 }
 
-static void editor_close_choice(window_t* win, int choice) {
+static void editor_cancel_action(window_t* win) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
-    if (!ed || !ed->close_pending) return;
-    if (choice == 0) {
-        editor_save(ed);
-        if (ed->modified) { ed->close_failed = 1; return; }
-    } else if (choice != 1) {
-        snprintf(ed->status, sizeof(ed->status), "%s cancelled",
-                 ed->reload_pending ? "Reload" : "Close");
-        ed->close_pending = ed->close_discard = ed->close_failed = 0;
-        ed->reload_pending = 0;
-        ed->reload_path[0] = 0;
-        win->close_requested = 0;
-        return;
-    }
+    snprintf(ed->status, sizeof(ed->status), "%s cancelled",
+             ed->save_stage ? "Save" : ed->reload_pending ? "Reload" : "Close");
+    ed->save_stage = ed->save_failed = ed->save_selected = 0;
+    ed->close_pending = ed->close_discard = ed->close_failed = ed->reload_pending = 0;
+    ed->reload_path[0] = ed->save_path[0] = 0;
+    win->close_requested = 0;
+}
+
+static void editor_finish_action(window_t* win, int discard) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (!ed->close_pending) return;
     if (ed->reload_pending) {
         ed->reload_pending = ed->close_pending = ed->close_failed = 0;
         win->close_requested = 0;
@@ -433,8 +438,99 @@ static void editor_close_choice(window_t* win, int choice) {
         ed->reload_path[0] = 0;
         return;
     }
-    if (choice == 1) ed->close_discard = 1;
+    if (discard) ed->close_discard = 1;
     window_request_close(win->id);
+}
+
+static void editor_begin_save_as(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    ed->save_stage = SAVE_INPUT;
+    ed->save_failed = ed->selecting = 0;
+    if (ed->filename[0]) {
+        snprintf(ed->save_input, sizeof(ed->save_input), "%s", ed->filename);
+        ed->save_selected = 1;
+    } else {
+        snprintf(ed->save_input, sizeof(ed->save_input), "%s/", g_login_home[0] ? g_login_home : "/home");
+        ed->save_selected = 0;
+    }
+    ed->save_cursor = (int)strlen(ed->save_input);
+    snprintf(ed->status, sizeof(ed->status), "Save as: type a path; Enter to review, Esc to cancel");
+}
+
+static void editor_request_save(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (!ed->filename[0]) { editor_begin_save_as(win); return; }
+    editor_save(ed);
+}
+
+static void editor_save_accept(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (ed->save_stage == SAVE_INPUT) {
+        char path[MAX_PATH];
+        int len = (int)strlen(ed->save_input);
+        if (!len || ed->save_input[len - 1] == '/') {
+            snprintf(ed->status, sizeof(ed->status), "Save as: enter a filename");
+            return;
+        }
+        if (!editor_path(ed, ed->save_input, path)) return;
+        snprintf(ed->save_path, sizeof(ed->save_path), "%s", path);
+        ed->save_stage = SAVE_CONFIRM;
+        ed->save_cursor = (int)strlen(ed->save_path);
+        ed->save_failed = 0;
+        snprintf(ed->status, sizeof(ed->status), "Confirm destination; existing content may be replaced");
+        return;
+    }
+    if (ed->save_stage != SAVE_CONFIRM) return;
+    if (!editor_save_to(ed, ed->save_path)) { ed->save_failed = 1; return; }
+    ed->save_stage = ed->save_failed = ed->save_selected = 0;
+    ed->save_path[0] = 0;
+    editor_finish_action(win, 0);
+}
+
+static void editor_save_key(window_t* win, int key) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (key == 27) { editor_cancel_action(win); return; }
+    if (key == '\r' || key == '\n' || key == 19) { editor_save_accept(win); return; }
+    int len = (int)strlen(ed->save_stage == SAVE_INPUT ? ed->save_input : ed->save_path);
+    if (ed->save_stage == SAVE_CONFIRM) {
+        if (key == KEY_HOME) ed->save_cursor = 0;
+        else if (key == KEY_END) ed->save_cursor = len;
+        else if (key == KEY_LEFT && ed->save_cursor > 0) ed->save_cursor--;
+        else if (key == KEY_RIGHT && ed->save_cursor < len) ed->save_cursor++;
+        return;
+    }
+    if (key == 1) { ed->save_selected = 1; return; }
+    if (key == KEY_HOME || key == KEY_END || key == KEY_LEFT || key == KEY_RIGHT) {
+        if (key == KEY_HOME) ed->save_cursor = 0;
+        else if (key == KEY_END) ed->save_cursor = len;
+        else if (key == KEY_LEFT && ed->save_cursor > 0) ed->save_cursor--;
+        else if (key == KEY_RIGHT && ed->save_cursor < len) ed->save_cursor++;
+        ed->save_selected = 0;
+        return;
+    }
+    if (key != '\b' && key != KEY_DEL && !(key >= 32 && key <= 126)) return;
+    if (ed->save_selected) {
+        ed->save_input[0] = 0; ed->save_cursor = len = 0; ed->save_selected = 0;
+    }
+    if (key == '\b' || key == KEY_DEL) {
+        int pos = ed->save_cursor;
+        if (key == '\b') { if (!pos) return; ed->save_cursor = --pos; }
+        if (pos >= len) return;
+        for (int i = pos; i < len; i++) ed->save_input[i] = ed->save_input[i + 1];
+    } else if (len < (int)sizeof(ed->save_input) - 1) {
+        for (int i = len; i >= ed->save_cursor; i--) ed->save_input[i + 1] = ed->save_input[i];
+        ed->save_input[ed->save_cursor++] = (char)key;
+    } else snprintf(ed->status, sizeof(ed->status), "Save as: input limit reached");
+}
+
+static void editor_close_choice(window_t* win, int choice) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (!ed || !ed->close_pending) return;
+    if (choice == 0) {
+        if (!ed->filename[0]) { editor_begin_save_as(win); return; }
+        if (!editor_save_to(ed, ed->filename)) { ed->close_failed = 1; return; }
+    } else if (choice != 1) { editor_cancel_action(win); return; }
+    editor_finish_action(win, choice == 1);
 }
 
 static void editor_close_box(window_t* win, int* x, int* y, int* w) {
@@ -468,6 +564,46 @@ static void editor_draw_close(window_t* win) {
     }
 }
 
+static void editor_save_button(int x, int y, int w, int i, int* bx, int* by, int* bw) {
+    *bx = x + (w == 304 ? 56 + i * 104 : 8 + i * 56);
+    *by = y + 60;
+    *bw = w == 304 ? 88 : 48;
+}
+
+static void editor_draw_save(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    int x, y, w;
+    editor_close_box(win, &x, &y, &w);
+    fb_fill_rect(x, y, w, 80, THEME_WINDOW_BG);
+    const char* title = ed->save_stage == SAVE_INPUT ? "Save as" :
+                        ed->save_failed ? "Save failed" : "Save file?";
+    font_draw_string(x + (w - (int)strlen(title) * FONT_WIDTH) / 2, y + 4,
+                     title, THEME_TEXT, THEME_WINDOW_BG);
+    const char* path = ed->save_stage == SAVE_INPUT ? ed->save_input : ed->save_path;
+    int len = (int)strlen(path), cursor = ed->save_cursor;
+    int cols = (w - 16) / FONT_WIDTH - 2, start = cursor >= cols ? cursor - cols + 1 : 0;
+    char visible[40];
+    int count = 0;
+    visible[0] = start ? '<' : ' ';
+    while (path[start + count] && count < cols) { visible[count + 1] = path[start + count]; count++; }
+    visible[count + 1] = start + count < len ? '>' : ' ';
+    visible[count + 2] = 0;
+    uint32_t bg = ed->save_stage == SAVE_INPUT && ed->save_selected ? THEME_SELECTION : THEME_PANEL_HEADER;
+    fb_fill_rect(x + 8, y + 22, w - 16, 16, bg);
+    font_draw_string(x + 8, y + 22, visible, THEME_TEXT, bg);
+    if (ed->save_stage == SAVE_INPUT)
+        font_draw_string(x + 8 + (cursor - start + 1) * FONT_WIDTH, y + 22, "_", THEME_TEXT, bg);
+    const char* hint = ed->save_stage == SAVE_INPUT ? "Enter / Esc" : "May replace";
+    font_draw_string(x + (w - (int)strlen(hint) * FONT_WIDTH) / 2, y + 42, hint, THEME_TEXT, THEME_WINDOW_BG);
+    for (int i = 0; i < 2; i++) {
+        int bx, by, bw; editor_save_button(x, y, w, i, &bx, &by, &bw);
+        const char* label = i ? "Cancel" : ed->save_stage == SAVE_INPUT ? "Next" : "Save";
+        fb_fill_rect(bx, by, bw, 16, THEME_SELECTION);
+        font_draw_string(bx + (bw - (int)strlen(label) * FONT_WIDTH) / 2, by,
+                         label, THEME_TEXT, THEME_SELECTION);
+    }
+}
+
 void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
@@ -486,9 +622,20 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     snprintf(name_buf, sizeof(name_buf), "%s%s",
              ed->filename[0] ? ed->filename : "untitled",
              ed->modified ? " *" : "");
-    uint32_t name_x = cx + 128;
+    uint32_t name_offset = 128;
+    if (cw >= SAVE_AS_MIN_WIDTH) {
+        fb_fill_rect(cx + SAVE_AS_X, cy + 3, SAVE_AS_W, BTN_H, THEME_SELECTION);
+        font_draw_string(cx + SAVE_AS_X + 4, cy + 3 + (BTN_H - FONT_HEIGHT) / 2,
+                         "Save as", fb_rgb(255,255,255), THEME_SELECTION);
+        name_offset = SAVE_AS_MIN_WIDTH + 4;
+    }
+    uint32_t name_x = cx + name_offset;
     uint32_t name_y = cy + (TOOLBAR_H - FONT_HEIGHT) / 2;
-    font_draw_string(name_x, name_y, name_buf, fb_rgb(200,200,220), THEME_ROW_DIV);
+    if (cw > name_offset) {
+        unsigned int cols = (cw - name_offset) / FONT_WIDTH;
+        if (cols < sizeof(name_buf)) name_buf[cols] = 0;
+        font_draw_string(name_x, name_y, name_buf, fb_rgb(200,200,220), THEME_ROW_DIV);
+    }
 
     // Text area
     int text_area_y = cy + TOOLBAR_H;
@@ -552,7 +699,8 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int px = cx + (int)cw - 6 - pw;
     if (px < cx + 4) px = cx + 4;
     font_draw_string((uint32_t)px, (uint32_t)status_y + 2, pos, fb_rgb(150,185,215), THEME_WINDOW_BG);
-    if (ed->close_pending) editor_draw_close(win);
+    if (ed->save_stage) editor_draw_save(win);
+    else if (ed->close_pending) editor_draw_close(win);
 }
 
 static void editor_point_cursor(editor_win_t* ed, window_t* win, int mx, int my) {
@@ -573,6 +721,17 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed || btn != 1) return;
     ed->selecting = 0;
+    if (ed->save_stage) {
+        int x, y, w; editor_close_box(win, &x, &y, &w);
+        for (int i = 0; i < 2; i++) {
+            int bx, by, bw; editor_save_button(x, y, w, i, &bx, &by, &bw);
+            if (mx >= bx && mx < bx + bw && my >= by && my < by + 16) {
+                if (i) editor_cancel_action(win); else editor_save_accept(win);
+                return;
+            }
+        }
+        return;
+    }
     if (ed->close_pending) {
         int x, y, w;
         editor_close_box(win, &x, &y, &w);
@@ -611,8 +770,11 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
             }
             return;
         }
+        if (win->w >= SAVE_AS_MIN_WIDTH && rx >= SAVE_AS_X && rx < SAVE_AS_X + SAVE_AS_W) {
+            editor_begin_save_as(win); return;
+        }
         if (rx >= 64 && rx < 64 + BTN_W) {
-            editor_save(ed);
+            editor_request_save(win);
             return;
         }
     }
@@ -947,6 +1109,7 @@ void editor_win_close(window_t* win) {
 void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
+    if (ed->save_stage) { editor_save_key(win, key); return; }
     if (ed->close_pending) {
         if (key == 27) editor_close_choice(win, 2);
         else if (key == 0x13 || key == 's' || key == 'S') editor_close_choice(win, 0);
@@ -954,6 +1117,7 @@ void editor_win_key(window_t* win, int key) {
         return;
     }
 
+    if (key == KEY_F2) { editor_begin_save_as(win); return; }
     editor_clamp_cursor(ed);
     ed->selecting = 0;
     ed->cursor_tick = get_ticks();
@@ -1092,7 +1256,7 @@ void editor_win_key(window_t* win, int key) {
     }
 
     if (key == 0x13) { // Ctrl+S
-        editor_save(ed);
+        editor_request_save(win);
         return;
     }
 

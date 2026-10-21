@@ -38,8 +38,8 @@ callbacks return. This keeps the window context alive through both click and
 held-press callbacks. `window_destroy` remains the forced cleanup operation;
 the close confirmation does not cover logout, shutdown or forced destruction.
 Open / Ctrl+O has a separate pending reload decision since 6.5.228 (below).
-Save remains non-atomic and new unnamed documents retain the
-existing `untitled.txt` default; this does not add Save As or crash recovery.
+Save remains non-atomic. Version 6.5.229 adds the explicit destination flow
+below for unnamed documents and Save As; crash recovery remains unsupported.
 
 ## Reloading a modified document (6.5.228)
 
@@ -52,10 +52,10 @@ buffer and undo intact. After a failed reload, closing the window asks again.
 
 The pending target is captured when the prompt opens. In an unnamed document,
 Open keeps its existing fallback search (`/home/test.txt`, `/test.txt`,
-`/shell.txt`, `/README.txt`). Save writes the unnamed document to the usual
-`untitled.txt` path before loading that captured fallback; it does not redirect
-the reload to the new save path. Ctrl+O still requires an established filename.
-This is not a file picker or Save As.
+`/shell.txt`, `/README.txt`). Since 6.5.229, Save asks for the unnamed
+document's destination before loading that captured fallback; it does not
+redirect the reload to the new save path. Ctrl+O still requires an established
+filename. Open remains a reload action, not a file picker.
 
 The prompt reads `Reload file?`. While it is open, X or Alt+F4 keeps the pending
 reload decision instead of changing its action. Cancel the reload before
@@ -83,6 +83,50 @@ contents. Screenshots confirm the prompt, decisions and failed-save/open status;
 there are no kernel fault markers and the VM is closed. Unnamed fallback and
 malformed-input combinations have host coverage only. This is not a new reboot,
 power-loss, hardware or long-session qualification.
+
+## First save and Save As (6.5.229)
+
+Save or Ctrl+S on a new document opens a filename field, initially containing
+the login home directory (or `/home/`). Save as and F2 preselect the existing
+filename when there is one. Type a path, then use Next or Enter to review the
+normalized destination. Save or Enter on the review performs the write;
+Cancel or Escape exits without writing. Ctrl+A, arrows, Home/End, Backspace
+and Delete edit the field. Long paths scroll; arrows and Home/End can also
+inspect the read-only destination during review. The established normalized
+63-byte path limit still applies. No path is silently truncated and saved.
+
+Every destination review says `May replace`: confirmation authorizes replacing
+existing content. The dialog does not infer that a failed existence probe means
+a file is absent, and does not offer exclusive creation or atomic replacement.
+Ordinary Save to an established filename retains its existing direct behavior.
+The Save as toolbar button is hidden below 208 pixels; F2 remains available.
+The two-stage dialog fits the minimum 120-by-80 client area.
+
+The filename changes only after a complete successful write. Failure retains
+the original filename, text, selection and undo history; the review stays open
+for retry or Cancel. An unnamed Save before Close or Reload waits for both
+stages. Cancel cancels that pending action too. Successful Close remains deferred
+until input callbacks return; Reload uses its previously captured target.
+Window-close requests during the destination dialog do not replace its action.
+
+Host evidence: 711 destination checks and 308 reload checks under ASan/UBSan,
+plus 72 deferred-close checks. The 6.5.228 baseline fails the new destination
+assertion. Cases cover explicit independent first saves, keyboard/button routes,
+cancel, allocation/short/negative-write failures, retry, clean Save As failures,
+path bounds and prohibited targets, input editing and minimum-size controls.
+The 76 I/O, 53 clipboard, 961 compositor-close and 43 presentation regressions
+also pass. GCC 14 builds without warnings; QEMU passes 230 kernel tests
+and four-CPU login.
+
+Target GUI evidence: a separate four-CPU, 5 GiB QEMU run checks first saves to
+two distinct paths, Cancel before replacing an existing file, toolbar Save as,
+F2, a denied RAM-file write, source-name retention after Cancel, permission-
+restored retry, save before Close and minimum-size path review. Eight extracted
+EXT2 files match exact bytes, including an untouched CRLF source and the
+read-only target copied out before retry. Screenshots confirm dialogs, errors
+and horizontal path review. The VM is closed without kernel fault markers.
+Pending Reload combinations, allocation faults and short writes have host
+coverage; this run adds no cold-boot, power-loss or hardware qualification.
 
 ## Cold-boot verification on 6.5.226
 
@@ -159,11 +203,11 @@ backing-file size metadata. It rejects a prefix or an empty image caused by a
 nonempty file's failed read/allocation. It also rejects directories, failed
 descriptors, unavailable metadata callbacks and nonempty images without data.
 
-Ctrl+S writes the current filename. A new unnamed document defaults to
-`untitled.txt` in the login home, or `/home` when no login home is set. The name
-must pass the same path checks before any write. Whether that home is persistent
-depends on the mounted storage; a RAM-filesystem write does not survive reboot.
-There is currently no Save As dialog.
+Ctrl+S writes the current filename. Since 6.5.229, an unnamed document asks
+for a destination instead of automatically using `untitled.txt`. F2 and the
+Save as toolbar button start this flow for an existing document as well.
+The name must pass the same path checks before any write. Whether a destination
+is persistent depends on mounted storage; RAM files do not survive reboot.
 
 Save serializes the complete model into a heap buffer. Allocation failure makes
 no write and reports an error. A short or negative write reports failure and keeps

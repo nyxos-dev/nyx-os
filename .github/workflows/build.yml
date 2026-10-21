@@ -78,7 +78,7 @@ jobs:
       - name: Test Mnemosyne shared clipboard and undo
         run: python3 tools/test_editor_clipboard.py
 
-      - name: Test editor close/reload decisions and deferred window lifetime
+      - name: Test editor save destinations, close/reload and deferred lifetime
         run: python3 tools/test_editor_close.py
 
       - name: Test desktop calculator arithmetic and recovery

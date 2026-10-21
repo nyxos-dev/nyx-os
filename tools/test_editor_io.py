@@ -264,6 +264,21 @@ int main(int argc, char** argv) {
         }
     }
     editor_win_key(&win, 0x13);
+#ifdef SAVE_INPUT
+    if (!strcmp(mode, "default-path") || !strcmp(mode, "default-long")) {
+        CHECK(ed->save_stage == SAVE_INPUT && writes == 0 && !ed->filename[0]);
+        const char* name = "chosen.txt";
+        while (*name) editor_win_key(&win, *name++);
+        editor_win_key(&win, 13);
+        if (!strcmp(mode, "default-long")) {
+            CHECK(ed->save_stage == SAVE_INPUT && writes == 0);
+            goto done;
+        }
+        CHECK(ed->save_stage == SAVE_CONFIRM && writes == 0);
+        editor_win_key(&win, 13);
+        CHECK(!strcmp(saved_path, "/mnt/home/test/chosen.txt"));
+    }
+#endif
     printf("save_status=%s\nmodified=%d\nwrites=%d\n", ed->status, ed->modified, writes);
     if (!strcmp(mode, "save-oom") || !strcmp(mode, "default-long") || !strcmp(mode, "symlink-before-save")) {
         CHECK(writes == 0 && strncmp(ed->status, "Saved:", 6));
@@ -273,7 +288,9 @@ int main(int argc, char** argv) {
     } else {
         CHECK(writes == 1 && !ed->modified && !strncmp(ed->status, "Saved:", 6));
         CHECK(!strcmp(saved_path, ed->filename));
+#ifndef SAVE_INPUT
         if (!strcmp(mode, "default-path")) CHECK(!strcmp(saved_path, "/mnt/home/test/untitled.txt"));
+#endif
         if (!strcmp(mode, "relative")) CHECK(!strcmp(saved_path, "/mnt/home/test/source.txt"));
     }
 done:

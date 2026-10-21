@@ -295,6 +295,20 @@ The immediate data and desktop priorities are:
     See [EDITOR.md](EDITOR.md) for behaviour and verification scope. Forced cleanup,
     logout/shutdown, atomic Save and crash recovery remain separate work.
 
+34. Development version 6.5.229 adds explicit first-save destinations and Save As.
+    New documents no longer automatically replace the same home `untitled.txt`.
+    Next/Enter reviews the normalized destination; Save/Enter confirms it with
+    a `May replace` notice. Cancel makes no write. A failed Save As retains the
+    source filename and text; pending Close/Reload waits for successful saving.
+    F2 and path scrolling remain usable in the minimum window. Host checks cover
+    711 destination, 308 reload and 72 close cases; the 228 baseline fails the new
+    destination assertion. Existing editor/window regressions, warning-free
+    GCC 14, 230 kernel tests and four-CPU login pass. A four-CPU GUI run checks
+    independent names, cancellation, denied writes, retry, close and minimum-size
+    review, with eight exact disk outputs. See [EDITOR.md](EDITOR.md). Save is
+    still non-atomic; exclusive creation, crash recovery and hardware qualification
+    remain open.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

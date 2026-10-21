@@ -113,6 +113,12 @@ extern int fflush(void* stream);
 #undef CHECK
 #define CHECK(x) do { checks++; if (!(x)) { printf("FAIL %d: %s\n", __LINE__, #x); fflush(NULL); return 1; } } while (0)
 static void release_editor(window_t* win) { destroyed++; editor_win_close(win); }
+static void choose_reload_save_path(window_t* w) {
+    editor_win_key(w,1);
+    const char* path="/mnt/home/test/named.txt";
+    while (*path) editor_win_key(w,*path++);
+    editor_win_key(w,13); editor_win_key(w,13);
+}
 static void reload_request(window_t* w, int route) {
     if (route == 0) editor_win_key(w, 15);
     else editor_win_click(w, WIN_CLIENT_X(w)+10, WIN_CLIENT_Y(w)+5, 1);
@@ -151,7 +157,8 @@ int main(void) {
         } else if (choice<=3) {
             no_alloc=choice==1; write_mode=choice==2 ? 1 : choice==3 ? 2 : 0;
             editor_win_key(w,'s');
-            CHECK(ed->close_pending && ed->reload_pending && ed->close_failed && ed->modified);
+            if (route==2) { CHECK(ed->save_stage==1 && writes==old_writes); choose_reload_save_path(w); }
+            CHECK(ed->close_pending && ed->reload_pending && (ed->close_failed || ed->save_failed) && ed->modified);
             CHECK(ed->undo_n==before->undo_n && same(ed->lines,before->lines,sizeof(ed->lines)));
             CHECK(!w->close_requested && windows[0]==w && !handles);
             no_alloc=write_mode=0; editor_win_key(w,27);
@@ -173,8 +180,9 @@ int main(void) {
         } else {
             /* VFS write mock updates only the named target, never the fallback file. */
             editor_win_key(w,19);
+            if (route==2) { CHECK(ed->save_stage==1 && writes==old_writes); choose_reload_save_path(w); }
             CHECK(writes==old_writes+1 && !ed->modified && !ed->undo_n);
-            CHECK(!strcmp(saved_path,route==2 ? "/mnt/home/test/untitled.txt" : "/mnt/original.txt"));
+            CHECK(!strcmp(saved_path,route==2 ? "/mnt/home/test/named.txt" : "/mnt/original.txt"));
             CHECK(!strcmp(ed->filename,route==2 ? "/home/test.txt" : "/mnt/original.txt"));
             CHECK(!strcmp(ed->lines[0],route==2 ? "disk" : "previous"));
         }
@@ -197,6 +205,105 @@ int main(void) {
 }
 '''
 
+
+SAVEAS_CASES = r'''
+extern int fflush(void* stream);
+#undef CHECK
+#define CHECK(x) do { checks++; if (!(x)) { printf("FAIL %d: %s\n", __LINE__, #x); fflush(NULL); return 1; } } while (0)
+static void release_editor(window_t* win) { destroyed++; editor_win_close(win); }
+static void type_path(window_t* w, const char* path) {
+    editor_win_key(w,1); editor_win_key(w,KEY_DEL); while (*path) editor_win_key(w,*path++);
+}
+int main(void) {
+    static uint8_t original[]="original";
+    input_data=original;input_size=image_size=8;
+    strcpy(mount.mount_point,"/mnt"); mount.resolve=backing_resolve; mount.get_size=backing_size;
+    output_fd=open("/dev/null",1); CHECK(output_fd>=0);
+    for (int named=0;named<2;named++) for (int route=0;route<3;route++) for (int action=0;action<6;action++) {
+        window_t* w=kmalloc(sizeof(*w)); CHECK(w);memset_asm(w,0,sizeof(*w));w->id=7;w->w=600;w->h=400;
+        w->reserved=editor_create_ctx();w->can_close=editor_win_can_close;w->on_close=release_editor;
+        windows[0]=w;window_count=1;focused_id=7;
+        editor_win_t* ed=w->reserved;seed(ed);if(!named)ed->filename[0]=0;
+        int old_undo=ed->undo_n,old_writes=writes;char old_name[64];strcpy(old_name,ed->filename);
+        if(route==0) editor_win_key(w,KEY_F2);
+        else if(route==1) editor_win_click(w,WIN_CLIENT_X(w)+130,WIN_CLIENT_Y(w)+5,1);
+        else if(!named) editor_win_key(w,19);
+        else { window_request_close(7);window_process_close_requests();editor_win_key(w,27);editor_win_key(w,KEY_F2); }
+        CHECK(ed->save_stage==1 && writes==old_writes);
+        CHECK(!strcmp(ed->filename,old_name) && ed->modified && ed->undo_n==old_undo);
+        CHECK(ed->selection_active && !ed->selecting && !strcmp(ed->lines[0],"previous"));
+        window_request_close(7);window_process_close_requests();CHECK(windows[0]==w && ed->save_stage==1);
+        type_path(w,"/mnt/new.txt");CHECK(!strcmp(ed->save_input,"/mnt/new.txt"));
+        editor_win_key(w,KEY_HOME);editor_win_key(w,KEY_END);editor_win_key(w,KEY_LEFT);editor_win_key(w,KEY_RIGHT);
+        CHECK(ed->save_cursor==12);
+        editor_win_key(w,13);CHECK(ed->save_stage==2 && writes==old_writes);
+        CHECK(!strcmp(ed->save_path,"/mnt/new.txt"));
+        editor_win_key(w,'x');editor_win_key(w,26);CHECK(!strcmp(ed->save_path,"/mnt/new.txt"));
+        editor_win_key(w,KEY_HOME);CHECK(ed->save_cursor==0);editor_win_key(w,KEY_END);CHECK(ed->save_cursor==12);
+        if(action==0) {
+            editor_win_key(w,27);CHECK(!ed->save_stage && writes==old_writes && !strcmp(ed->filename,old_name));
+        } else {
+            no_alloc=action==1;write_mode=action==2 ? 1 : action==3 ? 2 : 0;
+            if(action==5) { /* named clean SaveAs must report write failure too */
+                ed->modified=0;no_alloc=1;
+            }
+            editor_win_key(w,13);
+            if(action!=4) {
+                CHECK(ed->save_stage==2 && ed->save_failed && !strcmp(ed->filename,old_name));
+                CHECK(ed->undo_n==old_undo && !strcmp(ed->lines[0],"previous"));
+                CHECK(!w->close_requested && windows[0]==w);
+                no_alloc=write_mode=0;editor_win_key(w,13);
+            }
+            CHECK(!ed->save_stage && !ed->modified && !strcmp(ed->filename,"/mnt/new.txt"));
+            CHECK(ed->undo_n==old_undo && !strcmp(last_saved,"previous\r\nkeep"));
+        }
+        CHECK(windows[0]==w && !w->close_requested && !ed->close_pending);
+        editor_win_pressed(w,10,10,1);CHECK(!ed->selecting);
+        window_destroy(7);CHECK(!live_allocs && !guard_error && !handles && !bad_fd);
+    }
+    /* First-save paths are explicit and independent for two new documents. */
+    char first_path[MAX_PATH];
+    for(int i=0;i<2;i++) {
+        window_t w;memset_asm(&w,0,sizeof(w));w.w=600;w.h=400;w.reserved=editor_create_ctx();
+        editor_win_t* ed=w.reserved;strcpy(ed->lines[0],i?"second note":"first note");ed->modified=1;
+        int old_writes=writes;editor_win_key(&w,19);CHECK(ed->save_stage==1 && writes==old_writes);
+        type_path(&w,i?"/mnt/second.txt":"/mnt/first.txt");editor_win_key(&w,13);CHECK(writes==old_writes);
+        editor_win_key(&w,13);CHECK(!ed->modified && writes==old_writes+1 && !strcmp(last_saved,i?"second note":"first note"));
+        if(!i)strcpy(first_path,saved_path);else CHECK(strcmp(first_path,saved_path));
+        editor_win_close(&w);kfree(ed);
+    }
+    /* Pending Close waits for target and confirmation, then still defers destruction. */
+    for(int cancel=0;cancel<2;cancel++) {
+        window_t* w=kmalloc(sizeof(*w));memset_asm(w,0,sizeof(*w));w->id=7;w->w=120;w->h=80;
+        w->reserved=editor_create_ctx();w->can_close=editor_win_can_close;w->on_close=release_editor;
+        windows[0]=w;window_count=1;editor_win_t* ed=w->reserved;seed(ed);ed->filename[0]=0;
+        window_request_close(7);window_process_close_requests();editor_win_key(w,'s');
+        CHECK(ed->close_pending && ed->save_stage==1 && !w->close_requested);
+        int x,y,width,bx,by,bw;editor_close_box(w,&x,&y,&width);
+        for(int i=0;i<2;i++){editor_save_button(x,y,width,i,&bx,&by,&bw);CHECK(bx>=x && bx+bw<=x+width && by+16<=y+80);}
+        type_path(w,"/mnt/close.txt");editor_save_button(x,y,width,0,&bx,&by,&bw);editor_win_click(w,bx+1,by+1,1);
+        CHECK(ed->save_stage==2 && ed->close_pending);
+        editor_save_button(x,y,width,cancel,&bx,&by,&bw);editor_win_click(w,bx+1,by+1,1);editor_win_pressed(w,bx+1,by+1,1);
+        if(cancel){CHECK(!ed->save_stage && !ed->close_pending && !w->close_requested && ed->modified);window_destroy(7);}
+        else {CHECK(windows[0]==w && w->close_requested);window_process_close_requests();CHECK(!windows[0]);}
+        CHECK(!live_allocs && !guard_error);
+    }
+    window_t w;memset_asm(&w,0,sizeof(w));w.w=600;w.h=400;w.reserved=editor_create_ctx();editor_win_t* ed=w.reserved;seed(ed);
+    editor_win_key(&w,KEY_F2);int old_writes=writes;
+    const char* bad[]={"","/mnt/","/proc/x","/dev/x","/mnt/link/x"};
+    linked_path="/mnt/link";
+    for(int i=0;i<5;i++){type_path(&w,bad[i]);editor_win_key(&w,13);CHECK(ed->save_stage==1 && writes==old_writes && !strcmp(ed->filename,"/mnt/original.txt"));}
+    linked_path=0;type_path(&w,"/");for(int i=0;i<200;i++)editor_win_key(&w,'q');
+    CHECK(strlen(ed->save_input)==127 && ed->save_cursor==127);editor_win_key(&w,13);CHECK(ed->save_stage==1 && writes==old_writes);
+    type_path(&w,"/mnt/ab.txt");editor_win_key(&w,KEY_HOME);editor_win_key(&w,KEY_RIGHT);editor_win_key(&w,KEY_DEL);CHECK(!strcmp(ed->save_input,"/nt/ab.txt"));
+    editor_win_key(&w,'m');editor_win_key(&w,KEY_END);editor_win_key(&w,'x');editor_win_key(&w,'\b');CHECK(!strcmp(ed->save_input,"/mnt/ab.txt"));
+    editor_win_key(&w,1);editor_win_key(&w,KEY_DEL);CHECK(!ed->save_input[0]);editor_win_key(&w,27);
+    CHECK(!ed->save_stage && !strcmp(ed->lines[0],"previous") && ed->undo_n==1);
+    editor_win_close(&w);kfree(ed);CHECK(!live_allocs && !guard_error && !handles && !bad_fd);
+    close(output_fd);printf("PASS %d editor destination/save-as checks\n",checks);return 0;
+}
+'''
+
 def extract(source, signature):
     start = source.index(signature)
     end = source.index('\n}\n', start) + 3
@@ -207,6 +314,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare-ref')
     parser.add_argument('--compare-reload-ref')
+    parser.add_argument('--compare-saveas-ref')
     args = parser.parse_args()
     vfs = (ROOT/'kernel/fs/vfs.c').read_text()
     paths = function_source(vfs, 'join_mount_relative')+'\n'+function_source(vfs, 'vfs_realpath')
@@ -219,12 +327,16 @@ def main():
     queue = extract(compositor, 'void window_request_close(int id) {')+'\n'+extract(compositor,'static int window_process_close_requests(void) {')
     with tempfile.TemporaryDirectory(prefix='nyx-editor-close-') as temp:
         work = Path(temp)
-        def run(label, destroy_body, queue_body, editor_source=None, reload=False):
+        def run(label, destroy_body, queue_body, editor_source=None, reload=False, saveas=False):
             source = base if editor_source is None else base.replace(str(ROOT/'kernel/gui/apps/editor_win.c'),str(editor_source))
             if reload:
                 source = source.replace('return (int)write(output_fd, data, len);',
                     'if (!write_mode && !strcmp(path, "/mnt/original.txt")) { memcpy_asm(input_data,data,len); input_size=image_size=len; }\n    return (int)write(output_fd, data, len);')
-            src = work/(label+'.c'); src.write_text(source+REGISTRY+destroy_body+queue_body+(RELOAD_CASES if reload else CASES))
+            if saveas:
+                source = source.replace('static int write_mode, ram_file;', 'static int write_mode, ram_file;\nstatic char last_saved[4096];')
+                source = source.replace('return (int)write(output_fd, data, len);',
+                    'if (len>=sizeof(last_saved)) { return -1; } memcpy_asm(last_saved,data,len); last_saved[len]=0; return (int)len;')
+            src = work/(label+'.c'); src.write_text(source+REGISTRY+destroy_body+queue_body+(SAVEAS_CASES if saveas else RELOAD_CASES if reload else CASES))
             binary = work/label
             subprocess.run(['gcc','-std=gnu99','-O0','-ffreestanding','-Wall','-Wextra','-Werror',
                 '-ffunction-sections','-fdata-sections','-no-pie','-Wl,--gc-sections','-fsanitize=address,undefined',
@@ -234,6 +346,16 @@ def main():
         if result.returncode: raise SystemExit(result.returncode)
         result=run('reload',destroy,queue,reload=True); print(result.stdout+result.stderr,end='')
         if result.returncode: raise SystemExit(result.returncode)
+        result=run('saveas',destroy,queue,saveas=True); print(result.stdout+result.stderr,end='')
+        if result.returncode: raise SystemExit(result.returncode)
+        if args.compare_saveas_ref:
+            old_source=work/'old-saveas-editor.c'
+            old_source.write_text(subprocess.check_output(['git','show',args.compare_saveas_ref+':kernel/gui/apps/editor_win.c'],cwd=ROOT,text=True))
+            # Geometry helper is new; baseline only needs the initial F2 assertion.
+            old_source.write_text(old_source.read_text()+'\nstatic void editor_save_button(int x,int y,int w,int i,int* bx,int* by,int* bw) { (void)w;*bx=x+i*56;*by=y+60;*bw=48; }\n')
+            result=run('saveas-baseline',destroy,queue,editor_source=old_source,saveas=True)
+            assert result.returncode and 'ed->save_stage==1 && writes==old_writes' in result.stdout,result.stdout+result.stderr
+            print('PASS baseline lacks explicit destination choice')
         if args.compare_reload_ref:
             old_source=work/'old-editor.c'
             old_source.write_text(subprocess.check_output(['git','show',args.compare_reload_ref+':kernel/gui/apps/editor_win.c'],cwd=ROOT,text=True))
