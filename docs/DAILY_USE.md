@@ -414,6 +414,26 @@ The immediate data and desktop priorities are:
     ownership and foreground execution remain global/synchronous; this is not
     lossless input or a Unicode/readkey ABI change. See [SYSCALLS.md](SYSCALLS.md).
 
+41. Development version 6.5.236 validates userspace shell pipelines before
+    launching their stages. A leading/trailing pipe, an empty intervening stage
+    or more than four stages returns status 2 without creating pipeline children
+    or applying their redirections. For example, a trailing pipe in
+    `echo damaged > /mnt/keep.txt |` no longer lets the first stage overwrite the
+    existing file. Quoted pipe/space placeholders retain their existing handling.
+    This gate applies to the pipeline after expansion: command substitutions
+    still run earlier, and effects from earlier command-list segments remain.
+    Host ASan/UBSan checks cover 23 command-entry and 31 preflight cases; the
+    old parser fails 21 preflight cases. The existing 886 expansion checks pass.
+    GCC14 builds without warnings; RTC/ELF checks, 230 kernel tests and four-CPU
+    boot pass. In a separate 235 QEMU baseline, the trailing-pipe command exits 0
+    and changes the 10-byte fixture to damaged LF XT. The initial harness expected
+    an 8-byte replacement; offline inspection confirms the retained two-byte tail.
+    On 236, four malformed pipelines return 2 and leave both disk fixtures exact.
+    A real PS/2 four-stage cat/upper/cat/cat pipeline, EOF, six scheduler heartbeats
+    and the subsequent command pass; screenshots are inspected and both VMs close.
+    It does not provide rollback for pipe/fork allocation failures, job-wide
+    signal delivery, input ownership or asynchronous GUI foreground execution.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

@@ -613,9 +613,23 @@ static void run_line(char* line) {
     int nstages = 0;
     char* p = line;
     stages[nstages++] = p;
-    while ((p = strchr(p, '|')) != 0 && nstages < MAX_STAGES) {
+    while ((p = strchr(p, '|')) != 0) {
+        if (nstages == MAX_STAGES) {
+            printf("sh: too many pipeline stages\n");
+            last_status = 2;
+            return;
+        }
         *p++ = '\0';
         stages[nstages++] = p;
+    }
+    /* Validate the whole pipeline before any child can truncate a redirected file. */
+    for (int s = 0; s < nstages; s++) {
+        stages[s] = trim(stages[s]);
+        if (!*stages[s]) {
+            printf("sh: empty pipeline stage\n");
+            last_status = 2;
+            return;
+        }
     }
 
     long pids[MAX_STAGES];
