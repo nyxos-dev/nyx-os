@@ -34,10 +34,9 @@ static int default_is_ignore(int sig) { return sig == SIGCHLD || sig == SIGCONT;
  * runs on the way out. Safe from IRQ context (just field writes). */
 void signal_raise(process_t* p, int sig) {
     if (!p || sig <= 0 || sig >= NSIG) return;
-    /* SIGCONT resumes a job-control-stopped process: flip it back to RUN so the
-     * scheduler runs it again (it's parked in signal_dispatch waiting for exactly
-     * this). SIGCONT's default action is "ignore", so no handler runs on delivery. */
-    if (sig == SIGCONT && p->state == PROC_STOPPED) {
+    /* SIGKILL must resume a stopped task so its pending termination can run.
+     * Blocking syscalls still unwind normally before return-path delivery. */
+    if ((sig == SIGCONT || sig == SIGKILL) && p->state == PROC_STOPPED) {
         p->stop_sig = 0;
         p->state = PROC_RUN;
     }
@@ -49,13 +48,11 @@ void signal_raise(process_t* p, int sig) {
     }
 }
 
-/* The signal that would deliver next: the lowest-numbered PENDING signal not blocked by the
- * MASK, or 0 if none. ONE definition for signal_pending() (any deliverable?) and
- * signal_dispatch() (which one?), so the "is a signal up" test and the "which signal" pick
- * can never disagree. Lowest-number-first is the delivery order; SIGKILL/SIGSTOP can't be
- * masked (see sigmask_apply), so a pending one is always returned here. */
+/* SIGKILL takes precedence over user handlers and other pending signals.
+ * Otherwise deliver the lowest-numbered unblocked signal, or 0 if none. */
 static int signal_next_deliverable(uint32_t pending, uint32_t mask) {
     uint32_t d = pending & ~mask;
+    if (d & (1u << SIGKILL)) return SIGKILL;
     for (int s = 1; s < NSIG; s++)
         if (d & (1u << s)) return s;
     return 0;
@@ -68,9 +65,9 @@ int signal_pending(process_t* p) {
 }
 
 /* If the next deliverable signal has the default STOP action, PARK the process here
- * until SIGCONT resumes it, and return 1 — so the interrupted blocking syscall can
- * RESTART its wait rather than returning -EINTR (stop/continue is then transparent to
- * the operation, e.g. a `sleep` keeps sleeping after fg/bg). Returns 0 if no stop is
+ * until SIGCONT or SIGKILL resumes it, and return 1 so the caller rechecks its wait.
+ * Stop/continue is transparent to the operation; a pending SIGKILL interrupts the
+ * restarted wait through its normal cleanup path. Returns 0 if no stop is
  * pending. Called with interrupts off from a blocking syscall's wait loop; the caller
  * already saves/restores user_cr3/user_rsp around that loop. Parks like do_waitpid
  * (blocked_in_kernel -> resume on the kernel CR3, sti/hlt until PROC_RUN). */
@@ -90,7 +87,7 @@ int signal_check_stop(process_t* p) {
     p->blocked_in_kernel = 0;
     p->sig_pending &= ~(1u << SIGCONT);      /* consume the SIGCONT that resumed us (default: ignore),
                                               * else the caller's next signal_pending() bails -EINTR */
-    return 1;                                /* resumed (SIGCONT): caller restarts its wait */
+    return 1;                                /* caller rechecks pending signals before blocking again */
 }
 
 /* SYS_KILL: post `sig` to `pid`. sig 0 is the existence probe (returns 0 if the
@@ -140,7 +137,7 @@ void signal_dispatch(uint64_t* frame) {
     process_t* p = get_current_process();
     if (!p || !p->page_directory) return;
 
-    int sig = signal_next_deliverable(p->sig_pending, p->sig_mask);   /* lowest-numbered, unblocked */
+    int sig = signal_next_deliverable(p->sig_pending, p->sig_mask);   /* SIGKILL first, otherwise lowest unblocked */
     if (!sig) return;
 
     uint64_t disp = uncatchable(sig) ? SIG_DFL : p->sig_handlers[sig];
@@ -152,8 +149,8 @@ void signal_dispatch(uint64_t* frame) {
         /* Job-control stop (SIGTSTP/SIGSTOP): PARK here instead of terminating, so the
          * process never returns to ring 3 while stopped. We mark PROC_STOPPED, wake a
          * parent blocked in waitpid(WUNTRACED) to report the stop, then sti/hlt until
-         * SIGCONT flips us back to PROC_RUN (the scheduler skips non-RUN states). This
-         * is the do_waitpid mid-syscall discipline: blocked_in_kernel resumes us on the
+         * SIGCONT or SIGKILL flips us back to PROC_RUN. The scheduler skips non-RUN
+         * states. As in do_waitpid, blocked_in_kernel resumes us on the
          * kernel CR3, and user_cr3/user_rsp are saved/restored across the park because
          * other processes' syscalls clobber those globals while we sleep. */
         if (sig == SIGTSTP || sig == SIGSTOP) {
@@ -162,13 +159,18 @@ void signal_dispatch(uint64_t* frame) {
             p->stopped_reported = 0;
             p->state = PROC_STOPPED;
             wake_waiters(p);                 /* parent's WUNTRACED waitpid reports the stop */
-            p->blocked_in_kernel = 1;        /* resume on the kernel CR3 after SIGCONT */
+            p->blocked_in_kernel = 1;        /* resume on the kernel CR3 */
             while (p->state == PROC_STOPPED) __asm__ volatile("sti; hlt");
             __asm__ volatile("cli");
             p->blocked_in_kernel = 0;
             p->sig_pending &= ~(1u << SIGCONT);  /* consume the SIGCONT that resumed us */
             user_cr3 = s_cr3;                /* restore OUR globals for the asm return path */
             user_rsp = s_rsp;
+            /* A stopped return path must not execute user code before SIGKILL. */
+            if (p->sig_pending & (1u << SIGKILL)) {
+                p->sig_pending &= ~(1u << SIGKILL);
+                signal_terminate(p, SIGKILL);
+            }
             return;                          /* resumed (SIGCONT): finish the syscall return */
         }
         signal_terminate(p, sig);            /* never returns */
@@ -378,7 +380,7 @@ int signal_selftest(void) {
     if (sigmask_apply(2, 0, 0xFFFFFFFFu, &m) != 0 || (m & (1u << SIGKILL)) || (m & (1u << SIGSTOP))) return 13;
     if (sigmask_apply(0, 0, (1u << SIGKILL) | (1u << SIGSTOP), &m) != 0 || m != 0) return 14;
 
-    /* signal_next_deliverable: the lowest-numbered pending, unblocked signal (0 if none) —
+    /* signal_next_deliverable: SIGKILL first, otherwise lowest pending/unblocked (0 if none) —
      * the delivery-ORDER decision at the heart of signal_dispatch (which signal runs when
      * several are pending, and that a masked one is skipped for the next). Untested before. */
     if (signal_next_deliverable(0, 0) != 0) return 15;                                          /* nothing pending */
@@ -386,6 +388,10 @@ int signal_selftest(void) {
     if (signal_next_deliverable((1u << SIGTERM) | (1u << SIGINT), 0) != SIGINT) return 17;       /* lowest number wins (SIGINT < SIGTERM) */
     if (signal_next_deliverable(1u << SIGINT, 1u << SIGINT) != 0) return 18;                     /* pending but masked -> none */
     if (signal_next_deliverable((1u << SIGINT) | (1u << SIGUSR1), 1u << SIGINT) != SIGUSR1) return 19; /* masked one skipped -> next delivers */
+    sp.state = PROC_STOPPED; sp.stop_sig = SIGSTOP; sp.sig_pending = 0;
+    signal_raise(&sp, SIGKILL);
+    if (sp.state != PROC_RUN || sp.stop_sig != 0 || sp.sig_pending != (1u << SIGKILL)) return 20;
+    if (signal_next_deliverable((1u << SIGINT) | (1u << SIGKILL), 0) != SIGKILL) return 21;
 
     return 0;
 }

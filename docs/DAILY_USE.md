@@ -505,6 +505,30 @@ The immediate data and desktop priorities are:
     not cross-core synchronization, a general shared-descriptor lifetime model,
     job-wide cancellation or POSIX restart semantics.
 
+45. Development version 6.5.240 delivers SIGKILL to an already-stopped process.
+    Posting SIGKILL makes that process runnable so its kernel wait can unwind;
+    the blocking syscall still restores its state and releases temporary resources
+    before normal return-path delivery. SIGKILL takes precedence over caught
+    lower-numbered signals. A process stopped inside signal dispatch checks for
+    pending SIGKILL before returning to user space. In the separate 239 baseline,
+    children stopped during a pipe read, sleep and self-stop remain unreaped for
+    200 ten-millisecond polls after SIGKILL; SIGCONT cleanup is required, and the
+    self-stopped child executes a user-space marker before termination.
+    The host harness now extracts the actual dispatch and termination functions:
+    30 ASan/UBSan cases pass, while 239 fails the five new wake, dispatch,
+    precedence and blocking-cleanup cases. Scheduling, privileged instructions
+    and user-memory copying remain simulated in those host tests. The build has
+    no compiler/linker warnings and passes RTC/ELF contracts, 230 kernel tests
+    and four-CPU login. In QEMU, all three stopped children are reaped with status
+    137 without SIGCONT; no resumed-user marker appears. All eight pipe-reuse,
+    two multiple-reader and eight earlier signal cases also pass. PS/2 pipeline
+    input/EOF, six scheduler heartbeats, terminal dragging and the next command
+    pass; screenshots are inspected, both disk fixtures remain exact and the VM
+    closes. The final kernel matches the tested ISO payload byte-for-byte. The
+    ancillary QMP reader resets during intentional shutdown; the main runner
+    exits 0. This change does not add job groups, terminal input ownership, cross-core synchronization
+    or signal delivery to arbitrary user code that never reaches a delivery path.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

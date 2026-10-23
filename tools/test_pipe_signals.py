@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 PREFIX = r'''
 #include <assert.h>
+#include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +22,8 @@ PREFIX = r'''
 typedef struct {
     int state, blocked_in_kernel, waiting_for, wake_tick;
     uint32_t sig_pending, sig_mask, stop_sig, stopped_reported, pipe_wait_id;
-    uint64_t sig_handlers[32];
+    uint64_t sig_handlers[32], page_directory, sig_saved[18], sig_trampoline;
+    uint32_t sig_active; int exit_code;
 } process_t;
 static process_t proc;
 static process_t *process_table[512];
@@ -37,10 +39,20 @@ static int multi_test(void);
 static int lifetime_test(void);
 static int reuse_test(void);
 #define memset_asm memset
+
+static jmp_buf terminated;
+static int signal_events;
+static int copy_to_user(uint64_t dst, const void *src, int n) {
+    (void)dst; (void)src; (void)n; return 0;
+}
+static int stopped_test(void);
+static void stopped_sleep(void);
+
 '''
 
 SUFFIX = r'''
 static void host_sleep(void) {
+    if (scenario >= 25) { stopped_sleep(); return; }
     if (scenario >= 23) {
         assert(++sleeps == 1);
         pipe_close_end(id, 0); pipe_close_end(id, 1);
@@ -87,6 +99,7 @@ static void host_sleep(void) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     scenario = atoi(argv[1]);
+    if (scenario >= 25) return stopped_test();
     if (scenario >= 23) return reuse_test();
     if (scenario >= 20) return lifetime_test();
     if (scenario >= 16) return multi_test();
@@ -239,6 +252,54 @@ static int multi_test(void) {
     return 0;
 }
 
+static void stopped_sleep(void) {
+    if (proc.state == PROC_ZOMBIE) longjmp(terminated, 1);
+    assert(++signal_events <= 2);
+    if (proc.state == PROC_BLOCKED) {
+        assert(scenario == 29);
+        signal_raise(&proc, SIGSTOP);
+        return;
+    }
+    assert(proc.state == PROC_STOPPED && proc.blocked_in_kernel);
+    assert(!proc.pipe_wait_id);
+    user_cr3 = 999; user_rsp = 888;
+    signal_raise(&proc, SIGKILL);
+    if (scenario == 27) signal_raise(&proc, SIGCONT);
+    assert(proc.state == PROC_RUN);
+}
+static int stopped_test(void) {
+    current = &proc; proc.state = PROC_RUN; proc.page_directory = 1;
+    process_table[0] = &proc; process_count = 1;
+    if (scenario == 25) {
+        proc.state = PROC_STOPPED; proc.stop_sig = SIGSTOP;
+        signal_raise(&proc, SIGKILL);
+        assert(proc.state == PROC_RUN && proc.stop_sig == 0);
+        assert(proc.sig_pending == (1u << SIGKILL));
+        return 0;
+    }
+    if (setjmp(terminated)) {
+        assert(proc.state == PROC_ZOMBIE && proc.exit_code == 137);
+        assert(!proc.blocked_in_kernel && !proc.pipe_wait_id);
+        assert(user_cr3 == 123 && user_rsp == 456);
+        return 0;
+    }
+    if (scenario == 29) {
+        id = pipe_new(); assert(id >= 0);
+        char c = '?';
+        assert(pipe_read(id, &c, 1) == -EINTR && c == '?');
+        assert(!proc.blocked_in_kernel && !proc.pipe_wait_id);
+        assert(user_cr3 == 123 && user_rsp == 456);
+        pipe_close_end(id, 0); pipe_close_end(id, 1);
+    } else if (scenario == 28) {
+        proc.sig_pending = (1u << SIGINT) | (1u << SIGKILL);
+        proc.sig_handlers[SIGINT] = 1234;
+    } else proc.sig_pending = 1u << SIGSTOP;
+    uint64_t frame[17] = {0};
+    signal_dispatch(frame);
+    assert(!"pending SIGKILL returned to user space");
+    return 1;
+}
+
 '''
 
 
@@ -271,7 +332,8 @@ def main():
                                 if re.match(r'#define (NSIG|SIG\w+|PROC_(RUN|STOPPED|BLOCKED|ZOMBIE)|EINTR)\s', line))
             signal = read('kernel/proc/signal.c', ref)
             functions = ''.join(function(signal, n) for n in (
-                'signal_raise', 'signal_next_deliverable', 'signal_pending', 'signal_check_stop'))
+                'uncatchable', 'default_is_ignore', 'signal_raise', 'signal_next_deliverable',
+                'signal_pending', 'signal_check_stop', 'signal_terminate', 'signal_dispatch'))
             pipe = read('kernel/proc/pipe.c', ref).replace('#include "../core/kernel.h"', '')
             legacy = 'reader_waiter;' in pipe
             suffix = SUFFIX
@@ -284,6 +346,8 @@ def main():
                                         'pipes[pipe_id].reader_waiter = p;')
             source = PREFIX + defines + '\n' + functions + pipe + suffix
             source = source.replace('__asm__ volatile("cli")', '(void)0')
+            source = source.replace('__asm__ volatile("sti")', '(void)0')
+            source = source.replace('__asm__ volatile("hlt")', 'host_sleep()')
             source = source.replace('__asm__ volatile("sti; hlt")', 'host_sleep()')
             path, exe = work / 'test.c', work / 'test'
             path.write_text(source, encoding='utf-8')
@@ -291,7 +355,7 @@ def main():
                             '-fsanitize=address,undefined', '-fno-pie', '-no-pie',
                             str(path), '-o', str(exe)], check=True)
             failed = []
-            for case in range(25):
+            for case in range(30):
                 result = subprocess.run([str(exe), str(case)], capture_output=True, text=True)
                 if result.returncode:
                     failed.append(case)
@@ -300,7 +364,7 @@ def main():
             return failed
 
         assert not suite(), 'current pipe/signal cases failed'
-        print('PASS 25 pipe/signal scenarios under ASan/UBSan; scheduler events simulated')
+        print('PASS 30 pipe/signal scenarios under ASan/UBSan; scheduler events simulated')
         if args.compare_ref:
             failed = suite(args.compare_ref)
             assert failed, 'baseline must reproduce a regression'
