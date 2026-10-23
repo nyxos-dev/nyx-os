@@ -215,7 +215,7 @@ jobs:
       - name: Install QEMU and e2fsprogs
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 e2fsprogs
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 e2fsprogs
 
       - name: Download the ISO
         uses: actions/download-artifact@v8
@@ -271,7 +271,7 @@ jobs:
       - name: Install QEMU and e2fsprogs
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 e2fsprogs
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 e2fsprogs
 
       - name: Download the ISO
         uses: actions/download-artifact@v8

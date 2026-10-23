@@ -144,6 +144,16 @@ Alongside these, CodeQL scans the sources, a `v*` tag builds a release ISO, and 
 workflow publishes this documentation. The self-test job is the gate that matters for
 correctness: if the battery is red, the change does not ship.
 
+Both QEMU jobs install required packages with `--no-install-recommends`. They use
+BIOS boot, raw ext2 disks and `-display none`; optional GUI, firmware and storage
+packages are not part of this test configuration. This reduces dependency downloads
+that can exhaust the job timeout before a boot test starts. Required dependencies
+remain installed, and the boot and self-test assertions are unchanged.
+
+A job canceled during package installation provides no boot result. Inspect the
+failed step separately from kernel output and confirm a successful descendant
+containing the change before marking a canceled run covered.
+
 ---
 
 *The list of tests grows with the OS. When you touch a subsystem with a pure, checkable
