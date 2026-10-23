@@ -317,6 +317,7 @@ def function(source, name):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare-ref')
+    parser.add_argument('--compare-sleep-ref')
     args = parser.parse_args()
 
     def read(path, ref):
@@ -369,6 +370,68 @@ def main():
             failed = suite(args.compare_ref)
             assert failed, 'baseline must reproduce a regression'
             print(f'Baseline {args.compare_ref}: {len(failed)} failures, cases {failed}')
+
+        def sleep_suite(ref=None):
+            body = function(read('kernel/core/syscall.c', ref), 'do_sleep_ms')
+            body = body.replace('__asm__ volatile("cli")', '(host_if = 0)')
+            body = body.replace('__asm__ volatile("sti")', '(host_if = 1)')
+            body = body.replace('__asm__ volatile("sti; hlt")', 'host_yield()')
+            code = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#define PROC_RUN 1
+#define PROC_BLOCKED 3
+#define EINTR 4
+typedef struct { int state, blocked_in_kernel; uint32_t wake_tick; } process_t;
+static process_t proc = { PROC_RUN, 0, 0 };
+static process_t *get_cur_proc(void) { return &proc; }
+static uint64_t user_cr3=123,user_rsp=456;
+volatile uint32_t tick_count;
+static int host_if, mode, yielded, pending;
+static int signal_pending(process_t *p) { assert(p==&proc); return pending; }
+static int signal_check_stop(process_t *p) {
+    assert(p==&proc);
+    if(mode!=4) return 0;
+    pending=0; tick_count+=2; user_cr3=777; user_rsp=888; return 1;
+}
+static void host_yield(void) {
+    host_if=1;
+    assert(proc.state==PROC_BLOCKED && proc.blocked_in_kernel);
+    assert(++yielded<=2);
+    if(mode==3 && yielded==1) tick_count++;
+    else tick_count=proc.wake_tick;
+    proc.state=PROC_RUN; user_cr3=777; user_rsp=888;
+}
+''' + body + r'''
+int main(int argc,char **argv) {
+    assert(argc==2); mode=atoi(argv[1]);
+    if(mode==2 || mode==4) pending=1;
+    if(mode==5) tick_count=UINT32_MAX-3;
+    int result=do_sleep_ms(mode==0 ? 0 : 10);
+    assert(result==(mode==2 ? -EINTR : 0));
+    assert(user_cr3==123 && user_rsp==456);
+    assert(!proc.blocked_in_kernel && !proc.wake_tick && proc.state==PROC_RUN);
+    assert(host_if==0); /* atomic per-CPU restoration through return */
+    return 0;
+}
+'''
+            path, exe = work/'sleep.c', work/'sleep'
+            path.write_text(code, encoding='utf-8')
+            subprocess.run(['gcc','-std=c11','-O1','-Wall','-Wextra','-Werror',
+                            '-fsanitize=address,undefined','-fno-pie','-no-pie',
+                            str(path),'-o',str(exe)],check=True)
+            failures=[]
+            for n in range(6):
+                result=subprocess.run([str(exe),str(n)],capture_output=True,text=True,timeout=10)
+                if result.returncode: failures.append(n)
+            return failures
+        assert not sleep_suite(), 'sleep return contract failed'
+        print('PASS 6 sleep return scenarios under ASan/UBSan; interrupts and scheduler simulated')
+        if args.compare_sleep_ref:
+            failed=sleep_suite(args.compare_sleep_ref)
+            assert failed==list(range(6)), failed
+            print('PASS sleep baseline fails all 6 atomic-return scenarios')
 
 
 if __name__ == '__main__':

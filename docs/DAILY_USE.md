@@ -529,6 +529,42 @@ The immediate data and desktop priorities are:
     exits 0. This change does not add job groups, terminal input ownership, cross-core synchronization
     or signal delivery to arbitrary user code that never reaches a delivery path.
 
+46. Development version 6.5.241 retains all stages in shell job records.
+    A background pipeline is Done only after every stage is reaped. `fg` waits
+    for all remaining members and preserves an already-collected final-stage
+    status; `fg`/`bg` resume every observed stopped member. Foreground waits poll
+    all members with a ten-millisecond sleep, so an upstream reader cannot hide
+    a later stop. The table reserves capacity before launch, including foreground
+    commands that might stop; at 16 occupied slots, external launches fail with
+    status 1. Partial pipe/fork failure closes parent pipe ends, kills and reaps
+    launched children. This cannot undo redirections already executed by a child.
+    Command-substitution children clear inherited job records, and background
+    reaping never uses an indiscriminate wait for any child.
+    The first GUI trial exposed a sleep-return fault: interrupts were enabled
+    after restoring per-CPU user CR3/RSP, allowing another task to overwrite
+    those slots before return. Sleep now keeps interrupts masked through that
+    return boundary. The failing image and fault log are retained separately.
+    Host tests extract actual job and launch functions with simulated syscalls:
+    17 ASan/UBSan lifecycle cases pass and baseline 240 fails 16. The existing
+    23 entry and 31 pipeline preflight cases also pass. These include capacity
+    and launch-failure injection; those failures were not injected in QEMU.
+    Six actual sleep-function return scenarios also pass with simulated
+    interrupts/scheduling; baseline 240 fails all six. The prior 30 pipe/signal
+    host cases pass. The corrected target run repeats three stopped-process,
+    eight pipe-reuse, two multiple-reader and eight earlier signal checks.
+    The warning-free build passes RTC/ELF contracts, 230 kernel tests and four-CPU
+    login. Actual PS/2 input verifies early and late stage exits against `ps`,
+    retention of final status 1 through `fg`, two stopped members resumed by `bg`,
+    cleanup, substitution, redirection and four-stage input/EOF. Six scheduler
+    heartbeats, an 80-by-40 terminal drag and the next command pass; screenshots
+    are inspected, two disk fixtures remain exact, and the VM closes. The final
+    kernel matches the tested ISO. Kernel foreground signals still target one
+    PID: job-wide Ctrl+C, terminal input ownership and externally initiated
+    continue notifications remain open. A displayed Stopped job can contain
+    other running members; this is not a process-group implementation.
+    The ancillary QMP reader reports a reset during intentional shutdown;
+    the main runner exits 0 after fixture verification.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

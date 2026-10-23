@@ -394,10 +394,10 @@ static int do_sleep_ms(uint32_t ms) {
     for (;;) {
         /* cli makes the deadline check + block atomic vs. the waking tick. */
         __asm__ volatile("cli");
-        if ((int32_t)(tick_count - deadline) >= 0) { __asm__ volatile("sti"); break; }
+        if ((int32_t)(tick_count - deadline) >= 0) break;
         if (self && signal_pending(self)) {
             if (signal_check_stop(self)) continue;   /* Ctrl-Z: parked+resumed, keep sleeping */
-            __asm__ volatile("sti"); result = -EINTR; break;
+            result = -EINTR; break;
         }
         if (self) {
             self->blocked_in_kernel = 1;         /* resume us on the kernel CR3 */
@@ -411,8 +411,10 @@ static int do_sleep_ms(uint32_t ms) {
             self->wake_tick = 0;
             if (self->state == PROC_BLOCKED) self->state = PROC_RUN;
         }
-        __asm__ volatile("sti");
     }
+    /* Keep interrupts masked through restoration and the syscall return path.
+     * Another task's syscall can otherwise overwrite these per-CPU slots after
+     * we restore them, returning this process on the other task's user CR3. */
     user_cr3 = saved_cr3;
     user_rsp = saved_ursp;
     return result;

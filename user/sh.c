@@ -362,24 +362,86 @@ static int try_builtin(char* line) {
  * so an alive shell owns its zombies. */
 #define MAX_JOBS 16
 typedef struct {
-    long pid;          /* the job's (last-stage) pid; 0 = free slot */
-    int  stopped;      /* 1 = stopped (Ctrl-Z), 0 = running in the background */
+    long pid;          /* display identity (original last stage); 0 = free slot */
+    long members[MAX_STAGES]; /* live/unreaped children; 0 = consumed */
+    int stopped[MAX_STAGES];  /* last observed stop, cleared by fg/bg */
+    int count;
+    int status;        /* retained exit status of the final stage */
     char cmd[64];      /* the command line, for the `jobs` listing */
 } job_t;
 static job_t jobs[MAX_JOBS];
 
-/* Record a job; returns its 1-based number, or -1 if the table is full. */
-static int job_add(long pid, int stopped, const char* cmd) {
-    if (pid <= 0) return -1;
+/* Reserve capacity before any child can run or redirect files. */
+static int job_slot(void) {
     for (int i = 0; i < MAX_JOBS; i++) {
-        if (jobs[i].pid == 0) {
-            jobs[i].pid = pid; jobs[i].stopped = stopped;
-            strncpy(jobs[i].cmd, cmd, sizeof(jobs[i].cmd) - 1);
-            jobs[i].cmd[sizeof(jobs[i].cmd) - 1] = '\0';
-            return i + 1;
-        }
+        if (jobs[i].pid == 0) return i;
     }
     return -1;
+}
+
+static void job_init(job_t* j, const long* pids, int count, const char* cmd) {
+    memset(j, 0, sizeof(*j));
+    j->pid = pids[count - 1];
+    j->count = count;
+    for (int s = 0; s < count; s++) j->members[s] = pids[s];
+    strncpy(j->cmd, cmd, sizeof(j->cmd) - 1);
+}
+
+static int job_stopped(const job_t* j) {
+    for (int s = 0; s < j->count; s++)
+        if (j->members[s] && j->stopped[s]) return 1;
+    return 0;
+}
+
+/* Consume only this job's statuses, never a command-substitution child or another
+ * job's final-stage result. Poll every member so an earlier reader cannot hide a
+ * later stage's stop. The kernel reports stops once and exits take precedence. */
+static int job_poll(job_t* j) {
+    int alive = 0;
+    for (int s = 0; s < j->count; s++) {
+        long pid = j->members[s];
+        if (!pid) continue;
+        int st = 0;
+        long r = waitpid3((int)pid, &st, WNOHANG | WUNTRACED);
+        if (r == pid && WIFSTOPPED(st)) j->stopped[s] = 1;
+        else if (r == pid || r < 0) {
+            if (s == j->count - 1) j->status = r < 0 ? 127 : st;
+            j->members[s] = 0;
+            j->stopped[s] = 0;
+        }
+        if (j->members[s]) alive++;
+    }
+    return alive;
+}
+
+static void job_continue(job_t* j) {
+    for (int s = 0; s < j->count; s++) {
+        if (j->members[s] && j->stopped[s]) {
+            kill((int)j->members[s], SIGCONT);
+            j->stopped[s] = 0;
+        }
+    }
+}
+
+static void job_foreground(job_t* j, int resume) {
+    job_poll(j);
+    /* SETFG still targets one process, not a process group. Prefer the final live
+     * stage; never give the terminal to a reaped/reused display identity. */
+    for (int s = j->count - 1; s >= 0; s--) {
+        if (j->members[s]) { setfg(j->members[s]); break; }
+    }
+    if (resume) job_continue(j);
+    while (job_poll(j)) {
+        if (job_stopped(j)) {
+            printf("\nStopped    %s\n", j->cmd);
+            setfg((int)getpid());
+            return;
+        }
+        sleep_ms(10);
+    }
+    last_status = j->status;
+    j->pid = 0;
+    setfg((int)getpid());
 }
 
 /* Look up a job by 1-based number, or the most recent one when n <= 0. NULL if none. */
@@ -390,19 +452,16 @@ static job_t* job_find(int n) {
     return 0;
 }
 
-/* Non-blocking sweep of finished background jobs. Called before each prompt. Stopped
- * jobs aren't running, so they're skipped (they only resume via fg/bg). A final
- * waitpid(-1) mop-up reaps any other finished children (non-leader pipeline stages). */
+/* A job is Done only after every stage has been reaped, including killed stopped
+ * stages. Do not discard statuses through a waitpid(-1) mop-up. */
 static void reap_jobs(void) {
     for (int i = 0; i < MAX_JOBS; i++) {
-        if (jobs[i].pid == 0 || jobs[i].stopped) continue;
-        int st = 0;
-        long r = waitpid3((int)jobs[i].pid, &st, WNOHANG);
-        if (r == jobs[i].pid) { printf("[%d]  Done       %s\n", i + 1, jobs[i].cmd); jobs[i].pid = 0; }
-        else if (r < 0)       { jobs[i].pid = 0; }
+        if (jobs[i].pid == 0) continue;
+        if (!job_poll(&jobs[i])) {
+            printf("[%d]  Done       %s\n", i + 1, jobs[i].cmd);
+            jobs[i].pid = 0;
+        }
     }
-    int st;
-    while (waitpid3(-1, &st, WNOHANG) > 0) { }   /* mop up other finished children */
 }
 
 /* Parse a job spec: "%2"/"2" -> 2, empty -> 0 (most recent). */
@@ -416,35 +475,27 @@ static void builtin_jobs(void) {
     int any = 0;
     for (int i = 0; i < MAX_JOBS; i++) {
         if (jobs[i].pid == 0) continue;
-        printf("[%d]  %s  %s\n", i + 1, jobs[i].stopped ? "Stopped" : "Running", jobs[i].cmd);
+        printf("[%d]  %s  %s\n", i + 1, job_stopped(&jobs[i]) ? "Stopped" : "Running", jobs[i].cmd);
         any = 1;
     }
     if (!any) printf("jobs: no active jobs\n");
 }
 
-/* fg [%n] — resume job n (or the most recent) in the FOREGROUND: SIGCONT it if
- * stopped, claim the terminal, and wait (WUNTRACED, so another Ctrl-Z re-stops it). */
+/* fg [%n] resumes each observed stopped member and retains the whole pipeline
+ * until all stages exit or another stop is observed. */
 static void builtin_fg(char* arg) {
     job_t* j = job_find(job_num(arg));
     if (!j) { printf("fg: no such job\n"); return; }
-    long pid = j->pid;
     printf("%s\n", j->cmd);                       /* real shells echo the resumed cmd */
-    if (j->stopped) { kill((int)pid, SIGCONT); j->stopped = 0; }
-    setfg(pid);
-    int st = 0;
-    waitpid3((int)pid, &st, WUNTRACED);
-    setfg((int)getpid());
-    if (WIFSTOPPED(st)) { j->stopped = 1; printf("\nStopped    %s\n", j->cmd); }
-    else { last_status = st; j->pid = 0; }        /* exited -> free the slot */
+    job_foreground(j, 1);
 }
 
 /* bg [%n] — resume a stopped job in the BACKGROUND (SIGCONT, keep running). */
 static void builtin_bg(char* arg) {
     job_t* j = job_find(job_num(arg));
     if (!j) { printf("bg: no such job\n"); return; }
-    if (!j->stopped) { printf("bg: job already running\n"); return; }
-    kill((int)j->pid, SIGCONT);
-    j->stopped = 0;
+    if (!job_stopped(j)) { printf("bg: job already running\n"); return; }
+    job_continue(j);
     printf("[bg] %s &\n", j->cmd);
 }
 
@@ -633,11 +684,18 @@ static void run_line(char* line) {
     }
 
     long pids[MAX_STAGES];
+    int slot = job_slot();
+    if (slot < 0) {
+        printf("sh: job table full\n");
+        last_status = 1;
+        return;
+    }
+    int launched = 0;
     int prev_rd = -1;                          /* read end of the previous pipe */
     for (int s = 0; s < nstages; s++) {
         int has_next = (s < nstages - 1);
         int pfd[2] = { -1, -1 };
-        if (has_next && pipe(pfd) != 0) { printf("sh: pipe failed\n"); return; }
+        if (has_next && pipe(pfd) != 0) { printf("sh: pipe failed\n"); goto launch_failed; }
 
         long pid = fork();
         if (pid == 0) {
@@ -684,39 +742,37 @@ static void run_line(char* line) {
             exit(127);
         } else if (pid < 0) {
             printf("sh: fork failed\n");
-            return;
+            if (has_next) { close(pfd[0]); close(pfd[1]); }
+            goto launch_failed;
         }
         pids[s] = pid;
+        launched++;
         /* Parent: close the ends now owned by the children, keep the new pipe's
          * read end for the next stage. Closing promptly is what makes EOF fire
          * once the last writer exits. */
-        if (prev_rd >= 0) close(prev_rd);
+        if (prev_rd >= 0) { close(prev_rd); prev_rd = -1; }
         if (has_next) { close(pfd[1]); prev_rd = pfd[0]; }
     }
 
-    if (background) {                        /* don't wait — record a running job */
-        int jn = job_add(pids[nstages - 1], 0, jobcmd);
-        printf("[%d]  %ld  %s\n", jn, pids[nstages - 1], jobcmd);
+    job_init(&jobs[slot], pids, nstages, jobcmd);
+    if (background) {
+        printf("[%d]  %ld  %s\n", slot + 1, pids[nstages - 1], jobcmd);
+        last_status = 0;
         return;
     }
+    job_foreground(&jobs[slot], 0);
+    return;
 
-    /* Foreground: claim the terminal for the job (so Ctrl-C / Ctrl-Z reach IT, not the
-     * shell), wait with WUNTRACED so a Ctrl-Z stop parks the job instead of killing it,
-     * then reclaim the terminal for the shell. */
-    setfg(pids[nstages - 1]);
-    for (int s = 0; s < nstages; s++) {
-        int st = 0;
-        waitpid3((int)pids[s], &st, WUNTRACED);
-        if (WIFSTOPPED(st)) {               /* Ctrl-Z: park it as a stopped job */
-            int jn = job_add(pids[s], 1, jobcmd);
-            printf("\n[%d]  Stopped    %s\n", jn, jobcmd);
-            break;                          /* leave any other pipeline stages running */
-        }
-        last_status = st;                   /* pipeline status = last stage ($?) */
-        if (st != 0)
-            printf("sh: [pid %d] exited with status %d\n", (int)pids[s], st);
+launch_failed:
+    /* A partial pipeline must not leave hidden children or pipe ends behind.
+     * Already executed redirections cannot be rolled back by this cleanup. */
+    if (prev_rd >= 0) close(prev_rd);
+    for (int s = 0; s < launched; s++) kill((int)pids[s], SIGKILL);
+    for (int s = 0; s < launched; s++) {
+        int st;
+        waitpid3((int)pids[s], &st, 0);
     }
-    setfg((int)getpid());                   /* shell reclaims the terminal */
+    last_status = 1;
 }
 
 /* ---- command lists: pipelines joined by ; && || --------------------------- */
@@ -764,6 +820,7 @@ static void capture_command(char* cmd, char* out, int outsz) {
     if (pipe(pfd) != 0) return;
     long pid = fork();
     if (pid == 0) {                          /* subshell: stdout -> pipe, run, exit */
+        memset(jobs, 0, sizeof(jobs));       /* parent's jobs are not our children */
         close(pfd[0]);
         dup2(pfd[1], 1);
         close(pfd[1]);
