@@ -20,26 +20,32 @@ PREFIX = r'''
 #include <string.h>
 typedef struct {
     int state, blocked_in_kernel, waiting_for, wake_tick;
-    uint32_t sig_pending, sig_mask, stop_sig, stopped_reported;
+    uint32_t sig_pending, sig_mask, stop_sig, stopped_reported, pipe_wait_id;
     uint64_t sig_handlers[32];
 } process_t;
 static process_t proc;
+static process_t *process_table[512];
+static int process_count;
 static process_t *current;
 static uint64_t user_cr3 = 123, user_rsp = 456;
 static int scenario, sleeps, stopped, id;
 static process_t *get_current_process(void) { return current; }
 static void wake_waiters(process_t *p) { (void)p; stopped++; }
 static void host_sleep(void);
+static void multi_sleep(void);
+static int multi_test(void);
+static int lifetime_test(void);
 #define memset_asm memset
 '''
 
 SUFFIX = r'''
 static void host_sleep(void) {
+    if (scenario >= 16) { multi_sleep(); return; }
     assert(++sleeps < 4);  /* a missed signal must fail, never hang the host */
     user_cr3 = 999; user_rsp = 888;  /* another process ran */
     if (proc.state == PROC_STOPPED) {
         assert(scenario == 4 || scenario == 5 || scenario == 8);
-        assert(pipes[id].reader_waiter == NULL);
+        assert(proc.pipe_wait_id == 0);
         if (scenario == 8) pipe_close_end(id, 1);
         else assert(pipe_write(id, "S", 1) == 1);
         assert(proc.state == PROC_STOPPED); /* pipe activity cannot resume STOP */
@@ -47,7 +53,7 @@ static void host_sleep(void) {
         return;
     }
     assert(proc.state == PROC_BLOCKED && proc.blocked_in_kernel);
-    assert(pipes[id].reader_waiter == &proc);
+    assert(proc.pipe_wait_id == (uint32_t)(id + 1));
     if (sleeps == 1) {
         if (scenario == 0 || scenario == 9) signal_raise(&proc, SIGINT);
         else if (scenario == 1) signal_raise(&proc, SIGKILL);
@@ -71,8 +77,11 @@ static void host_sleep(void) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     scenario = atoi(argv[1]);
+    if (scenario >= 20) return lifetime_test();
+    if (scenario >= 16) return multi_test();
     if (scenario == 13) { assert(pipe_selftest() == 0); return 0; }
     current = &proc; proc.state = PROC_RUN;
+    process_table[0] = &proc; process_count = 1;
     id = pipe_new(); assert(id >= 0);
     if (scenario == 3) proc.sig_mask = 1u << SIGUSR1;
     if (scenario == 15) proc.sig_mask = 1u << SIGTSTP;
@@ -89,7 +98,7 @@ int main(int argc, char **argv) {
     char out = '?';
     int got = pipe_read(id, &out, 1);
     assert(!proc.blocked_in_kernel);
-    assert(pipes[id].reader_waiter == NULL);
+    assert(proc.pipe_wait_id == 0);
     assert(user_cr3 == 123 && user_rsp == 456);
     if (scenario == 3 || scenario == 7 || scenario == 12 || scenario == 15)
         assert(got == 1 && out == 'D');
@@ -111,6 +120,99 @@ int main(int argc, char **argv) {
     assert(!pipes[id].used);
     return 0;
 }
+
+static void register_waiter(process_t *p, int pipe_id) {
+    p->pipe_wait_id = (uint32_t)(pipe_id + 1);
+    p->state = PROC_BLOCKED;
+    /* BASELINE_REGISTER */
+}
+
+static int lifetime_test(void) {
+    id = pipe_new(); assert(id >= 0);
+    process_t *victim = calloc(1, sizeof(*victim)); assert(victim);
+    process_table[0] = victim; process_count = 1;
+    register_waiter(victim, id);
+    if (scenario == 20) {
+        /* Direct destroy/reap bypasses the suspended read's return path. */
+        victim->state = PROC_ZOMBIE;
+        assert(pipe_write(id, "X", 1) == 1);
+        assert(victim->state == PROC_ZOMBIE);
+        register_waiter(victim, id);
+        process_table[0] = NULL; process_count = 0;
+        free(victim);
+        assert(pipe_write(id, "Y", 1) == 1);
+        pipe_close_end(id, 1);
+    } else if (scenario == 21) {
+        int other = pipe_new(); assert(other >= 0);
+        assert(pipe_write(other, "X", 1) == 1);
+        assert(victim->state == PROC_BLOCKED);
+        assert(pipe_write(id, "", 0) == 0);
+        assert(victim->state == PROC_BLOCKED);
+        victim->state = PROC_STOPPED;
+        pipe_close_end(id, 1);
+        assert(victim->state == PROC_STOPPED);
+        free(victim); process_count = 0;
+        pipe_close_end(other, 1); pipe_close_end(other, 0);
+    } else {
+        free(victim);
+        process_t *all = calloc(512, sizeof(*all)); assert(all);
+        process_count = 512;
+        for (int i = 0; i < 512; i++) {
+            process_table[i] = &all[i]; register_waiter(&all[i], id);
+        }
+        pipe_close_end(id, 1);
+        for (int i = 0; i < 512; i++) assert(all[i].state == PROC_RUN);
+        free(all); process_count = 0;
+    }
+    pipe_close_end(id, 0);
+    return 0;
+}
+
+static process_t second;
+static int multi_events;
+static void multi_sleep(void) {
+    assert(++multi_events < 5);
+    if (current == &proc && multi_events == 1) {
+        current = &second;
+        user_cr3 = 222; user_rsp = 333;
+        char c = '?';
+        int n = pipe_read(id, &c, 1);
+        assert(n == (scenario == 17 ? 0 : 1));
+        if (n) assert(c == 'A');
+        assert(user_cr3 == 222 && user_rsp == 333);
+        current = &proc;
+        return;
+    }
+    if (current == &second) {
+        if (scenario == 17) pipe_close_end(id, 1);
+        else if (scenario == 19) {
+            signal_raise(&proc, SIGKILL);
+            assert(pipe_write(id, "A", 1) == 1);
+        } else assert(pipe_write(id, "AB", scenario == 18 ? 1 : 2) ==
+                      (scenario == 18 ? 1 : 2));
+        assert(proc.state == PROC_RUN && second.state == PROC_RUN);
+        return;
+    }
+    assert(scenario == 18 && current == &proc && multi_events == 3);
+    assert(proc.state == PROC_BLOCKED);
+    assert(pipe_write(id, "B", 1) == 1);
+}
+
+static int multi_test(void) {
+    current = &proc; proc.state = second.state = PROC_RUN;
+    process_table[0] = &proc; process_table[1] = &second; process_count = 2;
+    id = pipe_new(); assert(id >= 0);
+    char c = '?';
+    int n = pipe_read(id, &c, 1);
+    assert(n == (scenario == 17 ? 0 : scenario == 19 ? -EINTR : 1));
+    if (n == 1) assert(c == 'B');
+    assert(user_cr3 == 123 && user_rsp == 456);
+    assert(!proc.pipe_wait_id && !second.pipe_wait_id);
+    assert(!proc.blocked_in_kernel && !second.blocked_in_kernel);
+    pipe_close_end(id, 1); pipe_close_end(id, 0);
+    return 0;
+}
+
 '''
 
 
@@ -145,7 +247,16 @@ def main():
             functions = ''.join(function(signal, n) for n in (
                 'signal_raise', 'signal_next_deliverable', 'signal_pending', 'signal_check_stop'))
             pipe = read('kernel/proc/pipe.c', ref).replace('#include "../core/kernel.h"', '')
-            source = PREFIX + defines + '\n' + functions + pipe + SUFFIX
+            legacy = 'reader_waiter;' in pipe
+            suffix = SUFFIX
+            if legacy:
+                suffix = suffix.replace('proc.pipe_wait_id == 0',
+                                        'pipes[id].reader_waiter == NULL')
+                suffix = suffix.replace('proc.pipe_wait_id == (uint32_t)(id + 1)',
+                                        'pipes[id].reader_waiter == &proc')
+                suffix = suffix.replace('/* BASELINE_REGISTER */',
+                                        'pipes[pipe_id].reader_waiter = p;')
+            source = PREFIX + defines + '\n' + functions + pipe + suffix
             source = source.replace('__asm__ volatile("cli")', '(void)0')
             source = source.replace('__asm__ volatile("sti; hlt")', 'host_sleep()')
             path, exe = work / 'test.c', work / 'test'
@@ -154,7 +265,7 @@ def main():
                             '-fsanitize=address,undefined', '-fno-pie', '-no-pie',
                             str(path), '-o', str(exe)], check=True)
             failed = []
-            for case in range(16):
+            for case in range(23):
                 result = subprocess.run([str(exe), str(case)], capture_output=True, text=True)
                 if result.returncode:
                     failed.append(case)
@@ -163,10 +274,10 @@ def main():
             return failed
 
         assert not suite(), 'current pipe/signal cases failed'
-        print('PASS 16 pipe/signal scenarios under ASan/UBSan; scheduler events simulated')
+        print('PASS 23 pipe/signal scenarios under ASan/UBSan; scheduler events simulated')
         if args.compare_ref:
             failed = suite(args.compare_ref)
-            assert {0, 1, 2, 4, 5}.issubset(failed), failed
+            assert failed, 'baseline must reproduce a regression'
             print(f'Baseline {args.compare_ref}: {len(failed)} failures, cases {failed}')
 
 

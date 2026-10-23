@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.237"
+#define KERNEL_VERSION "6.5.238"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -356,6 +356,7 @@ typedef struct process {
                              // fault there gets a fresh zeroed page on first touch
     uint32_t sched_managed;  // 1 = round-robined by the preemptive scheduler (spawn_user_path);
                              // blocking-exec and unstarted procs leave this 0 so they're skipped
+    uint32_t pipe_wait_id;   // pipe index + 1 while waiting to read; 0 = none
     uint32_t waiting_for;    // pid this proc is blocked in kwait() on (0 = not waiting)
     uint32_t blocked_in_kernel; // 1 = parked mid-syscall (ring 0): the scheduler must
                              // resume it on the KERNEL CR3, since -mcmodel=large kernel

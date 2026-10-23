@@ -456,6 +456,32 @@ The immediate data and desktop priorities are:
     SIGKILL while already stopped, job-wide cancellation, input ownership and
     asynchronous foreground execution remain outside this change.
 
+43. Development version 6.5.238 wakes every blocked reader of a pipe after
+    a write or last-writer close. A process-owned pipe-index marker replaces the
+    single retained reader pointer. The wake scan uses the live process table,
+    clears matching markers and only resumes blocked processes; stopped and
+    zombie states stay unchanged. A reader rechecks the buffer and can block
+    again if another reader consumed the available bytes. Fork/clone start with
+    zeroed markers, and the existing signal/stop path clears its marker before
+    returning or parking. The scan is bounded by the 512-process table; this
+    does not add cross-core pipe locking or promise reader ordering/fairness.
+    The existing host runner passes 23 ASan/UBSan scenarios, including two-reader
+    data/EOF, partial-data reblocking, signal interruption, simulated direct
+    teardown, unrelated pipes and the 512-reader bound. Baseline 237 fails six.
+    Scheduling and teardown are simulated in those host tests, not a target
+    lifecycle qualification. The warning-free build passes RTC/ELF checks,
+    230 kernel tests and four-CPU login. In a separate four-CPU QEMU desktop run,
+    both readers finish with status 0 before cleanup in the data and EOF trials;
+    baseline 237 left one blocked in each. All eight earlier target signal
+    cases pass, as do the four-stage PS/2 pipeline/EOF, six scheduler heartbeats,
+    terminal drag and following command. Screenshots are inspected, the 10-byte
+    and 24-byte disk fixtures remain exact, and the VM closes. The final kernel
+    is byte-identical to the tested ISO payload. The harness reports an ancillary
+    QMP reader reset during intentional shutdown; its main runner exits 0.
+    Concurrent shared-descriptor close/reuse, userspace execution on other cores,
+    SIGKILL while already stopped, job-wide cancellation and terminal ownership
+    remain outside this verification.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
