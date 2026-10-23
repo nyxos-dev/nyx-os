@@ -14,6 +14,7 @@
 
 typedef struct {
     int used;
+    uint64_t generation;
     uint8_t buf[PIPE_BUF_SIZE];
     uint32_t head;               // read cursor
     uint32_t count;              // bytes currently buffered
@@ -27,7 +28,9 @@ static pipe_t pipes[MAX_PIPES];
 int pipe_new(void) {
     for (int i = 0; i < MAX_PIPES; i++) {
         if (!pipes[i].used) {
+            uint64_t generation = pipes[i].generation + 1;
             memset_asm(&pipes[i], 0, sizeof(pipe_t));
+            pipes[i].generation = generation;
             pipes[i].used = 1;
             pipes[i].read_refs = 1;
             pipes[i].write_refs = 1;
@@ -104,6 +107,7 @@ int pipe_readable(int id) {
 int pipe_read(int id, char* kbuf, int n) {
     if (id < 0 || id >= MAX_PIPES || !pipes[id].used || n <= 0) return -1;
     pipe_t* p = &pipes[id];
+    uint64_t generation = p->generation;
     process_t* self = get_current_process();
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     int got = 0;
@@ -112,6 +116,8 @@ int pipe_read(int id, char* kbuf, int n) {
         if (self) self->blocked_in_kernel = 0;        // past any block (interrupts off)
         /* Signal wakeups bypass the pipe scan; detach before stop or return. */
         if (self) self->pipe_wait_id = 0;
+        /* Another thread can close both shared fds and reuse this slot while the read sleeps. */
+        if (!p->used || p->generation != generation) { got = -1; break; }
         if (p->count > 0) {                           // data available — drain up to n
             while (got < n && p->count > 0) {
                 kbuf[got++] = (char)p->buf[p->head];

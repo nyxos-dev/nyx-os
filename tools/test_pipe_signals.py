@@ -35,11 +35,21 @@ static void host_sleep(void);
 static void multi_sleep(void);
 static int multi_test(void);
 static int lifetime_test(void);
+static int reuse_test(void);
 #define memset_asm memset
 '''
 
 SUFFIX = r'''
 static void host_sleep(void) {
+    if (scenario >= 23) {
+        assert(++sleeps == 1);
+        pipe_close_end(id, 0); pipe_close_end(id, 1);
+        if (scenario == 24) {
+            int replacement = pipe_new(); assert(replacement == id);
+            assert(pipe_write(replacement, "X", 1) == 1);
+        }
+        return;
+    }
     if (scenario >= 16) { multi_sleep(); return; }
     assert(++sleeps < 4);  /* a missed signal must fail, never hang the host */
     user_cr3 = 999; user_rsp = 888;  /* another process ran */
@@ -77,6 +87,7 @@ static void host_sleep(void) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     scenario = atoi(argv[1]);
+    if (scenario >= 23) return reuse_test();
     if (scenario >= 20) return lifetime_test();
     if (scenario >= 16) return multi_test();
     if (scenario == 13) { assert(pipe_selftest() == 0); return 0; }
@@ -118,6 +129,21 @@ int main(int argc, char **argv) {
     assert(proc.state == PROC_ZOMBIE);
     pipe_close_end(id, 0);
     assert(!pipes[id].used);
+    return 0;
+}
+
+static int reuse_test(void) {
+    current = &proc; proc.state = PROC_RUN;
+    process_table[0] = &proc; process_count = 1;
+    id = pipe_new(); assert(id >= 0);
+    char c = '?';
+    assert(pipe_read(id, &c, 1) == -1 && c == '?');
+    assert(!proc.pipe_wait_id && !proc.blocked_in_kernel);
+    assert(user_cr3 == 123 && user_rsp == 456);
+    if (scenario == 24) {
+        assert(pipe_read(id, &c, 1) == 1 && c == 'X');
+        pipe_close_end(id, 0); pipe_close_end(id, 1);
+    } else assert(pipe_new() == id);
     return 0;
 }
 
@@ -265,7 +291,7 @@ def main():
                             '-fsanitize=address,undefined', '-fno-pie', '-no-pie',
                             str(path), '-o', str(exe)], check=True)
             failed = []
-            for case in range(23):
+            for case in range(25):
                 result = subprocess.run([str(exe), str(case)], capture_output=True, text=True)
                 if result.returncode:
                     failed.append(case)
@@ -274,7 +300,7 @@ def main():
             return failed
 
         assert not suite(), 'current pipe/signal cases failed'
-        print('PASS 23 pipe/signal scenarios under ASan/UBSan; scheduler events simulated')
+        print('PASS 25 pipe/signal scenarios under ASan/UBSan; scheduler events simulated')
         if args.compare_ref:
             failed = suite(args.compare_ref)
             assert failed, 'baseline must reproduce a regression'

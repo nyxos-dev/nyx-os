@@ -482,6 +482,29 @@ The immediate data and desktop priorities are:
     SIGKILL while already stopped, job-wide cancellation and terminal ownership
     remain outside this verification.
 
+44. Development version 6.5.239 prevents a suspended read from consuming bytes
+    belonging to a replacement pipe. Each allocation advances a 64-bit slot
+    generation. A read records its generation and, after waking, rejects a closed
+    or replaced slot before inspecting its buffer. The return is the existing
+    invalid-pipe value `-1`; it does not promise to retain a closed pipe object.
+    In the separate 238 QEMU baseline, eight CLONE_VM trials close both shared
+    descriptors during an empty read, allocate a new pipe and write X; every old
+    read consumes X. The host model reproduces that defect on both 237 and 238.
+    On 239, 25 ASan/UBSan scenarios pass, with 238 failing the two new lifetime
+    cases. One covers a freed slot without replacement; the other also checks
+    that the replacement's byte remains available. Scheduling remains simulated
+    on the host. The warning-free build passes RTC/ELF checks, 230 kernel tests
+    and four-CPU login. In the four-CPU target run, all eight old reads return -1
+    without changing the caller's byte; subsequent reads recover all eight X
+    bytes from the replacement pipes. Both multi-reader data/EOF trials and all
+    eight prior signal cases pass. The four-stage PS/2 pipeline/EOF, six scheduler
+    heartbeats, terminal drag and next command pass; screenshots are inspected,
+    both disk fixtures remain exact and the VM closes. The final kernel matches
+    the tested ISO payload. The harness's ancillary QMP reader resets during
+    intentional shutdown; the main runner exits 0. This is pipe-instance checking,
+    not cross-core synchronization, a general shared-descriptor lifetime model,
+    job-wide cancellation or POSIX restart semantics.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
