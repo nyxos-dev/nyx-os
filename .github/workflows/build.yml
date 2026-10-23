@@ -135,6 +135,9 @@ jobs:
       - name: Test shell command entry status and bounds
         run: python3 tools/test_sh_entry.py
 
+      - name: Test pipe interruption and signal stop waits
+        run: python3 tools/test_pipe_signals.py
+
       - name: Test timeout duration bounds and tick wrap
         run: python3 tools/test_timeout.py
 

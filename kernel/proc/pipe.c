@@ -110,6 +110,8 @@ int pipe_read(int id, char* kbuf, int n) {
     for (;;) {
         __asm__ volatile("cli");
         if (self) self->blocked_in_kernel = 0;        // past any block (interrupts off)
+        /* Signal wakeups bypass pipe_wake_reader; detach before stop or return. */
+        if (p->reader_waiter == self) p->reader_waiter = NULL;
         if (p->count > 0) {                           // data available — drain up to n
             while (got < n && p->count > 0) {
                 kbuf[got++] = (char)p->buf[p->head];
@@ -120,6 +122,11 @@ int pipe_read(int id, char* kbuf, int n) {
         }
         if (p->write_refs == 0) { got = 0; break; }   // empty + no writers => EOF
         if (!self) break;                             // no process context: don't block
+        if (signal_pending(self)) {
+            if (signal_check_stop(self)) continue;
+            got = -EINTR;
+            break;
+        }
         // Empty but writers remain — park until one writes (or closes).
         self->blocked_in_kernel = 1;                  // resume us on the kernel CR3
         self->state = PROC_BLOCKED;

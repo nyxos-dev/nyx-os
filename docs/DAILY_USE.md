@@ -434,6 +434,28 @@ The immediate data and desktop priorities are:
     It does not provide rollback for pipe/fork allocation failures, job-wide
     signal delivery, input ownership or asynchronous GUI foreground execution.
 
+42. Development version 6.5.237 makes empty pipe reads with a live writer
+    respond to deliverable signals. The read detaches its waiter before stopping
+    or returning `-EINTR`, preserving the caller's saved address-space and stack
+    globals. Default stop/continue restarts the wait. The shared stop helper now
+    follows the same signal order and mask as delivery, and leaves caught or
+    ignored terminal-stop signals to the normal syscall-return path. Buffered
+    data and EOF retain their existing priority over an interrupted empty wait.
+    In the separate 236 QEMU baseline, SIGKILL leaves the reader unreaped across
+    200 wait polls; closing the writer permits exit 137. The 237 host suite runs
+    16 actual-function scenarios under ASan/UBSan with simulated scheduling; the
+    baseline fails ten. The production build has no compiler/linker warnings,
+    RTC/ELF checks pass, and QEMU passes 230 kernel tests plus four-CPU login.
+    Eight target scenarios verify SIGKILL/SIGINT/SIGTERM, a masked signal,
+    stop/continue with data or EOF, and caught/ignored SIGTSTP. A four-stage
+    interactive pipeline accepts PS/2 input and EOF; six scheduler heartbeats,
+    a terminal drag and the following command succeed. Screenshots are inspected,
+    both disk fixtures remain exact and the VM closes. Caught or ignored
+    SIGTSTP currently returns `-EINTR` from an empty pipe read; this does not claim
+    POSIX restart semantics for ignored signals. Multiple-reader wake queues,
+    SIGKILL while already stopped, job-wide cancellation, input ownership and
+    asynchronous foreground execution remain outside this change.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

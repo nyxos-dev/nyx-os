@@ -67,7 +67,7 @@ int signal_pending(process_t* p) {
     return p && signal_next_deliverable(p->sig_pending, p->sig_mask) != 0;
 }
 
-/* If a job-control STOP signal (SIGTSTP / SIGSTOP) is pending, PARK the process here
+/* If the next deliverable signal has the default STOP action, PARK the process here
  * until SIGCONT resumes it, and return 1 — so the interrupted blocking syscall can
  * RESTART its wait rather than returning -EINTR (stop/continue is then transparent to
  * the operation, e.g. a `sleep` keeps sleeping after fg/bg). Returns 0 if no stop is
@@ -76,9 +76,9 @@ int signal_pending(process_t* p) {
  * (blocked_in_kernel -> resume on the kernel CR3, sti/hlt until PROC_RUN). */
 int signal_check_stop(process_t* p) {
     if (!p) return 0;
-    uint32_t stops = p->sig_pending & ((1u << SIGTSTP) | (1u << SIGSTOP));
-    if (!stops) return 0;
-    int sig = (stops & (1u << SIGTSTP)) ? SIGTSTP : SIGSTOP;
+    int sig = signal_next_deliverable(p->sig_pending, p->sig_mask);
+    if (sig != SIGTSTP && sig != SIGSTOP) return 0;
+    if (sig == SIGTSTP && p->sig_handlers[sig] != SIG_DFL) return 0;
     p->sig_pending &= ~(1u << sig);
     p->stop_sig = (uint32_t)sig;
     p->stopped_reported = 0;
