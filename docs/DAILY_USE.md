@@ -712,6 +712,27 @@ The immediate data and desktop priorities are:
     covered. This is an optional decoration style, not a complete desktop redesign.
     Exact-source remote CI is recorded separately.
 
+53. Development version 6.5.248 only requests drag/resize damage when the
+    window geometry actually changes after clamping. A held stationary title bar,
+    resize handle or desktop icon no longer forces repeated desktop repainting.
+    Other pending redraws, window ticks, input and release handling are preserved.
+    The actual drag/resize/icon blocks and geometry functions pass 87 sanitized
+    host checks, covering eight resize directions, minimum and screen limits,
+    growth/shrink damage and pre-existing redraw requests; version 247 fails 33.
+    The 428 configuration checks and 72 idle decisions also pass. The build has
+    no warnings; 230 kernel tests and four-CPU QEMU boot pass.
+    Paired QEMU TCG measurements use four qemu64 CPUs, 5 GiB, 1024x768, a static
+    wallpaper and three eight-second samples per state. Host process CPU time,
+    normalised to one host CPU, averages 108.0% before versus 33.2% after while
+    holding the stationary title bar, and 108.9% versus 32.7% while holding the
+    stationary bottom-right resize corner. Ordinary terminal idle remains about
+    33%. Guest BSP samples fall from 86-90% during these holds to 0%; that is a
+    separate counter. Each hold is followed by actual movement, release and a
+    successful terminal command; two disk fixtures remain exact. Screenshots
+    confirm the moved and resized window. This measures stationary holds, not
+    active dragging, animation, all applications or physical hardware. Exact-source
+    remote CI is recorded separately.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

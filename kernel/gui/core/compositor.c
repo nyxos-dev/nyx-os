@@ -4762,9 +4762,11 @@ void compositor_run(void) {
                 int ny = my - drag_icon_ofs_y;
                 if (nx < 0) nx = 0;
                 if (ny < 0) ny = 0;
-                desktop_icon_x[drag_icon_idx] = nx;
-                desktop_icon_y[drag_icon_idx] = ny;
-                redraw = 1;
+                if (nx != desktop_icon_x[drag_icon_idx] || ny != desktop_icon_y[drag_icon_idx]) {
+                    desktop_icon_x[drag_icon_idx] = nx;
+                    desktop_icon_y[drag_icon_idx] = ny;
+                    redraw = 1;
+                }
                 goto done_click;
             } else if (drag_id) {
                 window_t* win = find_window(drag_id);
@@ -4775,13 +4777,17 @@ void compositor_run(void) {
                     int oax = win->x, oay = win->y, oaw = (int)win->w, oah = (int)win_total_h(win);
                     window_move(drag_id, mx - win->drag_off_x, my - win->drag_off_y);
                     int nbx = win->x, nby = win->y, nbw = (int)win->w, nbh = (int)win_total_h(win);
-                    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
-                    int x0 = (oax < nbx ? oax : nbx) - M;
-                    int y0 = (oay < nby ? oay : nby) - M;
-                    int x1 = ((oax + oaw) > (nbx + nbw) ? (oax + oaw) : (nbx + nbw)) + M;
-                    int y1 = ((oay + oah) > (nby + nbh) ? (oay + oah) : (nby + nbh)) + M;
-                    ddx = x0; ddy = y0; ddw = x1 - x0; ddh = y1 - y0; drag_dmg_valid = 1;
-                    redraw = 1;
+                    // A held pointer may be stationary or clamped at an edge.
+                    // Only changed pixels need damage; preserve other redraw requests.
+                    if (oax != nbx || oay != nby || oaw != nbw || oah != nbh) {
+                        const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                        int x0 = (oax < nbx ? oax : nbx) - M;
+                        int y0 = (oay < nby ? oay : nby) - M;
+                        int x1 = ((oax + oaw) > (nbx + nbw) ? (oax + oaw) : (nbx + nbw)) + M;
+                        int y1 = ((oay + oah) > (nby + nbh) ? (oay + oah) : (nby + nbh)) + M;
+                        ddx = x0; ddy = y0; ddw = x1 - x0; ddh = y1 - y0; drag_dmg_valid = 1;
+                        redraw = 1;
+                    }
                 }
             } else if (resize_id) {
                 window_t* win = find_window(resize_id);
@@ -4824,13 +4830,17 @@ void compositor_run(void) {
                     // grow (new bigger) and a shrink (old bigger → the vacated area repaints),
                     // so the present publishes just this rect instead of the whole screen.
                     int nbx = win->x, nby = win->y, nbw = (int)win->w, nbh = (int)win_total_h(win);
-                    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
-                    int x0 = (oax < nbx ? oax : nbx) - M;
-                    int y0 = (oay < nby ? oay : nby) - M;
-                    int x1 = ((oax + oaw) > (nbx + nbw) ? (oax + oaw) : (nbx + nbw)) + M;
-                    int y1 = ((oay + oah) > (nby + nbh) ? (oay + oah) : (nby + nbh)) + M;
-                    ddx = x0; ddy = y0; ddw = x1 - x0; ddh = y1 - y0; drag_dmg_valid = 1;
-                    redraw = 1;
+                    // A held pointer may be stationary or clamped at an edge.
+                    // Only changed pixels need damage; preserve other redraw requests.
+                    if (oax != nbx || oay != nby || oaw != nbw || oah != nbh) {
+                        const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                        int x0 = (oax < nbx ? oax : nbx) - M;
+                        int y0 = (oay < nby ? oay : nby) - M;
+                        int x1 = ((oax + oaw) > (nbx + nbw) ? (oax + oaw) : (nbx + nbw)) + M;
+                        int y1 = ((oay + oah) > (nby + nbh) ? (oay + oah) : (nby + nbh)) + M;
+                        ddx = x0; ddy = y0; ddw = x1 - x0; ddh = y1 - y0; drag_dmg_valid = 1;
+                        redraw = 1;
+                    }
                 }
             } else {
                 window_t* hit = NULL;
