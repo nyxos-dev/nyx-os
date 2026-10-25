@@ -916,6 +916,19 @@ The immediate data and desktop priorities are:
     remote-task quiescence and real userspace init are not claimed fixed.
     See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md) for scope and remaining limits.
 
+62. Development version 6.5.257 waits for the actual CPU stack/address-space
+    handoff before collecting a zombie, serializes collector claims and target
+    selection, and uses a stable per-CPU current-process identity. Parent
+    check-and-block pairs with exit wakeups; an outgoing zombie can switch to
+    idle even when all ordinary tasks are blocked. Boot explicitly transfers
+    the compositor identity. The earlier AP-parent prompt failure now passes
+    immediate-wait cases with parents on all four CPUs: status 73, prompt and
+    a subsequent command succeed. Host regressions fail on the previous source;
+    230 kernel tests, four-CPU login, seven exception cases and graphical
+    threads/pipes/sockets, scheduler heartbeats, drag and input pass. Shared
+    resource concurrency, long sessions, hardware and real init supervision
+    remain open. See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

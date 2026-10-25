@@ -10,22 +10,28 @@ static uint64_t next_pid = 1;
 // `ctxt`. Incremented with an atomic add because sched_target runs concurrently on
 // several cores under smpbalance; a plain ++ would drop counts there.
 volatile uint64_t g_ctx_switches = 0;
-uint64_t total_procs_created(void) { return next_pid - 1; }   // /proc/stat `processes`
+uint64_t total_procs_created(void) { return __atomic_load_n(&next_pid, __ATOMIC_RELAXED) - 1; }   // /proc/stat `processes`
 
 int current_idx = 0;
 
-// Guards the SHAPE of process_table — the entries array and process_count —
-// against a core scanning it while another appends or swap-removes. It does NOT
-// guard the contents of a process_t: each task is owned by the one CPU pinned to
-// it (p->sched_cpu), so nothing else writes its stack or state.
+// Serializes table publication/removal, scheduler selection, collector claims
+// and parent check-and-block/wake. This is not a general process-resource lock.
 spinlock_t sched_lock = SPINLOCK_INIT;
+
+static int publish_process(process_t* p) {
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    int room = process_count < MAX_PROCESSES;
+    if (room) process_table[process_count++] = p;
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return room;
+}
 
 void init_process(void) {
     memset_asm(process_table, 0, sizeof(process_table));
     process_t* init = (process_t*)kmalloc(sizeof(process_t));
     if (init) {
         memset_asm(init, 0, sizeof(process_t));
-        init->pid = next_pid++;
+        init->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
         init->ppid = 0;
         init->state = 1;
         strncpy(init->comm, "init", 31);
@@ -155,7 +161,7 @@ process_t* create_process(const char* name, void* entry, uint64_t flags) {
     process_t* p = (process_t*)kmalloc(sizeof(process_t));
     if (!p) return NULL;
     memset_asm(p, 0, sizeof(process_t));
-    p->pid = next_pid++;
+    p->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     p->ppid = 0;
     p->state = 1;
     strncpy(p->comm, name, 31);
@@ -166,9 +172,11 @@ process_t* create_process(const char* name, void* entry, uint64_t flags) {
             return NULL;
         }
     }
-    uint64_t fl = spin_lock_irqsave(&sched_lock);
-    process_table[process_count++] = p;
-    spin_unlock_irqrestore(&sched_lock, fl);
+    if (!publish_process(p)) {
+        if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
+        kfree(p);
+        return NULL;
+    }
     return p;
 }
 
@@ -187,7 +195,7 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     if (!p) return NULL;
     memset_asm(p, 0, sizeof(process_t));
     console_capture_inherit(p);
-    p->pid = next_pid++;
+    p->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     p->state = 1;
     p->page_directory = page_dir;
     strncpy(p->comm, name, 31);
@@ -204,7 +212,7 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     // coordination — unlike a thread group, which do_clone keeps together.
     if (smp_user_balance && cpu_count > 1) {
         static uint32_t rr = 0;
-        p->sched_cpu = (int32_t)(rr++ % cpu_count);
+        p->sched_cpu = (int32_t)(__atomic_fetch_add(&rr, 1, __ATOMIC_RELAXED) % cpu_count);
     }
 
     const char* cwd0 = vfs_getcwd();
@@ -233,7 +241,11 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
         kfree(p);
         return NULL;
     }
-    process_table[process_count++] = p;
+    if (!publish_process(p)) {
+        kfree((void*)((uintptr_t)p->kernel_stack - 4096));
+        kfree(p);                         // caller still owns page_dir
+        return NULL;
+    }
     return p;
 }
 
@@ -304,7 +316,7 @@ int do_fork(void) {
     process_t* child = (process_t*)kmalloc(sizeof(process_t));
     if (!child) { free_page_directory(child_pml4); return -1; }
     memset_asm(child, 0, sizeof(process_t));
-    child->pid = next_pid++;
+    child->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     child->ppid = parent->pid;
     console_capture_inherit(child);
     child->state = PROC_RUN;
@@ -367,7 +379,14 @@ int do_fork(void) {
     parent->sched_managed = 1;
     child->sched_managed = 1;
     child->sched_weight = parent->sched_weight;
-    process_table[process_count++] = child;
+    if (!publish_process(child)) {
+        close_proc_fds(child);
+        mmap_free_bufs(child);
+        free_page_directory(child_pml4);
+        kfree((void*)((uintptr_t)child->kernel_stack - 4096));
+        kfree(child);
+        return -1;
+    }
     sched_enable();
     return (int)child->pid;
 }
@@ -495,7 +514,7 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
     process_t* t = (process_t*)kmalloc(sizeof(process_t));
     if (!t) return -1;
     memset_asm(t, 0, sizeof(process_t));
-    t->pid   = next_pid++;
+    t->pid   = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     t->ppid  = self->pid;
     console_capture_inherit(t);
     t->state = PROC_RUN;
@@ -555,7 +574,11 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
     self->sched_managed = 1;
     t->sched_managed    = 1;
     t->sched_weight     = self->sched_weight;
-    process_table[process_count++] = t;
+    if (!publish_process(t)) {
+        kfree((void*)((uintptr_t)t->kernel_stack - 4096));
+        kfree(t);                         // shared address space belongs to group
+        return -1;
+    }
     sched_enable();
     return (int)t->pid;
 }
@@ -838,50 +861,74 @@ void close_proc_fds(process_t* proc) {
     }
 }
 
-void reap_user_process(process_t* proc) {
-    if (!proc) return;
-    extern void free_page_directory(uint64_t* pml4);
-    for (int i = 0; i < process_count; i++) {
-        if (process_table[i] == proc) {
-            process_table[i] = process_table[--process_count];
-            break;
-        }
+// sched_lock serializes selection and collector claims. sched_active remains
+// the outgoing task until the IRQ stub has installed the new RSP and CR3.
+static int reap_claim_locked(process_t* p) {
+    if (!p || p->state != PROC_ZOMBIE || p->reap_claimed) return 0;
+    for (int i = 0; i < MAX_CPUS; i++) {
+        if (cpu_info[i].sched_cur == (void*)p ||
+            __atomic_load_n(&cpu_info[i].sched_active, __ATOMIC_ACQUIRE) == (void*)p)
+            return 0;
     }
-    // Hand the shared thread-group state (heap/mmap AND the fd table) to a surviving
-    // member FIRST; only if this was the last member out (no live heir) do we actually
-    // close the fds — otherwise the close would tear shared pipe/socket/file descriptors
-    // out from under a still-running worker, and clear the table before the handoff could
-    // copy it (issue #73).
+    p->reap_claimed = 1;
+    return 1;
+}
+
+static void wake_waiters_locked(process_t* child) {
+    if (!child || !child->ppid) return;
+    process_t* parent = find_process(child->ppid);
+    if (parent && parent->state == PROC_BLOCKED &&
+        (parent->waiting_for == child->pid || parent->waiting_for == 0)) {
+        parent->waiting_for = 0;
+        parent->state = PROC_RUN;
+    }
+}
+
+static void reap_claimed_process(process_t* proc) {
+    extern void free_page_directory(uint64_t* pml4);
     if (!tg_reassign_leader(proc)) close_proc_fds(proc);
     mmap_free_bufs(proc);
     if (proc->page_directory && !addr_space_shared(proc->page_directory, proc))
         free_page_directory((uint64_t*)proc->page_directory);
     if (proc->kernel_stack) kfree((void*)((uintptr_t)proc->kernel_stack - 4096));
-    sched_forget(proc);            // no core may keep a pointer to freed memory
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i] != proc) continue;
+        int last = --process_count;
+        process_table[i] = process_table[last];
+        process_table[last] = NULL;
+        if (current_idx == last) current_idx = i;
+        if (current_idx >= process_count) current_idx = 0;
+        break;
+    }
+    sched_forget(proc);
+    spin_unlock_irqrestore(&sched_lock, flags);
     kfree(proc);
 }
 
+void reap_user_process(process_t* proc) {
+    if (!proc) return;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    int claimed = reap_claim_locked(proc);
+    spin_unlock_irqrestore(&sched_lock, flags);
+    if (claimed) reap_claimed_process(proc);
+}
+
 void destroy_process(uint64_t pid) {
-    for (int i = 0; i < process_count; i++) {
-        process_t* p = process_table[i];
-        if (p && p->pid == pid) {
-            if (p->sched_managed && p->state != PROC_ZOMBIE) {
-                // A live scheduled process: don't free it out from under the
-                // scheduler (it may be a saved ring-3 context awaiting its next
-                // slice). Mark it a zombie so the scheduler stops running it, wake
-                // anyone kwait()-ing on it, and let reap_zombies() free it safely.
-                p->exit_code = -1;             // killed
-                p->state = PROC_ZOMBIE;
-                wake_waiters(p);
-            } else {
-                // Not scheduler-managed (a registered placeholder that never ran) —
-                // safe to free right here (reap_user_process removes the slot and
-                // frees the page directory + kernel-stack kmalloc base).
-                reap_user_process(p);
-            }
-            return;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    process_t* proc = find_process(pid);
+    int claimed = 0;
+    if (proc && !proc->reap_claimed) {
+        if (proc->state != PROC_ZOMBIE) {
+            proc->exit_code = -1;
+            proc->state = PROC_ZOMBIE;
         }
+        wake_waiters_locked(proc);
+        // Managed children keep their status for waitpid/background collection.
+        if (!proc->sched_managed) claimed = reap_claim_locked(proc);
     }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    if (claimed) reap_claimed_process(proc);
 }
 
 process_t* find_process(uint64_t pid) {
@@ -892,22 +939,13 @@ process_t* find_process(uint64_t pid) {
     return NULL;
 }
 
-// "Which process is running right now?" — the question every syscall asks first.
-//
-// This was BSP-only and silently wrong for anything running on an application
-// processor: `current_idx` is written solely by irq_scheduler_tick, the BSP's
-// scheduler, so a task on an AP resolved to whatever the BSP happened to be
-// running. It cost two increments to find, because the failure is quiet — a
-// thread calling futex_wait would block the BSP's task instead of itself, and
-// the machine just wedged with no fault and no panic. Work that never asks who
-// it is (spin.elf writing to serial) looked perfectly healthy throughout.
-//
-// Each AP tracks its own current task in cpu_info[].sched_cur; NULL there means
-// the core is in its idle context, which is exactly "no current process".
+// Per-CPU identity survives table compaction. The index is only a bootstrap
+// fallback before the BSP has registered its current task. AP idle has no task.
 process_t* get_current_process(void) {
     cpu_info_t* me = cpu_self();
-    if (me->cpu_number != 0) return (process_t*)me->sched_cur;
-    if (process_count > 0 && current_idx < process_count)
+    if (me->sched_cur || me->cpu_number != 0)
+        return (process_t*)me->sched_cur;
+    if (current_idx >= 0 && current_idx < process_count)
         return process_table[current_idx];
     return NULL;
 }
@@ -929,6 +967,26 @@ process_t* get_current_process(void) {
 static volatile int sched_enabled = 0;
 static process_t* idle_proc = NULL;
 
+// Boot calls the compositor directly on the existing BSP stack. Transfer that
+// stack's identity before enabling scheduling, rather than changing only a
+// table cursor and leaving two tasks able to resume the same boot context.
+void sched_adopt_boot_process(process_t* p) {
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    cpu_info_t* me = cpu_self();
+    if (p && me->cpu_number == 0 && !sched_enabled) {
+        for (int i = 0; i < process_count; i++) {
+            if (process_table[i] != p) continue;
+            process_t* old = (process_t*)me->sched_cur;
+            if (old && old != p && !old->kernel_stack) old->stack = NULL;
+            current_idx = i;
+            me->sched_cur = p;
+            __atomic_store_n(&me->sched_active, (void*)p, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+}
+
 void sched_enable(void)     { sched_enabled = 1; }
 void sched_disable(void)    { sched_enabled = 0; }
 int  sched_is_enabled(void) { return sched_enabled; }
@@ -940,7 +998,7 @@ int  sched_is_enabled(void) { return sched_enabled; }
 //
 // NOTE ON WHAT THIS DOES AND DOES NOT PROMISE: it keeps THIS core from being
 // preempted, and that is all it ever meant. Call sites that were using it as a
-// mutual-exclusion *lock* (net.c, pipe.c, reap_zombies) are only safe while the
+// mutual-exclusion *lock* (net.c, pipe.c) are only safe while the
 // state they guard is touched by one core — true in the default configuration,
 // not true once user processes run on APs. Those need real spinlocks; that is a
 // separate, labelled piece of work, not something this change quietly fixes.
@@ -950,15 +1008,9 @@ void preempt_enable(void)  {
     if (me->preempt_count > 0) me->preempt_count--;
 }
 
-// Forget a process that is about to be freed. sched_cur is a RAW POINTER held by
-// every core, and irq_scheduler_tick dereferences it to choose the resume CR3 —
-// so a freed process_t left in any core's slot is a use-after-free. The reap
-// paths guard `i == current_idx` (an index) and that does not cover this.
-//
-// Both callers already hold off preemption on THIS core, and a core whose slot
-// still names a dying process is by definition not running it any more, so
-// nulling remote slots is safe: the owner re-fills its slot the next time it
-// picks, and irq_scheduler_tick treats NULL as "fall back to current_idx".
+// Reapers claim an inactive zombie under sched_lock before releasing resources.
+// They hold that lock again here, excluding scheduler/FPU selection. Never clear
+// sched_active here: only the post-switch assembly can acknowledge that handoff.
 void sched_forget(process_t* p) {
     if (!p) return;
     for (int i = 0; i < MAX_CPUS; i++) {
@@ -1066,8 +1118,13 @@ static perf_cpu_t g_perf_cpu;
 uint32_t perf_cpu_percent(void) { return g_perf_cpu.latched; }
 
 void irq_scheduler_tick(void) {
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    process_t* cur = (process_t*)cpu_self()->sched_cur;
+    if (!cur && current_idx >= 0 && current_idx < process_count)
+        cur = process_table[current_idx];
+    cpu_self()->sched_cur = cur;
     // Performance accounting first, before the wake loop below flips any sleeper's state, so
-    // utilization covers every 1000 Hz tick. The interrupted task is process_table[current_idx].
+    // utilization covers every 1000 Hz tick using the per-CPU task identity.
     // The core did real WORK this tick only if that task was actually runnable (PROC_RUN) and
     // not the idle process. Everything else counts as idle: the idle task, and — crucially — a
     // task halted inside a blocking call. NyxOS parks a sleeper/waiter with PROC_BLOCKED and
@@ -1076,8 +1133,7 @@ void irq_scheduler_tick(void) {
     // over-reported ~100% whenever anything (e.g. the compositor's sleep(5) idle-yield) was
     // parked rather than the idle task being scheduled.
     {
-        process_t* interrupted = (current_idx >= 0 && current_idx < process_count)
-                                     ? process_table[current_idx] : NULL;
+        process_t* interrupted = cur;
         // Busy = a real runnable task was executing AND the CPU wasn't parked in an idle hlt.
         int was_busy = !g_cpu_idle && interrupted && interrupted != idle_proc &&
                        interrupted->state == PROC_RUN;
@@ -1108,8 +1164,6 @@ void irq_scheduler_tick(void) {
 
     // Default: resume the thread we interrupted, preserving its address space (a
     // ring-3 process keeps its own CR3 if it's the only thing runnable).
-    process_t* cur = (current_idx >= 0 && current_idx < process_count)
-                         ? process_table[current_idx] : NULL;
     next_rsp = saved_rsp;
     // Resume CR3 depends on WHERE cur was interrupted, read from its just-saved
     // irq_common frame (CS is at frame offset 144 == index 18). Ring 3 = userspace,
@@ -1120,31 +1174,7 @@ void irq_scheduler_tick(void) {
     // used to resume on its user CR3 and #PF on the unmapped low kernel .text.
     uint64_t cur_cs = saved_rsp ? ((volatile uint64_t*)saved_rsp)[18] : 0x08;
 
-    // The CR3 must come from THIS core's own record of what it is running, never
-    // from process_table[current_idx].
-    //
-    // current_idx is an INDEX, and the reap paths (reap_zombies, do_waitpid)
-    // swap-remove from process_table — on any core. That compaction can redirect the
-    // index at a different process. The comment 30 lines below already knew this
-    // ("current_idx can come to point at an AP-pinned task... which can hold
-    // anything") and guarded `cur->stack` against it — but the CR3 decision here
-    // used the same untrustworthy `cur` and was left unguarded.
-    //
-    // When the index lands on a KERNEL thread, page_directory is NULL, this
-    // ternary falls to kernel_pml4_phys, and irq_common iretq's the *interrupted*
-    // ring-3 frame (CS still 0x1b) onto the kernel's address space. The process
-    // then executes with a page table its code does not appear in, and the first
-    // instruction fetch dies with CR2 == RIP.
-    //
-    // HONEST SCOPE: that is a real hole and this closes it, but it is NOT the fix
-    // for P0.1 — the intermittent ring-3 [fault] reproduced on the FIRST round
-    // with this change in place. P0.1 still shows a ring-3 task on the kernel
-    // CR3, so some OTHER path produces the same end state. Do not read this
-    // comment as "the CR3 bug is solved"; see the P0.1 entry in the blockers.
-    //
-    // sched_cur is a raw pointer, which cannot be invalidated by table compaction
-    // the way an index can — but it CAN dangle if the process is freed, which is
-    // why every free path calls sched_forget() above.
+    // Use the stable per-CPU identity: compaction can move the scan cursor.
     process_t* run = (process_t*)cpu_self()->sched_cur;
     if (!run) run = cur;                 // first tick after boot, before we ever picked
     next_cr3 = (run && run->page_directory && (cur_cs & 3) == 3)
@@ -1154,8 +1184,8 @@ void irq_scheduler_tick(void) {
     // Dormant, in a heap/critical section, or nothing else to schedule.
     // OUR count, not the machine's: an AP inside a critical section used to stop
     // the BSP from scheduling at all.
-    if (!sched_enabled || cpu_self()->preempt_count > 0 || process_count == 0) return;
-    if (!cur) return;
+    if (!sched_enabled || cpu_self()->preempt_count > 0 || process_count == 0) goto out;
+    if (!cur) goto out;
 
     // Weighted round-robin: keep running the current thread until its time quantum
     // is spent, so a high-weight proc (the compositor, SCHED_WEIGHT_GUI) runs
@@ -1164,17 +1194,10 @@ void irq_scheduler_tick(void) {
     // through to pick someone else.
     if (cur->state == PROC_RUN && cur->sched_quantum > 1) {
         cur->sched_quantum--;
-        return;                          // defaults above resume cur
+        goto out;                          // defaults above resume cur
     }
 
-    // Remember where to resume the outgoing thread.
-    // Remember where to resume the outgoing thread — but ONLY if it is really
-    // ours. current_idx can come to point at an AP-pinned task without this
-    // scheduler ever choosing one: the reap paths swap-remove and then patch
-    // `current_idx` to the moved slot, which can hold anything. Writing our
-    // frame into that task's stack hands an AP a context whose CS/SS belong to
-    // us, and the AP's iretq takes a #GP (err 0x8) — the panic pstorm hit at
-    // RIP 0x10049f once processes were spread across cores.
+    // Save only this CPU's outgoing context.
     if (cur->sched_cpu == 0) cur->stack = (void*)saved_rsp;
 
     // Round-robin to the next runnable thread. We schedule kernel threads and
@@ -1191,19 +1214,25 @@ void irq_scheduler_tick(void) {
         if (p->sched_cpu != 0) continue;      // pinned to an AP — that core's job
         if (p->page_directory != NULL && !p->sched_managed) continue;
         current_idx = idx;
-        // current_idx stays as the round-robin SCAN CURSOR (a stale cursor only
-        // costs a skipped turn). sched_cur is the separate, per-core record of
-        // WHICH PROCESS IS RUNNING — the job the index was quietly doing as well
-        // and could not do safely. The APs have kept it since stage 3a; the BSP
-        // never did, which is why get_current_process() had to special-case cpu 0.
+        // Publish selection while collectors are excluded; assembly retires
+        // the outgoing physical context after installing the new RSP and CR3.
         cpu_self()->sched_cur = p;
         p->sched_quantum = p->sched_weight ? p->sched_weight : 1;   // start its turn
         sched_target(p);
-        return;
+        goto out;
     }
     // Nobody else runnable — keep the current thread, refreshing its quantum.
-    if (cur->state == PROC_RUN)
+    if (cur->state == PROC_RUN) {
         cur->sched_quantum = cur->sched_weight ? cur->sched_weight : 1;
+    } else if (idle_proc && idle_proc->stack) {
+        for (int i = 0; i < process_count; i++) {
+            if (process_table[i] == idle_proc) { current_idx = i; break; }
+        }
+        cpu_self()->sched_cur = idle_proc;
+        sched_target(idle_proc);
+    }
+out:
+    spin_unlock_irqrestore(&sched_lock, flags);
 }
 
 void schedule(void) {
@@ -1212,39 +1241,24 @@ void schedule(void) {
 // Free every ZOMBIE process (a spawned user proc that exited): its user address
 // space, kernel stack, process_t, and table slot. MUST run in a normal kernel
 // thread (the compositor's background-task slot), never in the IRQ path — it
-// calls kfree/free_page_directory. preempt_disable keeps the scheduler from
-// switching mid-free, and a zombie is never the current thread (it yielded on
-// exit), so freeing its stack/CR3 is safe.
+// calls kfree/free_page_directory. A zombie may still occupy an outgoing CPU
+// stack: claim only after both selection and physical handoff references clear.
+// preempt_disable alone cannot establish quiescence on another CPU.
 void reap_zombies(void) {
-    extern void free_page_directory(uint64_t* pml4);
     preempt_disable();
-    for (int i = 0; i < process_count; i++) {
-        process_t* p = process_table[i];
-        if (!p || p->state != PROC_ZOMBIE) continue;
-        if (i == current_idx) continue;                 // never free the running proc
-        // Leave a zombie whose parent is a live user process: that parent will
-        // waitpid() it and collect the exit status (do_waitpid reaps it there).
-        // Only orphans (parent gone) and background jobs (kernel-thread parent,
-        // page_directory==NULL — the shell's `spawn`) are auto-reaped here.
-        process_t* par = find_process(p->ppid);
-        if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
-        if (!tg_reassign_leader(p)) close_proc_fds(p);  // hand shared fds to a live thread first; close only if last member (#73)
-        mmap_free_bufs(p);
-        if (p->page_directory && !addr_space_shared(p->page_directory, p))
-            free_page_directory((uint64_t*)p->page_directory);
-        if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
-        // Swap-remove, keeping current_idx pointing at the same live proc if the
-        // one we moved happened to be the current thread. Under sched_lock: an AP
-        // may be scanning this array right now.
-        uint64_t sfl = spin_lock_irqsave(&sched_lock);
-        int last = --process_count;
-        process_table[i] = process_table[last];
-        process_table[last] = NULL;
-        if (current_idx == last) current_idx = i;
-        sched_forget(p);           // no core may keep a pointer to freed memory
-        spin_unlock_irqrestore(&sched_lock, sfl);
-        kfree(p);
-        i--;                                            // re-examine the swapped-in slot
+    for (;;) {
+        process_t* victim = NULL;
+        uint64_t flags = spin_lock_irqsave(&sched_lock);
+        for (int i = 0; i < process_count; i++) {
+            process_t* p = process_table[i];
+            if (!p || p->state != PROC_ZOMBIE) continue;
+            process_t* par = find_process(p->ppid);
+            if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
+            if (reap_claim_locked(p)) { victim = p; break; }
+        }
+        spin_unlock_irqrestore(&sched_lock, flags);
+        if (!victim) break;
+        reap_claimed_process(victim);
     }
     preempt_enable();
 }
@@ -1266,64 +1280,66 @@ void reap_zombies(void) {
 // back into THIS process. Interrupts stay masked from the decision to return until
 // that iretq re-enables them.
 int do_waitpid(int wpid, int* out_code, int options) {
-    extern void free_page_directory(uint64_t* pml4);
     process_t* self = get_current_process();
     if (!self) return -1;
     uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
     int result;
     for (;;) {
         __asm__ volatile("cli");
-        self->blocked_in_kernel = 0;                     // past any block; interrupts are off
-        int zi = -1, si = -1, any = 0;
+        self->blocked_in_kernel = 0;
+        uint64_t flags = spin_lock_irqsave(&sched_lock);
+        process_t* child = NULL;
+        process_t* stopped = NULL;
+        int any = 0, retiring = 0;
         for (int i = 0; i < process_count; i++) {
             process_t* p = process_table[i];
-            if (!p || p->ppid != self->pid) continue;    // only our own children
+            if (!p || p->ppid != self->pid) continue;
             if (wpid > 0 && (int)p->pid != wpid) continue;
             any = 1;
-            if (p->state == PROC_ZOMBIE) { zi = i; break; }   // an exit takes priority over a stop
-            if ((options & WUNTRACED) && p->state == PROC_STOPPED && !p->stopped_reported)
-                si = i;                                  // a not-yet-reported stop (Ctrl-Z)
+            if (p->state == PROC_ZOMBIE) {
+                if (reap_claim_locked(p)) { child = p; break; }
+                retiring = 1;
+            } else if ((options & WUNTRACED) && p->state == PROC_STOPPED && !p->stopped_reported) {
+                stopped = p;
+            }
         }
-        if (!any) { result = -1; break; }                // ECHILD (interrupts stay off)
-        if (zi < 0 && si >= 0) {                          // a child stopped — report, don't reap
-            process_t* ch = process_table[si];
-            ch->stopped_reported = 1;                     // report each stop exactly once
-            if (out_code) *out_code = WSTOPPED | (int)ch->stop_sig;
-            result = (int)ch->pid;
-            break;                                        // interrupts stay off until return
-        }
-        if (zi >= 0) {                                    // a child is ready — collect + reap it
-            process_t* child = process_table[zi];
-            if (out_code) *out_code = child->exit_code;
-            result = (int)child->pid;
-            if (!tg_reassign_leader(child)) close_proc_fds(child);  // hand shared fds to a live thread first; close only if last member (#73)
-            mmap_free_bufs(child);
-            if (child->page_directory && !addr_space_shared(child->page_directory, child))
-                free_page_directory((uint64_t*)child->page_directory);
-            if (child->kernel_stack) kfree((void*)((uintptr_t)child->kernel_stack - 4096));
-            uint64_t sfl = spin_lock_irqsave(&sched_lock);
-            int last = --process_count;                   // swap-remove, keeping current_idx valid
-            process_table[zi] = process_table[last];
-            process_table[last] = NULL;
-            if (current_idx == last) current_idx = zi;
-            sched_forget(child);                          // also retire remote FPU ownership
-            spin_unlock_irqrestore(&sched_lock, sfl);
-            kfree(child);
+        if (!any) {
+            spin_unlock_irqrestore(&sched_lock, flags);
+            result = -1;
             break;
         }
-        // A child exists but hasn't exited. WNOHANG callers (shell reaping `&` jobs)
-        // don't want to block — report "none ready yet" with 0 and return at once.
-        if (options & WNOHANG) { result = 0; break; }     // interrupts stay off until return
-        // Otherwise park until one does. The scheduler runs the child (on its own
-        // kernel stack), whose SYS_EXIT wakes us via wake_waiters.
-        self->blocked_in_kernel = 1;                      // resume us on the kernel CR3
-        self->state = PROC_BLOCKED;
-        self->waiting_for = (wpid > 0) ? (uint32_t)wpid : 0;
+        if (child) {
+            if (out_code) *out_code = child->exit_code;
+            result = (int)child->pid;
+            spin_unlock_irqrestore(&sched_lock, flags);
+            reap_claimed_process(child);
+            break;
+        }
+        if (stopped) {
+            stopped->stopped_reported = 1;
+            if (out_code) *out_code = WSTOPPED | (int)stopped->stop_sig;
+            result = (int)stopped->pid;
+            spin_unlock_irqrestore(&sched_lock, flags);
+            break;
+        }
+        if (options & WNOHANG) {
+            spin_unlock_irqrestore(&sched_lock, flags);
+            result = 0;
+            break;
+        }
+        self->blocked_in_kernel = 1;
+        // Exit already notified us, but the CPU may still be leaving its stack.
+        // Stay runnable and recheck the handoff after an interrupt; a second
+        // exit notification is not guaranteed. No fixed delay makes it safe.
+        if (!retiring) {
+            self->waiting_for = (wpid > 0) ? (uint32_t)wpid : 0;
+            self->state = PROC_BLOCKED;
+        }
+        spin_unlock_irqrestore(&sched_lock, flags);
         __asm__ volatile("sti; hlt");
-        // Resumed on the kernel CR3 — loop, clear the flag, re-check (interrupts off).
     }
-    user_cr3 = saved_cr3;                                 // restore OUR syscall globals for the
-    user_rsp = saved_ursp;                                // asm return path (still on kernel CR3)
+    user_cr3 = saved_cr3;
+    user_rsp = saved_ursp;
     return result;
 }
 
@@ -1336,15 +1352,13 @@ int kwait(uint32_t pid) {
     process_t* self = get_current_process();
     if (!self) return -1;
     for (;;) {
-        // Check-and-block must be atomic w.r.t. the child exiting: with interrupts
-        // off the scheduler can't run, so the child can't zombie-and-wake between
-        // our check and marking ourselves blocked (no lost wakeup, single core).
-        __asm__ volatile("cli");
+        // Pair check-and-block with wake_waiters under the same cross-CPU lock.
+        uint64_t flags = spin_lock_irqsave(&sched_lock);
         process_t* child = find_process(pid);
-        if (!child) { __asm__ volatile("sti"); return -1; }
+        if (!child) { spin_unlock_irqrestore(&sched_lock, flags); return -1; }
         if (child->state == PROC_ZOMBIE) {
             int code = child->exit_code;
-            __asm__ volatile("sti");
+            spin_unlock_irqrestore(&sched_lock, flags);
             return code;
         }
         self->state = PROC_BLOCKED;
@@ -1352,21 +1366,18 @@ int kwait(uint32_t pid) {
         // sti+hlt is atomic (sti delays interrupts one instruction): enable, then
         // halt until the timer preempts us. The scheduler parks us (BLOCKED) and
         // runs the child; when it exits we're set back to PROC_RUN and resumed here.
+        spin_unlock_irqrestore(&sched_lock, flags);
         __asm__ volatile("sti; hlt");
         // Resumed — loop and re-check (we're PROC_RUN again).
     }
 }
 
 // Wake a parent blocked in kwait() on this exiting child. Called from SYS_EXIT
-// with interrupts masked (so the state change is atomic w.r.t. the parent).
+// under the same lock used by the parent's check-and-block operation.
 void wake_waiters(process_t* child) {
-    if (!child || !child->ppid) return;
-    process_t* parent = find_process(child->ppid);
-    if (parent && parent->state == PROC_BLOCKED &&
-        (parent->waiting_for == child->pid || parent->waiting_for == 0)) {
-        parent->waiting_for = 0;
-        parent->state = PROC_RUN;
-    }
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    wake_waiters_locked(child);
+    spin_unlock_irqrestore(&sched_lock, flags);
 }
 
 // Block the caller until ALL of its children (procs with ppid == our pid) have
@@ -1377,9 +1388,8 @@ void kwait_all(void) {
     process_t* self = get_current_process();
     if (!self) return;
     for (;;) {
-        // Atomic re-check + block (interrupts off ⇒ no child can exit-and-wake in
-        // the gap ⇒ no lost wakeup on a single core).
-        __asm__ volatile("cli");
+        // Pair the pending-child check with exit wakeups on every CPU.
+        uint64_t flags = spin_lock_irqsave(&sched_lock);
         int pending = 0;
         for (int i = 0; i < process_count; i++) {
             process_t* p = process_table[i];
@@ -1388,9 +1398,10 @@ void kwait_all(void) {
                 break;
             }
         }
-        if (!pending) { __asm__ volatile("sti"); return; }
+        if (!pending) { spin_unlock_irqrestore(&sched_lock, flags); return; }
         self->state = PROC_BLOCKED;
         self->waiting_for = 0;               // wake on any child's exit
+        spin_unlock_irqrestore(&sched_lock, flags);
         __asm__ volatile("sti; hlt");
     }
 }

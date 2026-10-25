@@ -1,61 +1,106 @@
-# Waited-child CPU references
+# Process collection and CPU handoff
 
-Development version 6.5.256 retires per-CPU references when `do_waitpid`
-collects a zombie child. This is a bounded lifetime correction, not a complete
-SMP process-management redesign or a userspace init implementation.
+Development version 6.5.257 delays collection until the outgoing CPU has
+installed another stack and address space. It also serializes collector claims
+and scheduler selection. Userspace init and general SMP resource ownership
+remain separate work.
 
-## Failure and correction
+## Reproduced failures
 
-Each CPU retains a `sched_cur` pointer and an `fpu_owner` pointer. Switching
-from a user task to a kernel task can leave the outgoing user's FPU state live;
-the next user-task switch saves it through `fpu_owner`. That pointer must not
-outlive its `process_t` allocation.
+Version 6.5.256 retires a collected child's per-CPU FPU references, closing a
+stale-owner path from 6.5.255. Its AP-parent test still loses the kernel-shell
+prompt after the parent exits. Inspecting the stopped VM shows CPU 0 halted on
+its child's already-freed kernel stack, with its process-table cursor beyond
+the remaining entries. Clearing a pointer does not prove that its CPU has
+stopped using the underlying resources.
 
-The background reaper already calls `sched_forget`, but `do_waitpid` omitted
-it. A parent on CPU 1 can collect a child that ran on CPU 0 while CPU 0 still
-names the child as its FPU owner. The next FPU save could then write into a
-freed allocation.
+The exit path marks a task zombie before the next timer interrupt switches it
+out. A parent on another core can observe that state immediately. Even after
+the scheduler selects a replacement, its C function still executes on the
+outgoing stack until IRQ assembly installs the new RSP and CR3.
 
-The waited-child path now calls `sched_forget` before freeing the process
-object, and holds `sched_lock` around table compaction and reference retirement.
-This matches the existing background-reaper cleanup. The lock protects that
-table mutation against AP table scans; it is not a general lifetime lock for
-all process fields or scheduler operations.
+## Lifetime contract
 
-Exit status, shared-address-space handling, thread-group resource handoff,
-`WNOHANG`, stop reporting and syscall return state retain their previous
-contracts. Interrupts remain masked on return from `do_waitpid`.
+| Field or operation | Contract |
+|---|---|
+| `sched_cur` | Selected task; published under `sched_lock`, before the physical switch |
+| `sched_active` | Outgoing task until the IRQ stub installs replacement RSP and CR3; boot-to-compositor identity transfer explicitly initializes it too |
+| `reap_claimed` | One collector claims an inactive zombie under `sched_lock`; another collector cannot release the same task |
+| `reap_claim_locked` | Rejects collection while any CPU selects or physically occupies the task |
+| `sched_forget` | Clears selected/FPU references under the lock before freeing the process object; never acknowledges physical handoff |
+| `current_idx` | BSP scan cursor; current-task identity comes from the CPU pointer after bootstrap |
+| `publish_process` | Rechecks capacity and appends under the same lock used by selection and removal |
+
+The BSP and AP schedulers retain the lock through target/FPU publication.
+The BSP switches to idle when the outgoing task is no longer runnable and no
+ordinary task can run. Boot explicitly adopts the compositor identity and
+retires the initial placeholder's saved boot frame, so two entries cannot
+resume that context.
+
+Waiters publish their waiting condition under the same lock as exit wakeups.
+If a child has exited but its CPU has not completed handoff, `do_waitpid`
+remains runnable, halts until an interrupt and checks again. It does not rely
+on a fixed grace period or a second exit notification. `WNOHANG` reports zero
+while collection is unsafe. Exit codes, stop reporting, null status pointers
+and syscall return context retain their contracts.
+
+The claimed task stays in the table during cleanup. Heap, file and page-table
+cleanup occur outside `sched_lock`; final compaction and FPU retirement occur
+inside it. Allocation failure after a full-table recheck unwinds the
+unpublished task's resources. PID allocation and balanced-placement counters
+use atomic increments.
 
 ## Verification
 
-| Layer | Evidence on 6.5.256 |
+| Layer | Evidence on 6.5.257 |
 |---|---|
-| Host | 308 sanitizer checks of the actual wait and reference-retirement bodies; the previous source reaches 228 checks with 64 failures |
-| Host controls | No child, running child, stopped child, repeated stop reporting, exact/any child, null status, shared address space, resource handoff, moved table cursor and unrelated CPU owners |
+| Host collection | 802 sanitizer checks; preceding source compiles and runs the regression with 28 failures |
+| Host scheduling | 43 checks of actual BSP/AP selection, stale cursor, blocked/zombie idle fallback, boot adoption and full-table publication; preceding source fails seven checks |
 | Kernel | Warning-free build, 230 kernel self-tests and four-CPU login |
-| Serial QEMU | Paired CPU-0 and CPU-1 parents reap CPU-0 children with status 73; physical-memory inspection confirms the collected child is no longer a CPU FPU owner |
-| Exception lifecycle | Seven existing `threads --faults` cases pass, followed by normal threads and a responsive shell; five deliberate unhandled exception records are expected |
-| GUI | Two normal thread runs preserve shared counter, heap and descriptors; 20 fork/exec/pipe rounds report no faults; socket alias/replacement checks, scheduler heartbeats, window movement and a later command pass |
-| Disk controls | The GUI run preserves its 10-byte and 24-byte unrelated files exactly |
+| Serial QEMU | Immediate child collection from parents on CPUs 0, 1, 2 and 3 returns status 73, followed by the kernel prompt and a successful command; no retained child FPU owner |
+| Exception lifecycle | Seven existing `threads --faults` cases pass, then normal threads and a responsive shell; five deliberate exception records are expected |
+| GUI | Two thread runs preserve shared counter, heap and descriptors; 20 fork/exec/pipe rounds report no faults; socket aliases, scheduler heartbeats, window movement and a later command pass |
+| Disk controls | Unrelated 10-byte and 24-byte files remain exact |
 
-The serial tests use four qemu64 CPUs, 512 MiB and a disposable 32 MiB EXT2
-disk. The GUI uses four CPUs, 5 GiB and a separate disposable disk. All test
-VMs close. The host harness mocks interrupt control, resource cleanup and
-per-CPU state; it does not simulate concurrent execution.
+Serial tests use four qemu64 CPUs, 512 MiB and disposable 32 MiB EXT2 disks.
+GUI tests use four CPUs, 5 GiB and a separate disposable disk. All test VMs
+close. Host tests mock interrupts, CPU state and resource cleanup. They model
+specific interleavings, not arbitrary concurrent execution; target tests cover
+the actual assembly handoff.
+
+## Desktop CPU comparison
+
+A sequential 6.5.256/6.5.257 control uses the same four-CPU, 5 GiB QEMU/TCG
+configuration and fresh disposable disks. Each phase has three eight-second
+samples after settling. Host values are the median QEMU process CPU time
+normalized to one host core; guest values are the BSP indicator range. These
+are different quantities and neither describes all hardware workloads.
+
+| Phase | Host 6.5.256 | Host 6.5.257 | Guest BSP 6.5.257 |
+|---|---|---|---|
+| terminal-idle | 39.0% | 35.8% | 0–0% |
+| start-menu-idle | 34.9% | 35.5% | 0–1% |
+| context-menu-idle | 34.7% | 36.1% | 0–0% |
+| stationary-button-held | 35.0% | 36.0% | 0–0% |
+
+This correction does not claim a CPU optimization. The controls retain modest
+host variation and a near-zero guest idle indicator; they do not reproduce a
+sustained 100% host-core load. Future desktop effects still require their own
+paired measurements.
 
 ## Remaining limits
 
-The opt-in `smpbalance on` serial case still fails to return the kernel-shell
-prompt within 30 seconds after its AP parent reports exit. Clearing the stale
-FPU owner does not resolve that separate failure. Default CPU-0 placement and
-the graphical workloads above pass their bounded checks.
+The previously reproduced AP-parent prompt failure passes the bounded target
+cases above. This does not establish general SMP safety: process-table readers
+outside `sched_lock`, shared descriptors, thread-group resource transfer,
+concurrent address-space users and broad churn still need qualification.
+The claim protects one task's collection, not every resource shared with it.
 
-Remote-task quiescence, concurrent reapers, wait/wakeup races, process-table
-readers outside `sched_lock` and broad SMP churn remain separate work. These
-checks do not qualify physical hardware, long sessions or general memory
-safety. Real userspace service supervision and PID-1 ownership also remain
-unfinished.
+There is no physical-hardware or long-session qualification. Real userspace
+service supervision and PID-1 ownership remain unfinished. Storage atomicity,
+power-loss recovery and desktop visual work are independent of this correction.
 
-Sources: `kernel/proc/process.c` (`do_waitpid`, `sched_forget`, `fpu_switch`),
-`kernel/core/smp.c` (`ap_scheduler_tick`), `tools/test_process_reap.py` and
+Sources: `kernel/proc/process.c`, `kernel/core/isr_stubs.asm`,
+`kernel/core/smp.c`, `kernel/core/smp.h`, `kernel/core/kernel.c`,
+`tools/test_process_reap.py`, `tools/test_scheduler_handoff.py` and
 `user/threads.c`.

@@ -68,6 +68,9 @@ typedef struct {
     // fpu_switch() fxsave's it out and fxrstor's the incoming task in. void* to keep this
     // header free of process.h ordering constraints; only ever set to a process_t*.
     void*    fpu_owner;
+    // Written by IRQ stubs AFTER switching RSP and CR3 (also initialized by the
+    // explicit boot-stack adoption). sched_cur can name the incoming task earlier.
+    void*    sched_active;
 } cpu_info_t;
 
 /* Pin the assembler contract. If this line fails to compile, someone moved a
@@ -81,6 +84,10 @@ typedef char cpu_abi_prefix_offsets_are_pinned[
      __builtin_offsetof(cpu_info_t, sc_saved_rsp)  == 32 &&
      __builtin_offsetof(cpu_info_t, sc_next_rsp)   == 40 &&
      __builtin_offsetof(cpu_info_t, sc_next_cr3)   == 48) ? 1 : -1];
+
+typedef char cpu_scheduler_handoff_offsets_are_pinned[
+    (__builtin_offsetof(cpu_info_t, sched_cur) == 128 &&
+     __builtin_offsetof(cpu_info_t, sched_active) == 160) ? 1 : -1];
 
 extern cpu_info_t cpu_info[MAX_CPUS];
 extern uint32_t cpu_count;

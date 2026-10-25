@@ -17,6 +17,8 @@ extern irq_eoi
 %define CPU_SAVED_RSP   32
 %define CPU_NEXT_RSP    40
 %define CPU_NEXT_CR3    48
+%define CPU_SCHED_CUR   128
+%define CPU_SCHED_ACTIVE 160
 
 ; Save all registers (15 pushes).
 ;
@@ -385,6 +387,9 @@ irq_common:
     mov dx, 0x3F8; mov al, '3'; out dx, al
 .b3: cli; hlt; jmp .b3
 .restore_done:
+    ; Retire the outgoing stack only after both stack and address-space handoff.
+    mov rax, [gs:CPU_SCHED_CUR]
+    mov [gs:CPU_SCHED_ACTIVE], rax
     RESTORE_REGS
     add rsp, 16
     iretq
@@ -433,6 +438,8 @@ ap_timer_stub:
     test rax, 0xFFF
     jnz .ap_bad_cr3
     mov cr3, rax
+    mov rax, [gs:CPU_SCHED_CUR]
+    mov [gs:CPU_SCHED_ACTIVE], rax
     RESTORE_REGS
     add rsp, 16                  ; drop int_no + error
     iretq

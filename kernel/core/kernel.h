@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.256"
+#define KERNEL_VERSION "6.5.257"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -418,6 +418,7 @@ typedef struct process {
     // task's FP state has been initialised from the clean template on its first switch-in.
     uint8_t  fpu_area[512 + 16];
     uint32_t fpu_ready;
+    uint32_t reap_claimed;  // sched_lock: exactly one collector owns cleanup
     struct process* next;
     struct process* parent;
     struct process* children;
@@ -963,6 +964,7 @@ void irq_scheduler_tick(void);
 // Preemptive scheduler (process.c): dormant until sched_enable(); mtdemo_start()
 // spins up two demo kernel threads and turns preemption on for the self-test.
 void sched_enable(void);
+void sched_adopt_boot_process(process_t* p);
 void sched_disable(void);
 int  sched_is_enabled(void);
 int  mtdemo_start(void);

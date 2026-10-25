@@ -162,8 +162,8 @@ volatile int smp_user_balance = 0;
 // Round-robin over the tasks PINNED to this CPU (p->sched_cpu == our number).
 // Pinning is the entire mutual-exclusion argument: no other core will even look
 // at these tasks, so nothing here can race the BSP over who runs what. The lock
-// covers only the SHAPE of the table — entries and process_count — against a
-// concurrent create_process or reap.
+// covers the table scan and selection/FPU publication against a concurrent
+// creator or collector. The IRQ stub acknowledges physical handoff afterwards.
 //
 // sched_cur == NULL means "the idle context this core booted into", whose stack
 // pointer we park in idle_rsp so there is always somewhere to go back to when no
@@ -212,8 +212,6 @@ void ap_scheduler_tick(void) {
         me->sched_scan = idx;
         break;
     }
-    spin_unlock_irqrestore(&sched_lock, fl);
-
     me->sched_cur = pick;
     if (pick) {
         // sched_target() is the BSP's battle-tested aiming logic, and every slot
@@ -226,6 +224,7 @@ void ap_scheduler_tick(void) {
         me->sc_next_rsp = me->idle_rsp;      // back to the boot idle loop
         me->sc_next_cr3 = kernel_pml4_phys;  // ...which is always kernel-side
     }
+    spin_unlock_irqrestore(&sched_lock, fl);
 }
 
 // The per-AP worker. It counts only while smp_work_active, and halts otherwise,

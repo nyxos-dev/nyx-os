@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Actual waitpid/CPU-owner cleanup bodies, with mocked resources and interrupts.
+"""Actual collector/wait bodies with controlled CPU-handoff interleavings.
 
-Run on Linux/WSL. This verifies reference retirement and existing wait results;
-it does not simulate concurrent schedulers or prove remote-task quiescence.
+Run on Linux/WSL. Mocks check resource lifetime and wait results at each boundary;
+this is not an SMP execution model. QEMU must also exercise the assembly handoff.
 """
 import argparse
 from pathlib import Path
@@ -33,29 +33,37 @@ static unsigned checks, failures;
 typedef struct process {
     uint32_t pid, ppid, waiting_for;
     int state, blocked_in_kernel, stopped_reported, stop_sig, exit_code;
+    uint32_t reap_claimed, sched_managed;
     void *page_directory, *kernel_stack;
 } process_t;
 static process_t parent, child, other, kernel_task;
 static process_t *process_table[8], *self;
-static struct { process_t *sched_cur, *fpu_owner; } cpu_info[MAX_CPUS];
+static struct { process_t *sched_cur, *fpu_owner, *sched_active; } cpu_info[MAX_CPUS];
 static int process_count, current_idx, locked, sched_lock, lock_calls;
 static int freed, stack_freed, closed, unmapped, directories, shared, heir;
+static int wait_steps, wait_mode;
 static uint64_t user_cr3, user_rsp;
 static process_t* get_current_process(void) { return self; }
 static void mock_cli(void) { CHECK(!locked); }
-static void mock_wait(void) { fputs("Unexpected blocking wait\n",stderr);abort(); }
+static void mock_wait(void);
+static process_t* find_process(uint64_t pid) {
+    for(int i=0;i<process_count;i++)if(process_table[i]->pid==pid)return process_table[i];
+    return NULL;
+}
+static void preempt_disable(void) {}
+static void preempt_enable(void) {}
 static uint64_t spin_lock_irqsave(int* p) {
     CHECK(p==&sched_lock && !locked); locked=1;lock_calls++;return 0;
 }
 static void spin_unlock_irqrestore(int* p,uint64_t flags) {
     CHECK(p==&sched_lock && locked && flags==0);
-    CHECK(process_count==2 && process_table[2]==NULL);
-    CHECK(process_table[0]==&parent && process_table[1]==&other);
+    locked=0;
+}
+static void inactive(void) {
     for(int i=0;i<MAX_CPUS;i++) {
         CHECK(cpu_info[i].sched_cur!=&child);
-        CHECK(cpu_info[i].fpu_owner!=&child);
+        CHECK(cpu_info[i].sched_active!=&child);
     }
-    locked=0;
 }
 static int tg_reassign_leader(process_t* p) { CHECK(p==&child && !locked);return heir; }
 static void close_proc_fds(process_t* p) { CHECK(p==&child && !locked);closed++; }
@@ -63,11 +71,12 @@ static void mmap_free_bufs(process_t* p) { CHECK(p==&child && !locked);unmapped+
 static int addr_space_shared(void* p,process_t* proc) {
     CHECK(p==child.page_directory && proc==&child && !locked);return shared;
 }
-void free_page_directory(uint64_t* p) { CHECK(p==child.page_directory && !locked);directories++; }
+void free_page_directory(uint64_t* p) { CHECK(p==child.page_directory && !locked);inactive();directories++; }
 static void kfree(void* p) {
     CHECK(!locked);
+    inactive();
     if(p==(void*)0x4000) {stack_freed++;return;}
-    CHECK(p==&child && lock_calls==1);
+    CHECK(p==&child);
     for(int i=0;i<MAX_CPUS;i++) {
         CHECK(cpu_info[i].sched_cur!=p);
         CHECK(cpu_info[i].fpu_owner!=p);
@@ -77,6 +86,26 @@ static void kfree(void* p) {
 '''
 
 TESTS = r'''
+static void mock_wait(void) {
+    CHECK(!locked && parent.blocked_in_kernel && !freed && !stack_freed);
+    if(++wait_steps>3)abort();
+    // Selection precedes physical RSP/CR3 replacement by one boundary.
+    if(wait_mode==1) {
+        CHECK(parent.state==PROC_RUN);
+        cpu_info[3].sched_cur=&kernel_task;
+        if(wait_steps==2)cpu_info[3].sched_active=&kernel_task;
+    } else if(wait_mode==2) {
+        CHECK(parent.state==PROC_BLOCKED && parent.waiting_for==21);
+        child.state=PROC_ZOMBIE;
+#ifdef HANDOFF_CLAIMS
+        wake_waiters(&child);
+#else
+        parent.state=PROC_RUN;
+#endif
+    } else abort();
+    // Another syscall may run while this one is parked.
+    user_cr3=0x999;user_rsp=0x888;
+}
 static void reset(void) {
     memset(&parent,0,sizeof(parent));memset(&child,0,sizeof(child));
     memset(&other,0,sizeof(other));memset(cpu_info,0,sizeof(cpu_info));
@@ -88,9 +117,11 @@ static void reset(void) {
     process_table[0]=&parent;process_table[1]=&child;process_table[2]=&other;
     process_count=3;current_idx=2;self=&parent;
     freed=stack_freed=closed=unmapped=directories=shared=heir=locked=lock_calls=0;
+    wait_steps=wait_mode=0;
     user_cr3=0xabc;user_rsp=0xdef;
     for(int i=0;i<MAX_CPUS;i++) {
         cpu_info[i].sched_cur=&kernel_task;
+        cpu_info[i].sched_active=&kernel_task;
         cpu_info[i].fpu_owner=&child;
     }
     cpu_info[1].sched_cur=&parent;cpu_info[1].fpu_owner=&parent;
@@ -117,13 +148,46 @@ int main(void) {
         CHECK(got==21);CHECK(status==(mode==3?-7:73));
         CHECK(process_count==2 && current_idx==1 && process_table[1]==&other && !process_table[2]);
         CHECK(freed==1 && stack_freed==1 && closed==!heir && unmapped==1 && directories==!shared);
-        CHECK(!locked && lock_calls==1 && user_cr3==0xabc && user_rsp==0xdef);
+        CHECK(!locked && lock_calls>=1 && user_cr3==0xabc && user_rsp==0xdef);
         CHECK(cpu_info[1].sched_cur==&parent && cpu_info[1].fpu_owner==&parent);
         for(int i=0;i<MAX_CPUS;i++) {
             CHECK(cpu_info[i].sched_cur==(i==1?&parent:&kernel_task));
             CHECK(cpu_info[i].fpu_owner==(i==1?&parent:NULL));
         }
     }
+    for(int mode=0;mode<3;mode++) {
+        reset();status=-7;
+        if(mode!=1)cpu_info[3].sched_cur=&child;
+        if(mode!=0)cpu_info[3].sched_active=&child;
+        CHECK(do_waitpid(21,&status,WNOHANG)==0);
+        CHECK(status==-7);unchanged();
+    }
+    reset();cpu_info[3].sched_cur=&child;cpu_info[3].sched_active=&child;
+    wait_mode=1;status=-7;
+    CHECK(do_waitpid(21,&status,0)==21 && status==73);
+    CHECK(wait_steps==2 && freed==1 && stack_freed==1 && directories==1);
+    CHECK(user_cr3==0xabc && user_rsp==0xdef && !parent.blocked_in_kernel);
+    reset();child.state=PROC_RUN;wait_mode=2;
+    CHECK(do_waitpid(21,&status,0)==21 && status==73);
+    CHECK(wait_steps==1 && parent.state==PROC_RUN && freed==1);
+#ifdef HANDOFF_CLAIMS
+    reset();uint64_t flags=spin_lock_irqsave(&sched_lock);
+    CHECK(reap_claim_locked(&child)==1);
+    CHECK(reap_claim_locked(&child)==0);
+    spin_unlock_irqrestore(&sched_lock,flags);
+    status=-7;CHECK(do_waitpid(21,&status,WNOHANG)==0 && status==-7);unchanged();
+    reset();child.ppid=0;cpu_info[3].sched_active=&child;
+    reap_zombies();unchanged();
+    cpu_info[3].sched_active=&kernel_task;reap_zombies();
+    CHECK(freed==1 && stack_freed==1);
+    reap_zombies();CHECK(freed==1);
+    reset();child.sched_managed=1;destroy_process(21);
+    CHECK(child.exit_code==73 && child.state==PROC_ZOMBIE);unchanged();
+    CHECK(do_waitpid(21,&status,0)==21 && status==73 && freed==1);
+    reset();child.state=PROC_RUN;child.sched_managed=1;
+    parent.state=PROC_BLOCKED;parent.waiting_for=21;destroy_process(21);
+    CHECK(parent.state==PROC_RUN && !parent.waiting_for && child.exit_code==-1);unchanged();
+#endif
     reset();cpu_info[3].sched_cur=&child;
     sched_forget(NULL);CHECK(cpu_info[3].sched_cur==&child);
     sched_forget(&child);
@@ -147,9 +211,16 @@ def main():
     wait = function(source, 'int do_waitpid(')
     wait = wait.replace('__asm__ volatile("cli");', 'mock_cli();')
     wait = wait.replace('__asm__ volatile("sti; hlt");', 'mock_wait();')
+    bodies = function(source, 'void sched_forget(')
+    if 'static int reap_claim_locked(' in source:
+        states += '#define HANDOFF_CLAIMS 1\n'
+        for marker in ('static int reap_claim_locked(', 'static void wake_waiters_locked(',
+                       'static void reap_claimed_process(', 'void reap_user_process(',
+                       'void destroy_process(', 'void reap_zombies(', 'void wake_waiters('):
+            bodies += '\n' + function(source, marker)
     with tempfile.TemporaryDirectory(prefix='nyx-process-reap-') as tmp:
         cfile, binary = Path(tmp)/'test.c', Path(tmp)/'test'
-        cfile.write_text(states+PREFIX+function(source, 'void sched_forget(')+wait+TESTS)
+        cfile.write_text(states+PREFIX+bodies+wait+TESTS)
         subprocess.run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror',
                         '-Wno-unused-function','-fsanitize=address,undefined',
                         '-fno-omit-frame-pointer','-no-pie',str(cfile),'-o',str(binary)],check=True)

@@ -11757,9 +11757,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         process_t* comp_proc = create_process("compositor", compositor_run, 0);
         if (comp_proc) {
             comp_proc->sched_weight = SCHED_WEIGHT_GUI;   // GUI gets priority over jobs
-            for (int i = 0; i < process_count; i++) {
-                if (process_table[i] == comp_proc) { current_idx = i; break; }
-            }
+            sched_adopt_boot_process(comp_proc);
         }
         // Login -> desktop, looping on logout: the user-badge menu's "Log out" makes
         // compositor_run() return with compositor_logout_requested set, so we tear the
