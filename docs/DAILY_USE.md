@@ -952,6 +952,16 @@ The immediate data and desktop priorities are:
     background computation remain separate performance costs. See
     [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md).
 
+65. Development version 6.5.260 preserves Ctrl/Alt with queued cooked keys.
+    Fast chords no longer become ordinary input after their modifier is released;
+    desktop workspace/window/MouseKeys routes and Selene tab switching use the
+    captured state. Legacy byte/raw readers and foreground signals retain their
+    contract. Host IRQ/poll/queue, nested dispatch, wheel and application checks,
+    230 KATs and four-CPU login pass. A paired PS/2 GUI trial reproduces the old
+    Ctrl+2 corruption and verifies the final desktop and local browser tabs.
+    File Manager translation and copy/move persistence remain separate work.
+    See [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

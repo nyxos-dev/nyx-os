@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.259"
+#define KERNEL_VERSION "6.5.260"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1027,6 +1027,9 @@ char getchar(void);
 char getchar_poll(void);
 int  keyboard_has_input(void);               // poll(): 1 if a key/serial byte is waiting
 int  getkey_poll(void);
+#define KEY_MOD_CTRL 1u
+#define KEY_MOD_ALT  2u
+int  getkey_poll_with_modifiers(unsigned* modifiers);
 int  keyboard_next_event(void);              // SYS_GETKEYEVENT: raw key make/break, or -1
 void keyboard_irq_handler(void* unused);
 int is_ctrl_pressed(void);

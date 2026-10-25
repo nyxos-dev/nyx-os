@@ -147,7 +147,56 @@ static int ordering(void) {
     CHECK(!bad_lock && !kbd_lock.locked);
     return 0;
 }
+static int modifier_events(void) {
+    keyboard_layout=0;g_foreground_pid=0;
+    unsigned mods=99;
+    irq_sc(0x1D);irq_key(0x02,0);irq_sc(0x9D);
+    CHECK(getkey_poll_with_modifiers(&mods)=='1' && mods==1 && !is_ctrl_pressed());
+    irq_sc(0x38);irq_key(0x3E,0);irq_sc(0xB8);
+    CHECK(getkey_poll_with_modifiers(&mods)==KEY_F4 && mods==2 && !is_alt_pressed());
+    // Modifier identity belongs to each queued key, not the latest key or live state.
+    irq_key(0x02,0);irq_sc(0x1D);irq_key(0x02,0);irq_sc(0x38);irq_key(0x03,0);
+    irq_sc(0x9D);irq_key(0x04,0);irq_sc(0xB8);irq_key(0x05,0);
+    const int codes[]={'1','1','2','3','4'}, flags[]={0,1,3,2,0};
+    for(int j=0;j<5;j++) CHECK(getkey_poll_with_modifiers(&mods)==codes[j] && mods==(unsigned)flags[j]);
+    CHECK(getkey_poll_with_modifiers(&mods)==0 && mods==0);
+    // Byte-only readers discard navigation and the discarded key's modifier metadata.
+    irq_sc(0x38);irq_key(0x4B,1);irq_sc(0xB8);irq_key(0x1E,0);
+    CHECK(getchar_poll()=='a');CHECK(getkey_poll_with_modifiers(&mods)==0 && mods==0);
+    // Legacy key API and serial fallback never expose packed metadata.
+    irq_sc(0x1D);irq_key(0x04,0);irq_sc(0x9D);CHECK(getkey_poll()=='3');
+    irq_sc(0x38);serial_byte='4';serial_ready=1;
+    CHECK(getkey_poll_with_modifiers(&mods)=='4' && mods==0 && is_alt_pressed());irq_sc(0xB8);
+    for(int cycle=0;cycle<8;cycle++) {
+        for(int j=0;j<255;j++) { if(j%2)irq_sc(0x1D);irq_key(0x02,0);if(j%2)irq_sc(0x9D); }
+        irq_sc(0x38);irq_key(0x3E,0);irq_sc(0xB8);
+        for(int j=0;j<255;j++) CHECK(getkey_poll_with_modifiers(&mods)=='1' && mods==(unsigned)(j%2));
+        CHECK(getkey_poll_with_modifiers(&mods)==0 && mods==0);
+    }
+    for (int layout=0;layout<2;layout++) {
+        keyboard_layout=layout;
+        for (int irq=0;irq<2;irq++) {
+            CHECK(key(0x1D,irq)==0);
+            ready=1;scancode=0x0F;if(irq)keyboard_irq_handler(NULL);
+            CHECK(getkey_poll_with_modifiers(&mods)=='\t' && mods==KEY_MOD_CTRL);
+            CHECK(key(0x9D,irq)==0);
+        }
+    }
+    keyboard_layout=0;
+    // Later physical changes cannot retroactively turn a queued plain key into a chord.
+    irq_key(0x02,0);irq_sc(0x1D);
+    CHECK(getkey_poll_with_modifiers(&mods)=='1' && mods==0 && is_ctrl_pressed());
+    irq_sc(0x9D);
+    // Extended Ctrl and navigation preserve their snapshot after release.
+    irq_sc(0xE0);irq_sc(0x1D);irq_key(0x49,1);irq_sc(0xE0);irq_sc(0x9D);
+    CHECK(getkey_poll_with_modifiers(&mods)==KEY_PGUP && mods==KEY_MOD_CTRL && !is_ctrl_pressed());
+    CHECK(getkey_poll_with_modifiers(NULL)==0);
+    CHECK(!bad_lock && !kbd_lock.locked);
+    puts("PASS queued modifiers: delayed chords, mixed queue, legacy/serial/byte readers, 8 full wraps");
+    return 0;
+}
 int main(void) {
+    CHECK(modifier_events()==0);
     CHECK(kbd_control_selftest() == 0);
     CHECK(kbd_translate_selftest() == 0);
     for (int layout = 0; layout < 2; layout++) {

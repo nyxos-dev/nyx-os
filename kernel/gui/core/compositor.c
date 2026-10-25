@@ -45,6 +45,22 @@ static int quit = 0;
 static int compositor_active = 0;
 static int current_workspace = 0;
 
+// Key handlers run serially in the compositor; nested dispatch restores its caller.
+static unsigned dispatched_key_modifiers;
+
+unsigned window_key_modifiers(void) {
+    return dispatched_key_modifiers;
+}
+
+static void window_dispatch_key(window_t* win, int key, unsigned modifiers) {
+    if (!win || !win->on_key) return;
+    unsigned previous = dispatched_key_modifiers;
+    dispatched_key_modifiers = modifiers;
+    win->on_key(win, key);
+    dispatched_key_modifiers = previous;
+}
+
+
 static uint32_t taskbar_bg, taskbar_fg, taskbar_hl;
 static uint32_t desktop_bg, title_active, title_inactive;
 
@@ -4612,13 +4628,14 @@ void compositor_run(void) {
         kernel_poll_net();
         run_background_tasks();
 
-        int k = getkey_poll();
+        unsigned key_modifiers = 0;
+        int k = getkey_poll_with_modifiers(&key_modifiers);
 
         // MouseKeys — drive the pointer from the keyboard, essential on hardware with no
         // working mouse/touchpad (e.g. an 8" UMPC with one USB port). Hold Alt: W/A/S/D move
         // the cursor, Space left-clicks, C right-clicks. The key is consumed so it never leaks
         // to a focused app; movement clamps to the (possibly rotated) logical screen.
-        if (k && is_alt_pressed()) {
+        if (k && (key_modifiers & KEY_MOD_ALT)) {
             int nx = mouse_get_x(), ny = mouse_get_y(), hit = 1;
             const int STEP = 16;
             if      (k == 'w' || k == 'W') ny -= STEP;
@@ -4695,7 +4712,7 @@ void compositor_run(void) {
             window_t* fwin = focused_window();
             if (fwin && fwin->on_key) {
                 int keycode = (notches > 0) ? KEY_WHEEL_UP : KEY_WHEEL_DOWN;
-                for (int s = 0; s < steps; s++) fwin->on_key(fwin, keycode);
+                for (int s = 0; s < steps; s++) window_dispatch_key(fwin, keycode, 0);
                 redraw = 1;
             }
             mouse_z = wz;
@@ -5192,7 +5209,7 @@ void compositor_run(void) {
                 }
             }
             // Ctrl+1..4: workspace switching
-            if (is_ctrl_pressed() && k >= '1' && k <= '4') {
+            if ((key_modifiers & KEY_MOD_CTRL) && k >= '1' && k <= '4') {
                 workspace_select(k - '1');
                 redraw = 1;
                 goto done_click;
@@ -5203,7 +5220,7 @@ void compositor_run(void) {
             // Terminal never also receives the Tab/arrow as input. Alt+Tab works
             // even with nothing focused (it picks the first window); the rest
             // need a target, so they no-op when focused_id is 0.
-            if (is_alt_pressed()) {
+            if ((key_modifiers & KEY_MOD_ALT)) {
                 if (k == '\t') {                       // Alt+Tab: cycle focus
                     window_cycle_focus();
                     redraw = 1;
@@ -5256,7 +5273,7 @@ void compositor_run(void) {
             // Route all keys to focused window's key handler
             window_t* fwin = focused_window();
             if (fwin && fwin->on_key && k > 0) {
-                fwin->on_key(fwin, k);
+                window_dispatch_key(fwin, k, key_modifiers);
                 redraw = 1;
             }
         }

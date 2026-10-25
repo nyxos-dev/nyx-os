@@ -184,6 +184,50 @@ taskbar recovery, snap/restore, drag and commands. Disk fixtures are unchanged
 and all test VMs close. This is bounded VM evidence, not a long-session,
 hardware, power-consumption or general graphics-performance guarantee.
 
+## Queued key modifiers (6.5.260)
+
+The cooked PS/2 queue captures Ctrl and left Alt with each byte or navigation
+key while holding the keyboard lock. The compositor consumes that snapshot for
+workspace switching, window shortcuts and MouseKeys. Releasing the modifier
+before dispatch no longer turns a chord into ordinary application input;
+pressing a modifier later cannot turn an earlier plain key into a chord.
+
+`getkey_poll_with_modifiers` is an internal kernel reader. Existing byte/key
+readers strip the metadata, serial input carries no hardware modifiers, and
+raw make/break events and foreground Ctrl+C/Ctrl+Z signals retain their existing
+contracts. The queue remains bounded and still drops the newest input when full.
+
+Application key callbacks see `window_key_modifiers()` during serial compositor
+dispatch. Nested dispatch restores its caller's snapshot; synthetic wheel keys
+carry zero modifiers. Selene uses the snapshot for Ctrl+Tab, Ctrl+PageUp and
+Ctrl+PageDown. Physical modifier queries retain their pointer-gesture meaning.
+File Manager shortcut translation and copy/move failure handling remain separate
+work; this increment does not change those paths or qualify clipboard persistence.
+
+The keyboard host suite covers delayed release, mixed modifier states, a later
+physical press, extended Ctrl/navigation, eight full-ring wraps, overflow,
+byte-only and serial isolation, US/ES layouts, IRQ/polling and foreground signals.
+The workspace suite adds nested callback restoration and wheel isolation (313
+checks); 44 further host checks exercise real compositor, MouseKeys and Selene
+shortcut branches with physical state deliberately opposite to the event.
+Existing minimize, hidden-tick, canonical/raw stdin and Selene-form checks pass.
+
+The warning-free kernel passes 230 KATs and reaches four-CPU login. Separate
+QEMU/TCG GUI trials use four CPUs, 5 GiB and 1024x768. In the preceding 6.5.259
+image, a single batch of PS/2 Ctrl-down, 2-down, 2-up, Ctrl-up leaves the
+workspace unchanged and appends `2` to the pending terminal command. The queue
+is drained and physical Ctrl is released. The same input on 6.5.260 switches
+to the empty workspace and preserves the command.
+
+The final image passes 29 GUI state checkpoints with make/break chord batches:
+two independent terminals, empty-workspace input/close protection, focus return,
+minimize/recover, snap/restore, dragging, commands and active-window close. Selene
+opens three local tabs, cycles with Ctrl+Tab and Ctrl+PageUp/PageDown, keeps the
+active tab on plain PageDown, and closes a tab. Two disk control files
+remain byte-identical; the VM closes. Host branch tests and GUI observations are
+separate evidence. This does not qualify hardware, sustained input overflow,
+long sessions or a performance improvement.
+
 ## Verification and limits
 
 Development version 6.5.207 adds 234 host configuration checks covering the

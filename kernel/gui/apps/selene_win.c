@@ -3277,7 +3277,7 @@ void selene_win_key(window_t* win, int key) {
     if (!T) return;
     if (key == 0x14) { selene_tab_new(T); return; }                       // Ctrl+T: new tab
     if (key == 0x17) { selene_tab_close(T, T->active); return; }           // Ctrl+W: close tab
-    if (key == '\t' && is_ctrl_pressed()) { T->active = (T->active + 1) % T->ntabs; return; }  // Ctrl+Tab: next tab
+    if (key == '\t' && (window_key_modifiers() & KEY_MOD_CTRL)) { T->active = (T->active + 1) % T->ntabs; return; }  // Ctrl+Tab: next tab
     selene_ctx_t* s = T->tab[T->active];
     if (!s) return;
     int rows = visible_rows();
@@ -3325,8 +3325,8 @@ void selene_win_key(window_t* win, int key) {
 
     if (key == KEY_UP || key == KEY_WHEEL_UP)     { s->scroll -= 3; selene_after_scroll(s); return; }
     if (key == KEY_DOWN || key == KEY_WHEEL_DOWN) { s->scroll += 3; selene_after_scroll(s); return; }
-    if (key == KEY_PGUP && is_ctrl_pressed()) { T->active = (T->active + T->ntabs - 1) % T->ntabs; return; }  // Ctrl+PgUp: prev tab
-    if (key == KEY_PGDN && is_ctrl_pressed()) { T->active = (T->active + 1) % T->ntabs; return; }             // Ctrl+PgDn: next tab
+    if (key == KEY_PGUP && (window_key_modifiers() & KEY_MOD_CTRL)) { T->active = (T->active + T->ntabs - 1) % T->ntabs; return; }  // Ctrl+PgUp: prev tab
+    if (key == KEY_PGDN && (window_key_modifiers() & KEY_MOD_CTRL)) { T->active = (T->active + 1) % T->ntabs; return; }             // Ctrl+PgDn: next tab
     if (key == KEY_PGUP) { s->scroll -= (rows - 1); selene_after_scroll(s); return; }
     if (key == KEY_PGDN) { s->scroll += (rows - 1); selene_after_scroll(s); return; }
     if (key == KEY_HOME) { s->scroll = 0; selene_after_scroll(s); return; }

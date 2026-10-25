@@ -10,7 +10,8 @@ HARNESS = r'''
 #include "@SOURCE@"
 extern int puts(const char*);
 static int keys, moves, presses, wheel;
-static void receive(window_t* win, int key) { (void)win; (void)key; keys++; }
+static unsigned received_modifiers;
+static void receive(window_t* win, int key) { (void)win; (void)key; keys++; received_modifiers=window_key_modifiers(); }
 static void move(window_t* win, int x, int y, int b) { (void)win; (void)x; (void)y; (void)b; moves++; }
 static void press(window_t* win, int x, int y, int b) { (void)win; (void)x; (void)y; (void)b; presses++; }
 int is_ctrl_pressed(void) { return 1; }
@@ -18,12 +19,12 @@ int mouse_get_z(void) { return wheel; }
 static int checks;
 #define CHECK(x) do { checks++; if (!(x)) { char msg[128]; snprintf(msg,sizeof msg,"FAIL line %d check %d: %s",__LINE__,checks,#x); puts(msg); return 1; } } while (0)
 static void select_workspace(int ws) {
-    int k='1'+ws,redraw=0;
+    int k='1'+ws,redraw=0;unsigned key_modifiers=KEY_MOD_CTRL;(void)key_modifiers;
     @SWITCH@
 done_click: (void)redraw;
 }
 static void dispatch_key(void) {
-    int k='x',redraw=0;
+    int k='x',redraw=0;unsigned key_modifiers=0;(void)key_modifiers;
     @KEY@
     (void)redraw;
 }
@@ -39,7 +40,21 @@ static void dispatch_pointer(void) {
     @PRESS@
     (void)mm_dispatched;(void)redraw;
 }
+static int nested_ok;
+static void nested(window_t* win, int key) {
+    unsigned before=window_key_modifiers();
+    if (key=='x') {
+        window_dispatch_key(win,'y',KEY_MOD_ALT);
+        nested_ok += window_key_modifiers()==before && before==KEY_MOD_CTRL;
+    } else nested_ok += before==KEY_MOD_ALT;
+}
 int main(void) {
+    window_t nested_win={0};nested_win.on_key=nested;
+    window_dispatch_key(&nested_win,'x',KEY_MOD_CTRL);
+    CHECK(nested_ok==2 && window_key_modifiers()==0);
+    window_dispatch_key(NULL,'x',KEY_MOD_CTRL);
+    nested_win.on_key=NULL;window_dispatch_key(&nested_win,'x',KEY_MOD_CTRL);
+    CHECK(window_key_modifiers()==0);
     window_t w[6]={0};
     for (int i=0;i<6;i++) {
         w[i].id=i+1;w[i].visible=1;w[i].w=400;w[i].h=300;
@@ -87,6 +102,9 @@ int main(void) {
     }
     window_focus(2);before=keys;dispatch_key();wheel++;dispatch_pointer();dispatch_close();
     CHECK(keys==before+2 && moves==1 && presses==1 && w[1].close_requested);
+    window_dispatch_key(&w[1], 'x', KEY_MOD_CTRL | KEY_MOD_ALT);
+    CHECK(received_modifiers==(KEY_MOD_CTRL | KEY_MOD_ALT) && window_key_modifiers()==0);
+    wheel++;dispatch_pointer();CHECK(received_modifiers==0 && window_key_modifiers()==0);
     char msg[96];snprintf(msg,sizeof msg,"PASS %d workspace focus/input checks",checks);puts(msg);
     return 0;
 }
@@ -96,13 +114,15 @@ def harness(text):
     def between(start, end, offset=0):
         a=text.index(start,offset)
         return text[a:text.index(end,a)]
-    switch=between("            if (is_ctrl_pressed() && k >= '1'",'\n\n')
+    switch=between("            if (",'\n\n',text.index("// Ctrl+1..4: workspace switching"))
     key=between('            window_t* fwin =', '\n        }',text.index('// Route all keys'))
     close=between('                window_t* awin =', '                    if (k == KEY_UP)')+'                }\n'
     motion=between('        if (mx != mouse_x || my != mouse_y)', '\n\n',text.index('// Dispatch mouse-move'))
     wheel=between('        int wz = mouse_get_z();','\n\n',text.index('// Dispatch mouse-wheel'))
     press=between('                    window_t* fwin =','\n                }',text.index('Button HELD'))
     result=HARNESS
+    if 'window_key_modifiers(void)' not in text:
+        result=result.replace('#include "@SOURCE@"', '#include "@SOURCE@"\nstatic unsigned host_modifiers;\nunsigned window_key_modifiers(void) { return host_modifiers; }\nstatic void window_dispatch_key(window_t* w,int k,unsigned m) { if(!w||!w->on_key)return;unsigned p=host_modifiers;host_modifiers=m;w->on_key(w,k);host_modifiers=p; }')
     for name,value in dict(SWITCH=switch,KEY=key,CLOSE=close,MOTION=motion,WHEEL=wheel,PRESS=press).items():
         result=result.replace('@'+name+'@',value)
     return result

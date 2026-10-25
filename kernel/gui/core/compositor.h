@@ -119,6 +119,7 @@ void reset_nyx_config(void);           // reset every desktop config knob before
 void window_destroy(int id);
 void window_request_close(int id);
 void window_focus(int id);
+unsigned window_key_modifiers(void);  // Current compositor key callback; zero outside dispatch.
 void window_move(int id, int x, int y);
 void window_resize(int id, uint32_t w, uint32_t h);
 void window_minimize(int id);

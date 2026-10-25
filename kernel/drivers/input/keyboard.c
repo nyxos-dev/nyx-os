@@ -21,6 +21,8 @@ static int e1_swallow = 0;         // Pause/Break (0xE1 1D 45 / 0xE1 9D C5): byt
 #define KBD_BUFFER_SIZE 256
 // Layout bytes can overlap KEY_* values; tag them until the reader chooses its API.
 #define KBD_BYTE_TAG 0x10000
+#define KBD_MOD_SHIFT 17
+#define KBD_MOD_MASK ((KEY_MOD_CTRL | KEY_MOD_ALT) << KBD_MOD_SHIFT)
 static volatile int kbd_buffer[KBD_BUFFER_SIZE];
 static volatile int kbd_head = 0;
 static volatile int kbd_tail = 0;
@@ -28,7 +30,9 @@ static volatile int kbd_tail = 0;
 static void kbd_enqueue(int key) {
     int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
     if (key && next != kbd_tail) {
-        kbd_buffer[kbd_head] = key;
+        unsigned modifiers = (ctrl_pressed ? KEY_MOD_CTRL : 0) |
+                             (alt_pressed ? KEY_MOD_ALT : 0);
+        kbd_buffer[kbd_head] = key | (modifiers << KBD_MOD_SHIFT);
         kbd_head = next;
     }
 }
@@ -327,26 +331,32 @@ int keyboard_has_input(void) {
     return 0;
 }
 
-static int kbd_read_cooked(int bytes_only) {
+static int kbd_read_cooked(int bytes_only, unsigned* modifiers) {
+    unsigned popped_modifiers = 0;
     uint64_t fl = spin_lock_irqsave(&kbd_lock);
     int sig = 0, key = 0;
     if (kbd_tail == kbd_head) kbd_poll_direct(&sig);
     while (kbd_tail != kbd_head) {
-        key = kbd_buffer[kbd_tail];
+        int raw = kbd_buffer[kbd_tail];
+        key = raw & ~KBD_MOD_MASK;
         kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;
-        if (key & KBD_BYTE_TAG) { key = (char)(key & 0xFF); break; }
-        if (!bytes_only) break;
+        if ((key & KBD_BYTE_TAG) || !bytes_only) {
+            popped_modifiers = (raw & KBD_MOD_MASK) >> KBD_MOD_SHIFT;
+            if (key & KBD_BYTE_TAG) key = (char)(key & 0xFF);
+            break;
+        }
         key = 0;
     }
     spin_unlock_irqrestore(&kbd_lock, fl);
     if (sig) signal_send_foreground(sig);
+    if (modifiers) *modifiers = popped_modifiers;
     if (key) return key;
     unsigned char c = (unsigned char)serial_getchar_nonblock();
     return c == 0x7F ? '\b' : (char)c;
 }
 
 char getchar_poll(void) {
-    return (char)kbd_read_cooked(1);
+    return (char)kbd_read_cooked(1, NULL);
 }
 
 char getchar(void) {
@@ -360,7 +370,11 @@ char getchar(void) {
 
 // Bytes and extended keycodes share arrival order; raw make/break stays separate.
 int getkey_poll(void) {
-    return kbd_read_cooked(0);
+    return kbd_read_cooked(0, NULL);
+}
+
+int getkey_poll_with_modifiers(unsigned* modifiers) {
+    return kbd_read_cooked(0, modifiers);
 }
 
 // SYS_GETKEYEVENT: pop the next raw key event, or -1 if the ring is empty. The value
