@@ -121,7 +121,9 @@ jobs:
         run: python3 tools/test_vfs_growth.py
 
       - name: Test memory reporting and free options
-        run: python3 tools/test_memory_reporting.py
+        run: |
+          python3 tools/test_memory_reporting.py
+          python3 tools/test_page_pool.py
 
       - name: Test lseek bounds and failed-position preservation
         run: python3 tools/test_lseek.py
@@ -302,7 +304,7 @@ jobs:
           timeout 240 qemu-system-x86_64 \
             -cdrom NyxOS-selftest.iso \
             -drive file=ext2-test.img,format=raw,index=0,media=disk \
-            -m 512M -cpu qemu64,+rdrand,+rdseed \
+            -m 1536M -cpu qemu64,+rdrand,+rdseed \
             -serial file:serial.log -display none -no-reboot &
           QPID=$!
           done=0
@@ -324,5 +326,8 @@ jobs:
           fi
           if ! echo "$summary" | grep -q 'failed=0'; then
             echo "::error::one or more in-kernel self-tests failed"; exit 1
+          fi
+          if ! grep -q '\[PMM-SPAN\] PASS: 256 upper frames' serial.log; then
+            echo "::error::physical frames above 512 MiB were not verified"; exit 1
           fi
           echo "OK: all in-kernel self-tests passed."

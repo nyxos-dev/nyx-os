@@ -733,6 +733,30 @@ The immediate data and desktop priorities are:
     active dragging, animation, all applications or physical hardware. Exact-source
     remote CI is recorded separately.
 
+54. Development version 6.5.249 expands the managed physical frame pool from
+    512 MiB to 1 GiB, sharing its bound with the existing runtime identity map.
+    Bitmap, reference and pin metadata cover the entire span; detected RAM above
+    1 GiB remains outside the pool, and the separate kernel heap remains 16 MiB.
+    Sanitized host tests exhaust and recover contiguous and reserved-hole pools
+    with 2,586,634 metadata checks; they mock locks and do not touch physical RAM.
+    The final QEMU artifact passes 230 kernel tests at 256 MiB/one CPU,
+    1536 MiB/one CPU and 5 GiB/four CPUs. The latter two configurations write,
+    verify, reference and release 256 frames above 512 MiB, with exact recovery;
+    the 256 MiB configuration explicitly skips that upper-frame check. CI now
+    requires the upper-frame pass with 1536 MiB. The build has no warnings and
+    the separate four-CPU smoke boot reaches login.
+    Real PS/2 terminal input runs the user/kernel pointer-boundary test and two
+    600 MiB demand-zero/COW/unmap runs. Both ends of all 153,600 user pages are
+    checked, the child writes three COW probes, and all parent markers survive.
+    Each program exit restores the exact initial free-page count. Two four-CPU
+    allocator stress runs report zero integrity failures; the second recovers
+    its starting count after the first warms a slab cache. Memory reports agree
+    on the 1 GiB pool; mtdemo, dragging and another command remain responsive.
+    A 512 MiB VM refuses the oversized test with status 1 and no frame loss.
+    The two persistent fixtures remain byte-exact. These are bounded VM checks,
+    not full 5 GiB allocation, swap, physical-hardware or long-session validation.
+    See [MEMORY.md](MEMORY.md) for the current layout and test contracts.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
@@ -846,10 +870,11 @@ driver contract. Expanding the device list must not weaken the VM regression gat
 
 ## Current limits and open investigations
 
-- The physical allocator in `kernel/mm/memory.c` has a 512 MiB managed-frame ceiling.
-  Reporting detected RAM above that limit does not remove it. The paging code and frame
-  metadata must be considered together before increasing it; adding swap is a separate
-  design decision, not a correction to a misleading memory counter.
+- Since 6.5.249, the physical allocator in `kernel/mm/memory.c` has a 1 GiB
+  managed-frame ceiling, verified with actual upper-frame access and a 600 MiB user
+  mapping. RAM detected above that bound remains unavailable to the allocator.
+  Further expansion requires page-directory, metadata and address-width work;
+  swap is a separate design decision.
 - The current identity mapping is bounded by one page directory (1 GiB), and
   `kernel/mm/heap.c` provides a fixed 16 MiB kernel heap. More configured VM RAM alone
   does not enlarge either limit. Measure the exhausted pool before changing its size.

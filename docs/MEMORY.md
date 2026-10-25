@@ -24,10 +24,10 @@ Memory in NyxOS is managed in three cooperating layers:
 | **Kernel heap** | bytes (slab + free-list) | `kmalloc` / `kfree` | `memory.c` |
 | **Virtual memory** | per-process page tables + VMAs | the `#PF` handler + `mmap` | `paging.c`, `mmap.c` |
 
-The kernel heap is built on top of the page allocator (a slab cache asks the page
-allocator for a fresh frame when it runs dry), and virtual memory maps physical
-frames — from the same page allocator — into each address space. One allocator
-underpins everything.
+Slab caches request frames from the page allocator. Larger kernel allocations use
+a separate, statically reserved 16 MiB heap in `kernel/mm/heap.c`. Virtual memory
+maps frames from the page allocator into each address space. Exhausting the fixed
+heap and exhausting the physical frame pool are different conditions.
 
 `PAGE_SIZE` is **4096** bytes everywhere.
 
@@ -38,29 +38,34 @@ underpins everything.
 Physical RAM is tracked by a **bitmap**, one bit per 4 KiB frame (`1` = free):
 
 ```c
-#define MAX_PAGES     (512 * 1024 * 1024 / 4096)   // up to 512 MiB of RAM
-static uint32_t page_bitmap[MAX_PAGES / 32];        // 16 KiB bitmap
+#define MAX_PAGES ((uint32_t)(PHYS_IDENTITY_MAX_BYTES / PAGE_SIZE))
+static uint32_t page_bitmap[MAX_PAGES / 32];        // 32 KiB bitmap
 ```
 
 `alloc_page()` scans the bitmap for a free frame, clears its bit, and returns the
 physical address; `free_page()` sets the bit back. The map of usable RAM comes
 from the multiboot memory map at boot (`init_memory`), and the low BIOS/MMIO hole
-is reserved out so it is never handed to a caller (`reserve_low_pages`).
+is reserved out so it is never handed to a caller (`reserve_low_pages`). Firmware
+holes remain reserved. Since development version 6.5.249, the shared
+`PHYS_IDENTITY_MAX_BYTES` limit is **1 GiB**: metadata covers the existing runtime
+identity map. Detected RAM above this bound is reported separately and is not
+available to allocations. The early assembly bootstrap still maps 128 MiB.
 
 ### Reference counts (copy-on-write)
 
 Each frame has a **reference count**, indexed by physical page number:
 
 ```c
-static uint8_t page_refcount[MAX_PAGES];
+static uint16_t page_refcount[MAX_PAGES];
 ```
 
 `alloc_page()` sets it to `1`. When `fork()` shares a page copy-on-write, both
 address spaces point their PTEs at the *same* frame and `page_incref()` bumps the
 count. `free_page()` decrements it and only returns the frame to the bitmap when
-the **last** reference drops. A refcount of `0` means "unconditional free", so
-frames that predate the refcount machinery (reserved-at-init pages) still free
-cleanly. A short list of frames — the shared-libc master pages, mapped read-only
+the **last** reference drops. A refcount of `0` means reserved or already free;
+`free_page()` rejects it without modifying the pool. The 16-bit table occupies
+512 KiB at the 1 GiB limit and supports counts above 255. Some frames — the
+shared-libc master pages, mapped read-only
 into every process — is pinned and never returned regardless of refcount.
 
 ### Locking
@@ -84,11 +89,12 @@ deadlock-free):
 - a **free-list heap** for larger requests, which `kmalloc` falls through to when
   no slab class fits.
 
-The kernel heap's virtual window is fixed:
+The large-allocation heap is a static array in the kernel's low identity-mapped
+image, reserved from the physical allocator:
 
 ```c
-#define KERNEL_HEAP_START 0xFFFFFFFF90000000
-#define KERNEL_HEAP_SIZE  (16 * 1024 * 1024)      // 16 MiB
+#define HEAP_SIZE (16 * 1024 * 1024)
+uint8_t heap[HEAP_SIZE] __attribute__((section(".bss.heap")));
 ```
 
 `kfree` poisons a freed block so a double-free is caught rather than silently
@@ -102,15 +108,18 @@ NyxOS runs on x86-64 4-level paging (PML4 → PDPT → PD → PT, 4 KiB leaves).
 PTE carries the standard flags — `PAGE_PRESENT`, `PAGE_WRITABLE`, `PAGE_USER`, and
 `PAGE_NX` (the no-execute bit, bit 63). Physical addresses are masked to bits
 51:12, which deliberately drops the NX bit so an NX page's frame still resolves
-correctly. The kernel lives in the **higher half** (its heap begins at
-`0xFFFFFFFF90000000`); user memory is the low canonical half.
+correctly. The kernel image is linked at low physical addresses starting at
+1 MiB and uses supervisor identity mappings. A higher-half alias starts at
+`KERNEL_BASE = 0xFFFFFF8000000000`. User memory occupies the low canonical half,
+with supervisor-only mappings protected by page permissions.
 
 Each user address space is laid out so its regions can never collide:
 
 | Region | Range | Notes |
 |--------|-------|-------|
 | User minimum | `USER_SPACE_MIN` = `0x1000` | page 0 stays unmapped (NULL-deref traps) |
-| Program image + heap | from the ELF load address up | the heap `brk` grows via `SYS_SBRK`, capped just below 4 GiB |
+| Program image + heap | from the ELF load address up | `SYS_SBRK` caps the exclusive break at `SHARED_LIBC_BASE` = 768 MiB |
+| Shared libc | from `0x30000000` | reserved above the program heap |
 | `mmap` region | `[MMAP_BASE, MMAP_MAX)` = **[4 GiB, 112 TiB)** | above the heap cap, below the stack |
 | User stack | near `USER_SPACE_END` = **128 TiB** | grows down from the top of the user range |
 
@@ -202,10 +211,24 @@ The memory subsystem is covered by several KATs in the boot self-test battery
 
 | KAT | What it pins |
 |-----|--------------|
-| `pagealloc` | physical allocator refcount + copy-on-write behaviour |
+| `pagealloc` | refcounts, reserved/interior-pointer rejection, recovery and upper-frame access |
 | `slab` | slab cache distinctness, integrity, reuse, and routing |
 | `kfree` | double-free poisoning |
 | `wx` | the W^X reject rule for `mmap`/`mprotect` |
+
+When at least 256 free frames exist above 512 MiB, `pagealloc` holds lower frames,
+writes and verifies 256 upper frames, exercises their reference counts and checks
+exact recovery. It prints `[PMM-SPAN] PASS`; smaller configurations explicitly
+print `SKIP`. CI runs the battery with 1536 MiB and requires the upper-frame pass.
+
+`exec /vmtest.elf --span` requires at least 640 MiB of free managed memory. It
+materialises 600 MiB, checks zero and data markers at both ends of every page,
+forks a child that writes three COW probes, verifies the parent's markers and
+unmaps the region. Page-table storage is reclaimed when the program exits. This
+extends the existing `vmtest` address-boundary checks; it does not replace them.
+The host `tools/test_page_pool.py` exhausts and recovers allocator metadata for
+contiguous RAM and a reserved-hole layout under sanitizers. Its locks are mocked
+and it does not dereference physical frames; real access is tested in QEMU.
 
 ---
 

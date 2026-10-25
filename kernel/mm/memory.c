@@ -18,9 +18,9 @@ static spinlock_t kmalloc_lock = SPINLOCK_INIT;
 
 // Bitmap-based physical page allocator
 // Each bit represents one 4KB page (1 = free, 0 = used)
-// Supports up to 512MB of physical RAM with 16KB bitmap
+// Covers the runtime identity map: up to 1 GiB, with a 32 KiB bitmap.
 
-#define MAX_PAGES (512 * 1024 * 1024 / 4096)
+#define MAX_PAGES ((uint32_t)(PHYS_IDENTITY_MAX_BYTES / PAGE_SIZE))
 #define BITMAP_WORDS (MAX_PAGES / 32)
 static uint32_t page_bitmap[BITMAP_WORDS];
 static uint32_t total_pages = 0;
@@ -32,12 +32,12 @@ static uint32_t free_pages = 0;
 // it when a page is shared (COW clone); free_page() decrements and only returns
 // the frame to the bitmap when the last reference drops. A refcount of 0 for a
 // page that was never tracked (reserved at init, or pre-refcount allocations)
-// simply means "unconditional free", so legacy callers keep working.
+// means reserved or already free; free_page rejects it without changing the pool.
 // uint16 (not uint8): a shared frame's reference count can reach the number of address
 // spaces mapping it, and MAX_PROCESSES is 512 — past a uint8's 255 ceiling. A saturating
 // uint8 under-counted a widely-shared COW frame and freed it early (use-after-free); 16
 // bits holds every reachable count with room to spare (the incref still saturates safely
-// at 0xFFFF, now unreachable). Costs 2*MAX_PAGES bytes of BSS (256 KB at 512 MB).
+// at 0xFFFF, now unreachable). Costs 2*MAX_PAGES bytes of BSS (512 KiB at 1 GiB).
 static uint16_t page_refcount[MAX_PAGES];
 
 // Frames that must NEVER return to the allocator, whatever the refcount says: the
@@ -150,7 +150,7 @@ void* alloc_page(void) {
             uint32_t bit = __builtin_ctz(page_bitmap[i]);
             uint32_t page_idx = i * 32 + bit;
             if (page_idx >= total_pages) break;
-            page_bitmap[i] &= ~(1 << bit);
+            page_bitmap[i] &= ~(1u << bit);
             free_pages--;
             memory_used += PAGE_SIZE;
             page_refcount[page_idx] = 1;       // one owner until COW-shared
@@ -236,11 +236,64 @@ void free_page(void* addr) {
         page_refcount[page_idx] = 1;
     } else {
         page_refcount[page_idx] = 0;
-        page_bitmap[page_idx / 32] |= 1 << (page_idx % 32);
+        page_bitmap[page_idx / 32] |= 1u << (page_idx % 32);
         free_pages++;
         memory_used -= PAGE_SIZE;
     }
     spin_unlock_irqrestore(&page_lock, fl);
+}
+
+// The normal self-test uses little RAM. When upper frames exist, hold the lower
+// ones long enough to prove real identity access and refcounts above 512 MiB.
+static int page_span_selftest(void) {
+    const uintptr_t boundary = 512ULL * 1024 * 1024;
+    const uint32_t goal = 256;
+    uint32_t available = 0;
+    for (uint32_t i = (uint32_t)(boundary / PAGE_SIZE); i < total_pages; i++)
+        if (page_bitmap[i / 32] & (1u << (i % 32))) available++;
+    if (available < goal) {
+        printf("[PMM-SPAN] SKIP: fewer than %u upper frames available\n", goal);
+        return 0;
+    }
+    uint32_t before = get_free_pages(), count = 0, high = 0;
+    uint64_t used_before = memory_used;
+    volatile uint64_t* head = NULL;
+    int rc = 0;
+    while (high < goal) {
+        volatile uint64_t* p = (volatile uint64_t*)alloc_page();
+        if (!p) { rc = 21; break; }
+        uintptr_t address = (uintptr_t)p;
+        p[0] = (uintptr_t)head; p[1] = ~p[0];
+        uint64_t pattern = address ^ 0x4e59585041474553ULL;
+        p[2] = pattern ^ 2; p[PAGE_SIZE / 8 - 1] = pattern ^ (PAGE_SIZE / 8 - 1);
+        if (address >= boundary) {
+            for (uint32_t j = 2; j < PAGE_SIZE / 8; j++) p[j] = pattern ^ j;
+            page_incref((void*)address);
+            if (page_get_refcount((void*)address) != 2) rc = 22;
+            free_page((void*)address);
+            if (page_get_refcount((void*)address) != 1) rc = 22;
+            high++;
+        }
+        head = p; count++;
+    }
+    uint32_t released = 0;
+    while (head) {
+        uintptr_t address = (uintptr_t)head, previous = (uintptr_t)head[0];
+        if (head[1] != ~(uint64_t)previous || (previous && (previous >= address || previous % PAGE_SIZE))) {
+            rc = 23; break;  // a broken chain must not become an arbitrary dereference
+        }
+        uint64_t pattern = address ^ 0x4e59585041474553ULL;
+        if (head[2] != (pattern ^ 2) || head[PAGE_SIZE / 8 - 1] != (pattern ^ (PAGE_SIZE / 8 - 1))) rc = 24;
+        if (address >= boundary)
+            for (uint32_t j = 2; j < PAGE_SIZE / 8; j++)
+                if (head[j] != (pattern ^ j)) rc = 24;
+        free_page((void*)address); released++;
+        head = (volatile uint64_t*)previous;
+    }
+    if (high != goal || released != count || get_free_pages() != before || memory_used != used_before) rc = 25;
+    printf("[PMM-SPAN] %s: %u upper frames, %u held/released, free %u -> %u\n",
+           rc ? "FAIL" : "PASS", high, count, before, get_free_pages());
+    return rc;
 }
 
 // KAT for the physical page allocator's refcount / copy-on-write invariants — the
@@ -296,7 +349,7 @@ int page_alloc_selftest(void) {
     if (get_free_pages() != free0 - 1) return 19;         // exactly the one frame still out
     free_page(q);                                         // last reference -> back to the pool
     if (get_free_pages() != free0) return 20;             // net-zero restored
-    return 0;
+    return page_span_selftest();
 }
 
 // Small allocation header for slab/heap routing

@@ -15,6 +15,9 @@
 
 #include "../core/types.h"
 
+// One runtime identity-map page directory; every managed frame must fit here.
+#define PHYS_IDENTITY_MAX_BYTES (1ULL << 30)
+
 // Page-table entry flags.
 #define PAGE_PRESENT  (1ULL << 0)
 #define PAGE_WRITABLE (1ULL << 1)

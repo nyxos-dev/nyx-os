@@ -626,7 +626,7 @@ static int identity_map_entries(uint64_t detected_bytes, uint32_t managed_pages)
     uint64_t bytes = (uint64_t)managed_pages * PAGE_SIZE;
     if (detected_bytes > bytes) bytes = detected_bytes;
     if (bytes < ((uint64_t)IDENTITY_MAP_MB << 20)) bytes = (uint64_t)IDENTITY_MAP_MB << 20;
-    if (bytes > (1ULL << 30)) bytes = 1ULL << 30;       // one page directory
+    if (bytes > PHYS_IDENTITY_MAX_BYTES) bytes = PHYS_IDENTITY_MAX_BYTES;       // one page directory
     return (int)((bytes + 0x1FFFFF) >> 21);
 }
 

@@ -59,14 +59,14 @@ int main(void) {
     };
     init_memory(3 * GIB, five_gib, 5);
     CHECK(memory_total == 5 * GIB - 384 * 1024);
-    CHECK(get_total_pages() == 512 * MIB / PAGE_SIZE);
-    CHECK(get_free_pages() == 511 * MIB / PAGE_SIZE);
+    CHECK(get_total_pages() == GIB / PAGE_SIZE);
+    CHECK(get_free_pages() == 1023 * MIB / PAGE_SIZE);
     uint32_t used, free_kb, total;
     mem_pool_kb(&used, &free_kb, &total);
-    CHECK(total == 512 * 1024 && used == 1024 && free_kb == 511 * 1024);
+    CHECK(total == 1024 * 1024 && used == 1024 && free_kb == 1023 * 1024);
     uint32_t percent, used_mb, total_mb;
     mon_mem(&percent, &used_mb, &total_mb);
-    CHECK(percent == 0 && used_mb == 1 && total_mb == 512);
+    CHECK(percent == 0 && used_mb == 1 && total_mb == 1024);
     char size[32];
     mon_size(size, sizeof(size), memory_total);
     CHECK(strcmp(size, "5.0 GiB") == 0);
@@ -81,7 +81,7 @@ int main(void) {
         {0, 32 * MIB, 1}, {16 * 1024 * GIB + 64 * MIB, 64 * MIB, 1}
     };
     init_memory(32 * MIB, high, 2);
-    CHECK(get_total_pages() == 512 * MIB / PAGE_SIZE);
+    CHECK(get_total_pages() == GIB / PAGE_SIZE);
     CHECK(get_free_pages() == 31 * MIB / PAGE_SIZE);
     CHECK(memory_total == 96 * MIB);
 
@@ -96,8 +96,8 @@ int main(void) {
     CHECK(identity_map_entries(0, 0) == 32);
     CHECK(identity_map_entries(64 * MIB + 1, 0) == 33);
     init_memory(64 * 1024 * GIB, 0, 0);
-    CHECK(get_total_pages() == 512 * MIB / PAGE_SIZE);
-    CHECK(get_free_pages() == 511 * MIB / PAGE_SIZE);
+    CHECK(get_total_pages() == GIB / PAGE_SIZE);
+    CHECK(get_free_pages() == 1023 * MIB / PAGE_SIZE);
     printf("OK: memory maps, pool accounting and Monitor GiB formatting\n");
     return 0;
 }
