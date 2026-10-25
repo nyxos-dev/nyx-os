@@ -168,6 +168,9 @@ jobs:
       - name: Test pipe interruption and signal stop waits
         run: python3 tools/test_pipe_signals.py
 
+      - name: Test PID signal posting against process collection
+        run: python3 tools/test_signal_lifetime.py
+
       - name: Test timeout duration bounds and tick wrap
         run: python3 tools/test_timeout.py
 

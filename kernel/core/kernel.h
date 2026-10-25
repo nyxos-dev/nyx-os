@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.266"
+#define KERNEL_VERSION "6.5.267"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -897,7 +897,7 @@ long do_signal(int sig, uint64_t handler, uint64_t trampoline); // SYS_SIGNAL: i
 void do_sigreturn(void);                             // SYS_SIGRETURN: restore pre-handler context
 long do_sigprocmask(int how, uint64_t set, uint64_t oldset_ptr); // SYS_SIGPROCMASK: read/change block mask
 unsigned int do_alarm(unsigned int seconds);                     // SYS_ALARM: schedule SIGALRM after N s
-void signal_raise(process_t* p, int sig);            // post a signal to a process (+ wake if blocked)
+void signal_raise(process_t* p, int sig);            // caller owns lifetime or holds sched_lock; no relocking
 int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
 int  signal_check_stop(process_t* p);                // park on a pending stop signal; 1 if it did (restart)
 void signal_send_foreground(int sig);                // keyboard Ctrl-C -> foreground process

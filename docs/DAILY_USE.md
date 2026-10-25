@@ -1001,6 +1001,12 @@ The immediate data and desktop priorities are:
     remains unchanged. See [PROCESS_SNAPSHOT.md](PROCESS_SNAPSHOT.md) for the
     information-disclosure regression, lifetime checks and remaining readers.
 
+72. Development version 6.5.267 protects PID-based signal lookup and posting
+    against process collection. Keyboard foreground signals use the same
+    operation; already-claimed targets are refused, including existence probes.
+    Low-level alarm posting remains callable while the scheduler holds its lock.
+    See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md) for scope and evidence.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

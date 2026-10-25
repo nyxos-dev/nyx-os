@@ -88,6 +88,52 @@ host variation and a near-zero guest idle indicator; they do not reproduce a
 sustained 100% host-core load. Future desktop effects still require their own
 paired measurements.
 
+## PID signal posting (6.5.267)
+
+`do_kill` now retains `sched_lock` from PID lookup through signal posting.
+An absent or collector-claimed target returns -1, including for signal zero.
+A zero signal succeeds without changing an existing, unclaimed process;
+an unclaimed zombie still exists until collected. Posting does not resurrect
+a zombie. Invalid signal numbers are rejected before acquiring the lock.
+
+Keyboard foreground delivery uses the same operation. A zero foreground PID
+does nothing. The keyboard releases its input lock before calling the signal
+path, and the scheduler lock saves and restores the caller's interrupt state.
+No allocation, user-memory access or cleanup occurs during this operation.
+After unlocking, the operation retains no process pointer.
+
+The lower-level `signal_raise` deliberately does not acquire the lock. Its
+caller must own the process lifetime or already hold `sched_lock`, as the
+scheduler's alarm path does. Stopped tasks resume for SIGCONT or SIGKILL;
+blocked tasks retain their existing wakeup behaviour.
+
+`tools/test_signal_lifetime.py` runs the actual lookup and posting bodies with
+controlled collector events. It passes 283 checks under ASan/UBSan, covering
+invalid signals, all 31 pending bits, existence probes, claimed targets,
+blocked/stopped/zombie states, foreground routing and the already-locked
+alarm caller. The collector can free the object immediately after unlock;
+the caller must not access it again. The same test on 6.5.266 reproduces a
+heap-use-after-free when collection wins after an unprotected lookup. This
+is a host interleaving model, not a newly reproduced guest crash.
+
+The warning-free candidate passes 230 kernel tests and four-CPU startup.
+In QEMU 10.2.1 TCG with four CPUs, 5 GiB and default placement, a ring-3 probe
+checks existence while running, as an uncollected zombie and after collection
+for 32 children. Installed `keyevtest` accepts one PS/2 Ctrl-C delivery and
+passes nine canonical/raw/readkey signal-interruption, stop/continue and
+stopped-kill workflows. Installed `alarmdemo` catches its scheduler alarm.
+Both `mtdemo` tasks finish three heartbeats; three AP workers run, allocator
+stress reports no integrity errors and balances on the second run, and a
+later command and terminal drag succeed. Offline inspection preserves two
+control files byte-for-byte, and the disposable VM closes. These guest checks
+do not force the host model's collector interleaving or qualify AP-balanced
+fork/exec churn. The pipe/sleep/futex and keyboard host regressions also pass.
+
+This protects object lifetime for PID-based posting. It does not make every
+signal field atomic, serialize all delivery-state transitions, implement
+process groups or change foreground ownership. Raw kernel shell readers and
+the GUI process monitor still require separate audits.
+
 ## Remaining limits
 
 The previously reproduced AP-parent prompt failure passes the bounded target

@@ -1,4 +1,7 @@
 #include "../core/kernel.h"
+#include "../core/spinlock.h"
+
+extern spinlock_t sched_lock;
 
 /* ============================================================
  * signal.c — POSIX-style signals for ring-3 processes (v5.8.11)
@@ -31,7 +34,8 @@ static int default_is_ignore(int sig) { return sig == SIGCHLD || sig == SIGCONT;
 
 /* Post `sig` to process p: set the pending bit, and if p is parked in a blocking
  * syscall (waitpid / pipe / stdin), wake it so the syscall returns and delivery
- * runs on the way out. Safe from IRQ context (just field writes). */
+ * runs on the way out. The caller must own p's lifetime or hold sched_lock.
+ * Does not acquire that lock: the scheduler's alarm path already holds it. */
 void signal_raise(process_t* p, int sig) {
     if (!p || sig <= 0 || sig >= NSIG) return;
     /* SIGKILL must resume a stopped task so its pending termination can run.
@@ -94,11 +98,15 @@ int signal_check_stop(process_t* p) {
  * process exists, -1 otherwise) and sends nothing. */
 int do_kill(int pid, int sig) {
     if (sig < 0 || sig >= NSIG) return -1;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
     process_t* target = find_process((uint32_t)pid);
-    if (!target) return -1;                  /* ESRCH */
-    if (sig == 0) return 0;                   /* existence check only */
-    signal_raise(target, sig);
-    return 0;
+    int result = -1;
+    if (target && !target->reap_claimed) {
+        if (sig) signal_raise(target, sig);
+        result = 0;
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return result;
 }
 
 /* SYS_SIGNAL: set the disposition of `sig` (SIG_DFL / SIG_IGN / a handler VA) and
@@ -333,9 +341,8 @@ unsigned int do_alarm(unsigned int seconds) {
 
 /* Keyboard Ctrl-C -> post SIGINT to the foreground process. */
 void signal_send_foreground(int sig) {
-    if (!g_foreground_pid) return;
-    process_t* p = find_process(g_foreground_pid);
-    if (p) signal_raise(p, sig);
+    uint32_t pid = g_foreground_pid;
+    if (pid) do_kill((int)pid, sig);
 }
 
 /* KAT for the signal-posting core (this subsystem had no self-test). Uses a LOCAL
