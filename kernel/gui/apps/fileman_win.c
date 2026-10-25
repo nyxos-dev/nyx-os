@@ -1065,9 +1065,13 @@ void fileman_win_key(window_t* win, int key) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
 
-    // Ctrl shortcuts (when not in input mode)
-    if (!fm->input_mode && is_ctrl_pressed()) {
-        if (key == 'f' || key == 'F') {
+    if (!fm->input_mode &&
+        (window_key_modifiers() & (KEY_MOD_CTRL | KEY_MOD_ALT)) == KEY_MOD_CTRL) {
+        // Cooked Ctrl letters arrive as bytes 1..26, even after Ctrl is released.
+        int shortcut = key;
+        if (shortcut >= 1 && shortcut <= 26) shortcut += 'a' - 1;
+        if (shortcut >= 'A' && shortcut <= 'Z') shortcut += 'a' - 'A';
+        if (shortcut == 'f') {
             // Toggle search
             if (fm->search_active) {
                 fm->search_active = 0;
@@ -1085,32 +1089,23 @@ void fileman_win_key(window_t* win, int key) {
             }
             return;
         }
-        if (key == 'c' || key == 'C') {
-            if (fm->sel_index >= 0) {
-                if (fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path)) < 0) return;
-                fm->clipboard_mode = 1;
-                snprintf(fm->status, sizeof(fm->status), "Copied: %s", fm->entries[fm->sel_index]);
-            }
+        if (shortcut == 'c') {
+            ctx_copy(fm);
             return;
         }
-        if (key == 'x' || key == 'X') {
-            if (fm->sel_index >= 0) {
-                if (fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path)) < 0) return;
-                fm->clipboard_mode = 2;
-                snprintf(fm->status, sizeof(fm->status), "Cut: %s", fm->entries[fm->sel_index]);
-            }
+        if (shortcut == 'x') {
+            ctx_cut(fm);
             return;
         }
-        if (key == 'v' || key == 'V') {
+        if (shortcut == 'v') {
             ctx_paste(fm);
             return;
         }
-        if (key == 'a' || key == 'A') {
-            // Select all — just select first, user can navigate
-            if (fm->entry_count > 0) {
-                fm->sel_index = 0;
+        if (shortcut == 'a') {
+            if (fm_disp_count(fm) > 0) {
+                fm->sel_index = fm_pos_to_real(fm, 0);
                 fm->scroll_offset = 0;
-                snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
+                snprintf(fm->status, sizeof(fm->status), "Selected: %s", fm->entries[fm->sel_index]);
             }
             return;
         }

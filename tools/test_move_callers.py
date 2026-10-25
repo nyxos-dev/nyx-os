@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check move status at the actual syscall, userspace command and File Manager path/copy boundaries."""
 from pathlib import Path
+import argparse
 import subprocess
 import re
 import tempfile
@@ -11,8 +12,10 @@ HARNESS = r'''
 #include "kernel/gui/apps/fileman_win.h"
 #include "kernel/drivers/video/font.h"
 @GEOMETRY@
-static int drop_target;
-int is_ctrl_pressed(void) { return 0; }
+static int drop_target, physical_ctrl;
+static unsigned captured_modifiers;
+int is_ctrl_pressed(void) { return physical_ctrl; }
+unsigned window_key_modifiers(void) { return captured_modifiers; }
 static int fileman_row_at(fileman_win_t* fm, window_t* win, int my) { (void)fm;(void)win;(void)my;return drop_target; }
 void memcpy_asm(void* d, const void* s, size_t n) {
     for(size_t i=0;i<n;i++) ((unsigned char*)d)[i]=((const unsigned char*)s)[i];
@@ -25,7 +28,10 @@ static int listing_open, listing_pos;
 int vfs_stat(const char* p, uint32_t* n, int* d) { (void)p;(void)n;(void)d;return -1; }
 dirent_t* vfs_readdir(int fd) { (void)fd; return listing_pos<2 ? &listing[listing_pos++] : NULL; }
 static void fileman_sort(fileman_win_t* fm) { (void)fm; }
-static void fileman_apply_search(fileman_win_t* fm) { strcpy(fm->status,"entries"); }
+@SEARCH@
+static void fileman_cd(fileman_win_t* fm, const char* dir, window_t* win) { (void)fm;(void)dir;(void)win; }
+static void fileman_activate_file(fileman_win_t* fm, const char* path, const char* name) { (void)fm;(void)path;(void)name; }
+int vfs_mkdir(const char* path, mode_t mode) { (void)path;(void)mode;return -1; }
 static int rc, calls, refreshes, path_error, copy_calls, occupied, copy_error, deleted;
 static char source[256], destination[256];
 int vfs_rename(const char* s, const char* d) { calls++; strcpy(source,s); strcpy(destination,d); return rc; }
@@ -47,6 +53,7 @@ static int copy_path_from_user(char* o, int n, uint64_t p) { (void)n; if(path_er
 @DELETE@
 @PASTE@
 @MOUSE@
+@KEY@
 static uint64_t rename_syscall(uint64_t a1, uint64_t a2) @SYSCALL@
 static int command_rename(const char* s, const char* d) { return vfs_rename(s,d); }
 @COMMAND@
@@ -126,13 +133,68 @@ int main(void) {
     actual_refresh(&fm);
     CHECK(fm.entry_count==1 && strlen(fm.entries[0])==63);
     CHECK(!strcmp(fm.status,"Names over 63 bytes hidden: 1"));
+    memset_asm(&fm,0,sizeof fm);strcpy(fm.cwd,"/mnt");fm.entry_count=3;
+    strcpy(fm.entries[0],"alpha");strcpy(fm.entries[1],"note");strcpy(fm.entries[2],"zulu");
+    CHECK(fm_disp_count(&fm)==3);
+    const int copy_keys[]={3,'c','C'}, cut_keys[]={24,'x','X'};
+    for(int form=0;form<3;form++) {
+        fm.sel_index=1;physical_ctrl=0;captured_modifiers=KEY_MOD_CTRL;
+        fileman_win_key(&win,copy_keys[form]);
+        CHECK(fm.clipboard_mode==1 && !strcmp(fm.clipboard_path,"/mnt/note"));
+        fileman_win_key(&win,cut_keys[form]);
+        CHECK(fm.clipboard_mode==2 && !strcmp(fm.clipboard_path,"/mnt/note"));
+        rc=-1;calls=0;fileman_win_key(&win,22);
+        CHECK(calls==1 && fm.clipboard_mode==2 && !strcmp(fm.status,"Move failed; cut retained"));
+    }
+    fm.sel_index=1;fileman_win_key(&win,3);occupied=1;copy_error=0;copy_calls=0;
+    fileman_win_key(&win,22);
+    CHECK(copy_calls==2 && !strcmp(destination,"/mnt/note_copy") && fm.clipboard_mode==1);
+    fm.sel_index=1;fileman_win_key(&win,24);rc=0;calls=0;fileman_win_key(&win,22);
+    CHECK(calls==1 && !fm.clipboard_mode && !fm.clipboard_path[0]);
+    for(int bad=-1;bad<=FILEMAN_MAX_ENTRIES;bad+=FILEMAN_MAX_ENTRIES+1) {
+        fm.sel_index=bad;strcpy(fm.clipboard_path,"/prior");fm.clipboard_mode=2;
+        fileman_win_key(&win,3);fileman_win_key(&win,24);
+        CHECK(fm.clipboard_mode==2 && !strcmp(fm.clipboard_path,"/prior"));
+    }
+    fm.sel_index=1;memset_asm(fm.cwd,'d',251);fm.cwd[0]='/';fm.cwd[251]=0;
+    fileman_win_key(&win,3);CHECK(!strcmp(fm.clipboard_path,"/prior") && !strcmp(fm.status,"Path too long"));
+    strcpy(fm.cwd,"/mnt");fm.clipboard_mode=0;fm.clipboard_path[0]=0;
+    captured_modifiers=0;physical_ctrl=1;calls=copy_calls=0;
+    fileman_win_key(&win,'c');fileman_win_key(&win,3);fileman_win_key(&win,24);fileman_win_key(&win,22);fileman_win_key(&win,6);
+    CHECK(!fm.clipboard_mode && !calls && !copy_calls && !fm.search_active);
+    captured_modifiers=KEY_MOD_CTRL|KEY_MOD_ALT;fileman_win_key(&win,3);fileman_win_key(&win,6);
+    CHECK(!fm.clipboard_mode && !fm.search_active);
+    physical_ctrl=0;captured_modifiers=KEY_MOD_CTRL;fileman_win_key(&win,6);
+    CHECK(fm.search_active && !fm.search_pattern[0]);
+    captured_modifiers=0;fileman_win_key(&win,'N');fileman_win_key(&win,'o');
+    CHECK(!strcmp(fm.search_pattern,"No") && fm.search_count==1 && fm.search_indices[0]==1);
+    captured_modifiers=KEY_MOD_CTRL;fileman_win_key(&win,1);
+    CHECK(fm.sel_index==1 && !strcmp(fm.status,"Selected: note"));
+    fileman_win_key(&win,3);CHECK(!strcmp(fm.clipboard_path,"/mnt/note"));
+    captured_modifiers=0;fileman_win_key(&win,'q');CHECK(fm.search_count==0 && fm.sel_index==-1);
+    captured_modifiers=KEY_MOD_CTRL;fileman_win_key(&win,1);fileman_win_key(&win,24);
+    CHECK(fm.sel_index==-1 && fm.clipboard_mode==1 && !strcmp(fm.clipboard_path,"/mnt/note"));
+    fileman_win_key(&win,6);CHECK(!fm.search_active && !fm.search_pattern[0]);
+    fileman_win_key(&win,1);CHECK(fm.sel_index==0);
+    for(int mode=1;mode<=3;mode++) {
+        fm.input_mode=mode;strcpy(fm.input_buf,"draft");fm.input_pos=5;calls=copy_calls=0;
+        const int controls[]={1,3,6,22,24};
+        for(unsigned i=0;i<sizeof controls/sizeof controls[0];i++)fileman_win_key(&win,controls[i]);
+        CHECK(fm.input_mode==mode && !strcmp(fm.input_buf,"draft") && !fm.search_active);
+        CHECK(!calls && !copy_calls && fm.clipboard_mode==1 && !strcmp(fm.clipboard_path,"/mnt/note"));
+        captured_modifiers=0;fileman_win_key(&win,'x');CHECK(!strcmp(fm.input_buf,"draftx"));
+        captured_modifiers=KEY_MOD_CTRL;
+    }
     printf("Move callers: %d checks, 0 failures\n",checks); return 0;
 }
 '''
 
 
 def main():
-    fm=(ROOT/'kernel/gui/apps/fileman_win.c').read_text(encoding='utf-8')
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fileman-source',type=Path,default=ROOT/'kernel/gui/apps/fileman_win.c')
+    args=parser.parse_args()
+    fm=args.fileman_source.read_text(encoding='utf-8')
     syscall=(ROOT/'kernel/core/syscall.c').read_text(encoding='utf-8')
     command=(ROOT/'user/mv.c').read_text(encoding='utf-8').replace('#include "libc.h"','')
     command=command.replace('int main(', 'static int move_command(').replace('rename(', 'command_rename(')
@@ -141,6 +203,9 @@ def main():
     items=next(line for line in fm.splitlines() if line.startswith('static const char* ctx_items[]'))
     code=code.replace('@GEOMETRY@',items+'\n'+geometry)
     code=code.replace('@MOUSE@',function(fm,'void fileman_win_mousemove('))
+    code=code.replace('@KEY@',function(fm,'void fileman_win_key('))
+    search='\n'.join(function(fm,sig) for sig in ['static int str_contains(', 'static void fileman_apply_search(', 'static int fm_disp_count(', 'static int fm_pos_to_real(', 'static int fm_sel_to_pos('])
+    code=code.replace('@SEARCH@',search)
     code=code.replace('@ACTUAL_REFRESH@',function(fm,'void fileman_refresh(').replace('void fileman_refresh(', 'static void actual_refresh('))
     for marker, sig in [('PATH','static int fileman_join_path('),('COPY','static void ctx_copy('),('CUT','static void ctx_cut('),('DELETE','static void fileman_delete(')]:
         body=function(fm,sig)

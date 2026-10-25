@@ -978,6 +978,12 @@ The immediate data and desktop priorities are:
     truncated aliases. See [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md) for the
     host/target evidence and remaining concurrency and long-name limits.
 
+68. Development version 6.5.263 connects File Manager shortcuts to captured
+    cooked-key modifiers. Copy/cut/paste use the checked menu operations; search
+    and first-visible selection respect the filtered list. Create/rename fields
+    keep file actions inactive. See [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md)
+    for the input contract, verification and remaining selection/job-routing limits.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
