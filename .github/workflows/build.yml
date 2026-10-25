@@ -201,6 +201,9 @@ jobs:
       - name: Test PIT boot programming
         run: python3 tools/test_pit_programming.py
 
+      - name: Test process snapshot copyout
+        run: python3 tools/test_process_snapshot.py
+
       - name: Require a warning-free build
         run: |
           warns=$(grep -E '(^|[[:space:]])warning:' build.log || true)

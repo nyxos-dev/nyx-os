@@ -1388,36 +1388,23 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)(int64_t)vfs_unlink(path);
         }
         case SYS_GETPROCS: {
-            // getprocs(buf, max): snapshot the process table into up to `max`
-            // fixed 48-byte records { u32 pid, ppid, state, cpu_time; char
-            // comm[32] }. Returns the number written. This is the enumeration
-            // primitive behind `ps` — the process analogue of SYS_GETDENTS.
-            // Empty slots and any pid-0 (uninitialised) entry are skipped, so
-            // ring 3 sees only live processes. Interrupts are masked for the
-            // whole syscall, so the table can't be reshaped under the walk.
+            // Hold the table lock only while taking an owned, fully initialized
+            // snapshot. Allocation and user copyout must stay outside that lock.
             int max = (int)a2;
             if (max <= 0) return -1;
             if (max > MAX_PROCESSES) max = MAX_PROCESSES;      // sanity clamp
-            struct { uint32_t pid, ppid, state, cpu_time; char comm[32]; } rec;
-            const uint64_t recsz = sizeof(rec);                // 48, must match user nyx_procinfo_t
+            const uint64_t recsz = sizeof(process_info_t);
             if (!user_ptr_ok(a1, (uint64_t)max * recsz)) return -1;
-            extern process_t* process_table[MAX_PROCESSES];
-            extern int process_count;
+            process_info_t* records = kmalloc((size_t)max * sizeof(*records));
+            if (!records) return -1;
+            int available = process_snapshot(records, max);
             int count = 0;
-            for (int i = 0; i < process_count && count < max; i++) {
-                process_t* p = process_table[i];
-                if (!p || p->pid == 0) continue;
-                rec.pid = p->pid;
-                rec.ppid = p->ppid;
-                rec.state = p->state;
-                rec.cpu_time = p->cpu_time;
-                int j = 0;
-                for (; j < 31 && p->comm[j]; j++) rec.comm[j] = p->comm[j];
-                rec.comm[j] = '\0';
-                if (copy_to_user(a1 + (uint64_t)count * recsz, &rec, recsz) != 0)
-                    break;                                     // untouched lazy page: stop, keep what we have
+            while (count < available) {
+                if (copy_to_user(a1 + (uint64_t)count * recsz, &records[count], recsz) != 0)
+                    break;
                 count++;
             }
+            kfree(records);
             return count;
         }
         case SYS_READKEY:

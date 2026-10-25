@@ -26,6 +26,25 @@ static int publish_process(process_t* p) {
     return room;
 }
 
+int process_snapshot(process_info_t* records, int max) {
+    if (!records || max <= 0) return 0;
+    int count = 0;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    for (int i = 0; i < process_count && count < max; i++) {
+        process_t* p = process_table[i];
+        if (!p || !p->pid || p->reap_claimed) continue;
+        process_info_t* rec = &records[count++];
+        memset_asm(rec, 0, sizeof(*rec));
+        rec->pid = p->pid;
+        rec->ppid = p->ppid;
+        rec->state = p->state;
+        rec->cpu_time = p->cpu_time;
+        for (int j = 0; j < 31 && p->comm[j]; j++) rec->comm[j] = p->comm[j];
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return count;
+}
+
 void init_process(void) {
     memset_asm(process_table, 0, sizeof(process_table));
     process_t* init = (process_t*)kmalloc(sizeof(process_t));

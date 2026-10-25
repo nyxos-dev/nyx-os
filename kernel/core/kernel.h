@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.265"
+#define KERNEL_VERSION "6.5.266"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -423,6 +423,14 @@ typedef struct process {
     struct process* parent;
     struct process* children;
 } process_t;
+
+// SYS_GETPROCS ABI: owned values only; no process pointers escape the table lock.
+typedef struct {
+    uint32_t pid, ppid, state, cpu_time;
+    char comm[32];
+} process_info_t;
+typedef char process_info_abi_is_48_bytes[
+    (sizeof(process_info_t) == 48 && __builtin_offsetof(process_info_t, comm) == 16) ? 1 : -1];
 
 // Process states (kept numeric-compatible with the existing 0/1 usage).
 #define PROC_PARKED  0   // not runnable (retired kernel thread); scheduler skips
@@ -875,6 +883,7 @@ void heap_free(void* ptr);
 void heap_stats(size_t* used, size_t* total, size_t* hiwater, uint32_t* fails);
 
 void init_process(void);
+int process_snapshot(process_info_t* records, int max);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child

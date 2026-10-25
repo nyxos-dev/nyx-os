@@ -995,6 +995,12 @@ The immediate data and desktop priorities are:
     [TIMER_TIMING.md](TIMER_TIMING.md) for the programming check, controlled
     timer/CPU comparison and remaining emulator and hardware limits.
 
+71. Development version 6.5.266 gives `getprocs` an owned, fully initialized
+    snapshot before user copyout. A short process-table lock protects enumeration;
+    allocation and copyout stay outside that lock. The 48-byte ABI
+    remains unchanged. See [PROCESS_SNAPSHOT.md](PROCESS_SNAPSHOT.md) for the
+    information-disclosure regression, lifetime checks and remaining readers.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
