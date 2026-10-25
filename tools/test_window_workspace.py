@@ -13,6 +13,7 @@ static int keys, moves, presses, wheel;
 static unsigned received_modifiers;
 static void receive(window_t* win, int key) { (void)win; (void)key; keys++; received_modifiers=window_key_modifiers(); }
 static void move(window_t* win, int x, int y, int b) { (void)win; (void)x; (void)y; (void)b; moves++; }
+void fileman_win_mousemove(window_t* win, int x, int y, int b) { move(win,x,y,b); }
 static void press(window_t* win, int x, int y, int b) { (void)win; (void)x; (void)y; (void)b; presses++; }
 int is_ctrl_pressed(void) { return 1; }
 int mouse_get_z(void) { return wheel; }
@@ -34,11 +35,11 @@ static void dispatch_close(void) {
 done_click: (void)redraw;
 }
 static void dispatch_pointer(void) {
-    int mx=8,my=TITLE_H+8,btns=1,mm_dispatched=0,redraw=0;
+    int mx=8,my=TITLE_H+8,btns=1,prev_btns=0,mm_dispatched=0,redraw=0;
     @MOTION@
     @WHEEL@
     @PRESS@
-    (void)mm_dispatched;(void)redraw;
+    (void)mm_dispatched;(void)redraw;(void)prev_btns;
 }
 static int nested_ok;
 static void nested(window_t* win, int key) {
@@ -105,6 +106,17 @@ int main(void) {
     window_dispatch_key(&w[1], 'x', KEY_MOD_CTRL | KEY_MOD_ALT);
     CHECK(received_modifiers==(KEY_MOD_CTRL | KEY_MOD_ALT) && window_key_modifiers()==0);
     wheel++;dispatch_pointer();CHECK(received_modifiers==0 && window_key_modifiers()==0);
+    // Stationary File Manager edges must obey the same visibility/focus gate.
+    w[1].on_mousemove=fileman_win_mousemove;mouse_x=8;mouse_y=TITLE_H+8;
+    for(int kind=0;kind<3;kind++) {
+        window_focus(2);int oldmoves=moves;
+        if(kind==0)w[1].visible=0;
+        if(kind==1)w[1].state=WSTATE_MINIMIZED;
+        if(kind==2)w[1].workspace=3;
+        dispatch_pointer();CHECK(moves==oldmoves);
+        w[1].visible=1;w[1].state=WSTATE_NORMAL;w[1].workspace=2;
+    }
+    window_focus(2);int oldmoves=moves;dispatch_pointer();CHECK(moves==oldmoves+1);
     char msg[96];snprintf(msg,sizeof msg,"PASS %d workspace focus/input checks",checks);puts(msg);
     return 0;
 }
@@ -117,7 +129,7 @@ def harness(text):
     switch=between("            if (",'\n\n',text.index("// Ctrl+1..4: workspace switching"))
     key=between('            window_t* fwin =', '\n        }',text.index('// Route all keys'))
     close=between('                window_t* awin =', '                    if (k == KEY_UP)')+'                }\n'
-    motion=between('        if (mx != mouse_x || my != mouse_y)', '\n\n',text.index('// Dispatch mouse-move'))
+    motion=between('        if (', '\n\n',text.index('// Dispatch mouse-move'))
     wheel=between('        int wz = mouse_get_z();','\n\n',text.index('// Dispatch mouse-wheel'))
     press=between('                    window_t* fwin =','\n                }',text.index('Button HELD'))
     result=HARNESS
