@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.261"
+#define KERNEL_VERSION "6.5.262"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1136,6 +1136,7 @@ int vfs_chmod(const char* path, uint16_t mode);             // set a node's perm
 int vfs_getmode(const char* path);                          // read a node's mode bits, -1 if absent
 int vfs_write_file(const char* path, const void* buf, uint32_t len);
 int vfs_cp(const char* src, const char* dst);
+int vfs_cp_new(const char* src, const char* dst);  // 0 copied, 1 occupied, -1 failed; not atomic
 int vfs_rename(const char* old, const char* new);
 
 extern int keyboard_layout;

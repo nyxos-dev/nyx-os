@@ -1392,6 +1392,33 @@ int vfs_rename(const char* old, const char* new) {
     return result;
 }
 
+int vfs_cp_new(const char* src, const char* dst) {
+    char* paths = (char*)kmalloc(2 * MAX_PATH);
+    if (!paths) return -1;
+    int result = -1;
+    if (vfs_move_path(src, paths) < 0 || vfs_move_path(dst, paths + MAX_PATH) < 0)
+        goto done;
+    dst = paths + MAX_PATH;
+    mount_entry_t* mount = vfs_find_mount(dst);
+    if (mount) {
+        if (!mount->resolve || !mount->write_file) goto done;
+        const char* sub = dst + strlen(mount->mount_point);
+        int64_t id = mount->resolve(*sub ? sub : "/");
+        if (id < 0) goto done;
+        if (id > 0) { result = 1; goto done; }
+    } else {
+        char name[MAX_NAME];
+        vfs_node_t* parent = resolve_parent(dst, name);
+        if (!parent || parent->type != 1) goto done;
+        if (find_child(parent, name)) { result = 1; goto done; }
+    }
+    // Like mounted moves, this check/copy pair is not a concurrent-writer lock.
+    result = vfs_cp(paths, dst);
+done:
+    kfree(paths);
+    return result;
+}
+
 dirent_t* vfs_readdir(int fd) {
     vfs_node_t* dir = handle_to_node(fd);
     if (!dir || dir->type != 1) return NULL;

@@ -122,6 +122,29 @@ int main(void) {
         CHECK(vfs_rename(targets[i][0],targets[i][1])==-1);
         CHECK(source_exists && nodes[3].parent==&nodes[1] && !writes && !unlinks && live==1);
     }
+    reset(); destination_exists=1;
+    CHECK(vfs_cp_new("/mnt/note","/mnt/target")==1); CHECK(!reads && !writes && !unlinks && live==1);
+    reset(); resolve_error=1;
+    CHECK(vfs_cp_new("/mnt/note","/mnt/target")==-1); CHECK(!reads && !writes && !unlinks && live==1);
+    reset(); CHECK(vfs_cp_new("/ram/note","/dst/existing")==1); CHECK(!writes && live==1);
+    reset(); CHECK(vfs_cp_new("/ram/note","/missing/new")==-1); CHECK(!writes && live==1);
+    for(int fault=0;fault<10;fault++) {
+        reset(); fail_alloc=fault==1?1:fault==2?2:0;
+        read_error=fault==3?1:fault==4?2:0; size_error=fault==5;
+        write_error=fault==6?1:fault==7?2:0; source_exists=fault!=8; source_dir=fault==9;
+        CHECK(vfs_cp_new("/mnt/note","/mnt/target")== (fault ? -1 : 0));
+        CHECK(!unlinks && live==1);
+        if (!fault) CHECK(source_exists && !memcmp(disk_data,"KEEP",4));
+    }
+    for(int fault=0;fault<4;fault++) {
+        reset(); fail_alloc=fault;
+        CHECK(vfs_cp_new("/mnt/note","/dst/new")== (fault ? -1 : 0));
+        CHECK(source_exists && !unlinks);
+        vfs_node_t* n=find_child(&nodes[2],"new");
+        CHECK(fault ? !n && live==1 : n && live==2 && !memcmp(n->data,"KEEP",4));
+    }
+    reset(); CHECK(vfs_cp_new("/ram/note","/dst/new")==0);
+    CHECK(find_child(&nodes[1],"note") && find_child(&nodes[2],"new") && live==2);
     const char* aliases[]={"/mnt/note","/mnt/./note","/mnt/a/../note","/mnt//note","./note","../mnt/note"};
     for(int i=0;i<6;i++) for(int j=0;j<6;j++) {
         reset(); cwd="/mnt"; CHECK(vfs_rename(aliases[i],aliases[j])==0);
@@ -180,7 +203,7 @@ def check_stack_budget(work):
     recipes = subprocess.check_output(
         ['make', '-Bn', '--no-print-directory', 'vfs.o', 'ext2.o'],
         cwd=ROOT/'kernel', text=True)
-    budgets = {'vfs_rename': 256, 'ext2_sync_superblock': 128}
+    budgets = {'vfs_rename': 256, 'vfs_cp_new': 256, 'ext2_sync_superblock': 128}
     frames = {}
     for line in recipes.splitlines():
         if not line.startswith('gcc ') or ' -c ' not in line:
@@ -216,7 +239,7 @@ def main():
         'static vfs_node_t* resolve_path_d(const char* path, int depth) {', 'static vfs_node_t* resolve_path(const'])
     parts = {'NODE': node, 'MOUNT': mount, 'TREE': tree, 'COPY': function(source, 'int vfs_cp('),
              'NORMALIZE': function(source, 'int vfs_normalize_path('),
-             'MOVE': function(source, 'static int vfs_move_path(')+'\n'+function(source, 'static int vfs_move_resolved(')+'\n'+function(source, 'int vfs_rename(')}
+             'MOVE': function(source, 'static int vfs_move_path(')+'\n'+function(source, 'static int vfs_move_resolved(')+'\n'+function(source, 'int vfs_rename(')+'\n'+function(source, 'int vfs_cp_new(')}
     code = HARNESS
     for marker, value in parts.items(): code = code.replace('@'+marker+'@', value)
     with tempfile.TemporaryDirectory(prefix='nyx-vfs-moves-') as tmp:
@@ -236,6 +259,7 @@ def main():
                 ('copy failure deletion', 'if (vfs_cp(old, new) < 0) return -1;', '(void)vfs_cp(old, new);'),
                 ('existing target overwrite', 'if (dst_id > 0) return -1;', ''),
                 ('ancestor cycle', 'if (ancestor == ino) return -1;', 'if (ancestor == ino) break;'),
+                ('new-copy collision', 'if (id > 0) { result = 1; goto done; }', ''),
             ]
             for label, before, after in mutations:
                 assert code.count(before)==1, label

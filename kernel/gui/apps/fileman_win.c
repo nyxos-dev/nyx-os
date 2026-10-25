@@ -169,8 +169,14 @@ void fileman_refresh(fileman_win_t* fm) {
         snprintf(fm->status, sizeof(fm->status), "Cannot open: %s", fm->cwd);
         return;
     }
+    int skipped_names = 0;
     dirent_t* de = vfs_readdir(fd);
     while (de && fm->entry_count < FILEMAN_MAX_ENTRIES) {
+        if (strlen(de->name) >= sizeof(fm->entries[0])) {
+            skipped_names++;
+            de = vfs_readdir(fd);
+            continue;
+        }
         strncpy(fm->entries[fm->entry_count], de->name, 63);
         fm->entries[fm->entry_count][63] = '\0';
         fm->entry_types[fm->entry_count] = de->type;
@@ -201,6 +207,7 @@ void fileman_refresh(fileman_win_t* fm) {
     }
     snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
     fileman_apply_search(fm);
+    if (skipped_names) snprintf(fm->status, sizeof(fm->status), "Names over 63 bytes hidden: %d", skipped_names);
 }
 
 static void fileman_refresh_status(fileman_win_t* fm) {
@@ -216,6 +223,22 @@ static void fileman_fmt_size(uint32_t b, char* out, int n) {
     if (b < 1024u)               snprintf(out, n, "%u B",  b);
     else if (b < 1024u * 1024u)  snprintf(out, n, "%u KB", (b + 512u) / 1024u);
     else                         snprintf(out, n, "%u MB", (b + 512u * 1024u) / (1024u * 1024u));
+}
+
+static int fileman_join_path(fileman_win_t* fm, const char* dir, const char* name,
+                             char* path, int maxlen) {
+    size_t prefix = strcmp(dir, "/") == 0 ? 0 : strlen(dir);
+    if (maxlen < 2 || prefix + 1 + strlen(name) >= (size_t)maxlen) {
+        snprintf(fm->status, sizeof(fm->status), "Path too long");
+        return -1;
+    }
+    if (!prefix) snprintf(path, maxlen, "/%s", name);
+    else snprintf(path, maxlen, "%s/%s", dir, name);
+    return 0;
+}
+
+static int fileman_get_path(fileman_win_t* fm, const char* name, char* path, int maxlen) {
+    return fileman_join_path(fm, fm->cwd, name, path, maxlen);
 }
 
 static void fileman_cd(fileman_win_t* fm, const char* dir, window_t* win) {
@@ -234,12 +257,13 @@ static void fileman_cd(fileman_win_t* fm, const char* dir, window_t* win) {
             strncpy(newpath, "/", sizeof(newpath));
         }
     } else if (dir[0] == '/') {
-        strncpy(newpath, dir, sizeof(newpath));
-    } else {
-        if (strcmp(fm->cwd, "/") == 0)
-            snprintf(newpath, sizeof(newpath), "/%s", dir);
-        else
-            snprintf(newpath, sizeof(newpath), "%s/%s", fm->cwd, dir);
+        if (strlen(dir) >= sizeof(newpath)) {
+            snprintf(fm->status, sizeof(fm->status), "Path too long");
+            return;
+        }
+        strcpy(newpath, dir);
+    } else if (fileman_get_path(fm, dir, newpath, sizeof(newpath)) < 0) {
+        return;
     }
     newpath[255] = '\0';
     int fd = vfs_open(newpath, 0, 0);
@@ -253,13 +277,7 @@ static void fileman_cd(fileman_win_t* fm, const char* dir, window_t* win) {
     }
 }
 
-static int fileman_get_path(fileman_win_t* fm, const char* name, char* path, int maxlen) {
-    if (strcmp(fm->cwd, "/") == 0)
-        snprintf(path, maxlen, "/%s", name);
-    else
-        snprintf(path, maxlen, "%s/%s", fm->cwd, name);
-    return 0;
-}
+
 
 // 1 if `name` ends with a known image extension (case-insensitive) — decides which app opens it.
 static int fileman_is_image(const char* name) {
@@ -298,7 +316,7 @@ static void fileman_delete(fileman_win_t* fm) {
         return;
     }
     char path[256];
-    fileman_get_path(fm, fm->entries[fm->sel_index], path, sizeof(path));
+    if (fileman_get_path(fm, fm->entries[fm->sel_index], path, sizeof(path)) < 0) return;
     if (vfs_unlink(path) == 0) {
         snprintf(fm->status, sizeof(fm->status), "Deleted: %s", fm->entries[fm->sel_index]);
         fm->sel_index = -1;
@@ -329,14 +347,14 @@ static void ctx_rename(fileman_win_t* fm) {
 
 static void ctx_copy(fileman_win_t* fm) {
     if (fm->sel_index < 0 || fm->sel_index >= fm->entry_count) return;
-    fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
+    if (fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path)) < 0) return;
     fm->clipboard_mode = 1;
     snprintf(fm->status, sizeof(fm->status), "Copied: %s", fm->entries[fm->sel_index]);
 }
 
 static void ctx_cut(fileman_win_t* fm) {
     if (fm->sel_index < 0 || fm->sel_index >= fm->entry_count) return;
-    fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
+    if (fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path)) < 0) return;
     fm->clipboard_mode = 2;
     snprintf(fm->status, sizeof(fm->status), "Cut: %s", fm->entries[fm->sel_index]);
 }
@@ -350,30 +368,26 @@ static void ctx_paste(fileman_win_t* fm) {
     for (int i = 0; fm->clipboard_path[i]; i++)
         if (fm->clipboard_path[i] == '/') basename = &fm->clipboard_path[i] + 1;
     char dst[256];
-    if (strlen(fm->cwd) + strlen(basename) + 2 > sizeof(dst)) {
-        snprintf(fm->status, sizeof(fm->status), "Paste failed: path too long");
-        return;
-    }
-    if (strcmp(fm->cwd, "/") == 0)
-        snprintf(dst, sizeof(dst), "/%s", basename);
-    else
-        snprintf(dst, sizeof(dst), "%s/%s", fm->cwd, basename);
-
+    if (fileman_get_path(fm, basename, dst, sizeof(dst)) < 0) return;
     if (fm->clipboard_mode == 1) {
-        // Copy — if the name is already taken (e.g. pasting into the same directory)
-        // make a unique "<name>_copy" so paste always produces a new file.
-        int exists = vfs_open(dst, 0, 0);
-        if (exists >= 0) {
-            vfs_close(exists);
-            if (strcmp(fm->cwd, "/") == 0)
-                snprintf(dst, sizeof(dst), "/%s_copy", basename);
-            else
-                snprintf(dst, sizeof(dst), "%s/%s_copy", fm->cwd, basename);
+        int result = 1;
+        for (int attempt = 0; attempt < 100 && result == 1; attempt++) {
+            if (attempt) {
+                char name[64];
+                int suffix = attempt == 1 ? 5 : attempt < 10 ? 6 : 7;
+                if (strlen(basename) + suffix >= sizeof(name)) {
+                    snprintf(fm->status, sizeof(fm->status), "Copy name too long");
+                    return;
+                }
+                if (attempt == 1) snprintf(name, sizeof(name), "%s_copy", basename);
+                else snprintf(name, sizeof(name), "%s_copy%d", basename, attempt);
+                if (fileman_get_path(fm, name, dst, sizeof(dst)) < 0) return;
+            }
+            result = vfs_cp_new(fm->clipboard_path, dst);
         }
-        if (vfs_cp(fm->clipboard_path, dst) == 0)
-            snprintf(fm->status, sizeof(fm->status), "Pasted: %s", basename);
-        else
-            snprintf(fm->status, sizeof(fm->status), "Paste failed");
+        if (result == 0) snprintf(fm->status, sizeof(fm->status), "Pasted: %s", dst);
+        else if (result == 1) snprintf(fm->status, sizeof(fm->status), "Copy names exhausted");
+        else snprintf(fm->status, sizeof(fm->status), "Paste failed");
     } else if (fm->clipboard_mode == 2) {
         if (vfs_rename(fm->clipboard_path, dst) == 0) {
             snprintf(fm->status, sizeof(fm->status), "Moved: %s", basename);
@@ -398,7 +412,7 @@ static void fileman_show_properties(fileman_win_t* fm) {
     fm->props_name[sizeof(fm->props_name) - 1] = '\0';
     fm->props_is_dir = fm->entry_types[i];
     fm->props_size = fm->entry_sizes[i];
-    fileman_get_path(fm, fm->entries[i], fm->props_path, sizeof(fm->props_path));
+    if (fileman_get_path(fm, fm->entries[i], fm->props_path, sizeof(fm->props_path)) < 0) return;
     fm->props_open = 1;
 }
 
@@ -882,7 +896,7 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
                 fileman_cd(fm, fm->entries[real_idx], win);
             } else {
                 char path[256];
-                fileman_get_path(fm, fm->entries[real_idx], path, sizeof(path));
+                if (fileman_get_path(fm, fm->entries[real_idx], path, sizeof(path)) < 0) return;
                 uint32_t now = get_ticks();
                 if (fm->last_click_idx == real_idx && (now - fm->last_click_tick) < 400) {
                     // Second click on the same file within the double-click window: open it
@@ -985,7 +999,7 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
                 ? fm->drag_file_idx : -1;
             if (src_idx >= 0) {
                 char src[256];
-                fileman_get_path(fm, fm->entries[src_idx], src, sizeof(src));
+                if (fileman_get_path(fm, fm->entries[src_idx], src, sizeof(src)) < 0) goto drop_done;
                 const char* basename = src;
                 for (int i = 0; src[i]; i++)
                     if (src[i] == '/') basename = &src[i] + 1;
@@ -995,21 +1009,19 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
                 char dstdir[256];
                 int tgt = fileman_row_at(fm, win, my);
                 if (tgt >= 0 && tgt != src_idx && fm->entry_types[tgt]) {
-                    fileman_get_path(fm, fm->entries[tgt], dstdir, sizeof(dstdir));
+                    if (fileman_get_path(fm, fm->entries[tgt], dstdir, sizeof(dstdir)) < 0) goto drop_done;
                 } else {
                     strncpy(dstdir, fm->cwd, sizeof(dstdir));
                     dstdir[sizeof(dstdir) - 1] = '\0';
                 }
                 char dst[256];
-                if (strcmp(dstdir, "/") == 0)
-                    snprintf(dst, sizeof(dst), "/%s", basename);
-                else
-                    snprintf(dst, sizeof(dst), "%s/%s", dstdir, basename);
+                if (fileman_join_path(fm, dstdir, basename, dst, sizeof(dst)) < 0)
+                    goto drop_done;
 
                 if (strcmp(src, dst) == 0) {
                     snprintf(fm->status, sizeof(fm->status), "Dropped in place");
                 } else if (fm->drag_mode == 2) {          // Ctrl-drag → copy
-                    if (vfs_cp(src, dst) == 0)
+                    if (vfs_cp_new(src, dst) == 0)
                         snprintf(fm->status, sizeof(fm->status), "Copied %s -> %s", basename, dstdir);
                     else
                         snprintf(fm->status, sizeof(fm->status), "Copy failed (name exists?)");
@@ -1022,6 +1034,7 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
                 fileman_refresh_status(fm);
             }
         }
+drop_done:
         fm->mouse_down = 0;
         fm->drag_active = 0;
         fm->drag_file_idx = -1;
@@ -1074,7 +1087,7 @@ void fileman_win_key(window_t* win, int key) {
         }
         if (key == 'c' || key == 'C') {
             if (fm->sel_index >= 0) {
-                fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
+                if (fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path)) < 0) return;
                 fm->clipboard_mode = 1;
                 snprintf(fm->status, sizeof(fm->status), "Copied: %s", fm->entries[fm->sel_index]);
             }
@@ -1082,7 +1095,7 @@ void fileman_win_key(window_t* win, int key) {
         }
         if (key == 'x' || key == 'X') {
             if (fm->sel_index >= 0) {
-                fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
+                if (fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path)) < 0) return;
                 fm->clipboard_mode = 2;
                 snprintf(fm->status, sizeof(fm->status), "Cut: %s", fm->entries[fm->sel_index]);
             }
@@ -1197,7 +1210,7 @@ void fileman_win_key(window_t* win, int key) {
             } else {
                 // Enter on a file opens it (image -> Image Viewer, else Text Editor), like double-click.
                 char path[256];
-                fileman_get_path(fm, fm->entries[fm->sel_index], path, sizeof(path));
+                if (fileman_get_path(fm, fm->entries[fm->sel_index], path, sizeof(path)) < 0) return;
                 fileman_activate_file(fm, path, fm->entries[fm->sel_index]);
             }
             return;
@@ -1209,7 +1222,7 @@ void fileman_win_key(window_t* win, int key) {
         // Commit input
         if (fm->input_pos > 0) {
             char path[256];
-            fileman_get_path(fm, fm->input_buf, path, sizeof(path));
+            if (fileman_get_path(fm, fm->input_buf, path, sizeof(path)) < 0) return;
             if (fm->input_mode == 3) {
                 // Rename. The selection was validated when the rename STARTED,
                 // but it can be cleared while the user is still typing the new
@@ -1226,7 +1239,7 @@ void fileman_win_key(window_t* win, int key) {
                     return;
                 }
                 char old_path[256];
-                fileman_get_path(fm, fm->entries[fm->sel_index], old_path, sizeof(old_path));
+                if (fileman_get_path(fm, fm->entries[fm->sel_index], old_path, sizeof(old_path)) < 0) return;
                 if (vfs_rename(old_path, path) == 0)
                     snprintf(fm->status, sizeof(fm->status), "Renamed to: %s", fm->input_buf);
                 else

@@ -971,6 +971,13 @@ The immediate data and desktop priorities are:
     target stack guards check the nested disk path. See [VFS_MOVES.md](VFS_MOVES.md) for the exact contract, verification and remaining
     concurrency, copy-paste and power-loss limitations.
 
+67. Development version 6.5.262 checks complete File Manager paths before actions
+    and preserves the clipboard when construction fails. Copy/paste selects a free
+    bounded name; Ctrl-drag refuses an occupied target. Names beyond the list's
+    63-byte capacity are hidden with a count instead of becoming actionable
+    truncated aliases. See [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md) for the
+    host/target evidence and remaining concurrency and long-name limits.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
