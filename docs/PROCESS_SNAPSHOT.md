@@ -57,11 +57,61 @@ inspection confirms two control files per VM are byte-identical. The host's
 controlled concurrent retirement case remains distinct from this guest test;
 these runs do not qualify heavy fork/exec churn with AP balancing enabled.
 
+## Monitor and kernel diagnostics (6.5.268)
+
+Nyx Monitor uses a bounded snapshot of the visible rows. Its context owns up
+to 64 records; no temporary allocation occurs during drawing. Each internal
+record contains the existing process fields plus a 64-bit heap byte count.
+This internal representation does not change the 48-byte userspace ABI.
+Names remain terminated and zero-filled. The table count and visible range
+exclude null, PID-zero and collector-claimed entries.
+
+`process_monitor_snapshot` holds `sched_lock` while counting and copying rows.
+It clamps the requested offset to the last full page, including after the
+process count shrinks. Drawing and font calls happen after unlocking. Input
+uses the most recently displayed count and the next draw clamps it again.
+Heap usage remains an observation of two scalar fields, not a page-table
+walk or a transactional resource measurement. Name text is bounded to its
+column, and numeric buffers retain full PID and heap values.
+
+The kernel `ps` command allocates space for at most 512 existing ABI records,
+takes a snapshot and prints after unlocking. Allocation failure reports
+`ps: out of memory`; successful and empty output free the temporary array.
+The user `ps`/`top` interfaces retain their existing enumeration contract.
+
+`tools/test_process_monitor.py` executes the real copy, draw, key and kernel
+`ps` functions with modelled rendering and collector events. It checks
+retirement during rendering/output, allocation failure, scrolling after
+collection, skipped entries, bounded output, long names, 64-bit heap sizes,
+an inverted heap interval and a full 512-entry table. The same GUI test on
+6.5.267 reproduces a heap-use-after-free when the table is retired at the
+first row draw. This is a controlled host event, not a reproduced guest crash.
+
+The monitor regression passes 311 sanitizer checks; the userspace snapshot
+regression retains its 836 passing checks. Memory-reporting and PID-signal
+regressions pass. The kernel builds without warnings, passes 230 kernel
+tests and reaches four-CPU login.
+
+A four-CPU, 5 GiB QEMU 10.2.1 TCG run places Terminal and Nyx Monitor side by
+side using the existing tiling shortcuts. A background ring-3 probe creates
+and collects 64 children. Real PS/2 input scrolls the populated monitor; after
+collection its displayed count shrinks and its offset returns to zero.
+Kernel and user process listings, monitor close, window restoration and drag
+all succeed. Scheduler heartbeats, three AP workers and two allocator stress
+runs pass, with zero integrity errors and a balanced second run. The VM
+closes and two offline control files remain byte-identical. This is default
+process placement, not qualification of AP-balanced fork/exec churn.
+
+The workload uses existing `spawn`. Synchronous `exec` still holds the GUI
+command path: it repaints other windows but does not service normal focus
+changes. This separate responsiveness limitation remains open. The snapshot
+change makes no host-CPU performance claim.
+
 ## Remaining limits
 
-This change covers `SYS_GETPROCS`, used by userspace `ps` and `top`.
-The GUI Task Manager, kernel diagnostic table walks and other raw process
-readers still require separate lifetime audits. It does not add a userspace
+These changes cover `SYS_GETPROCS`, Nyx Monitor and the kernel `ps` command.
+Other kernel diagnostic table walks and raw process readers still require
+separate lifetime audits. They do not add a userspace
 init supervisor, process groups, application isolation or resource ownership
 for shared address spaces. See [PROCESS.md](PROCESS.md) and
 [DAILY_USE.md](DAILY_USE.md).

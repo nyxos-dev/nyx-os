@@ -1889,16 +1889,14 @@ static void cmd_time(int argc, char** argv) {
 
 static void cmd_ps(int argc, char** argv) {
     (void)argc; (void)argv;
+    process_info_t* records = (process_info_t*)kmalloc(MAX_PROCESSES * sizeof(*records));
+    if (!records) { printf("ps: out of memory\n"); return; }
+    int count = process_snapshot(records, MAX_PROCESSES);
     printf("PID  PPID STATE NAME\n");
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        if (process_table[i]) {
-            printf("%-4d %-4d %-5d %s\n",
-                process_table[i]->pid,
-                process_table[i]->ppid,
-                process_table[i]->state,
-                process_table[i]->comm);
-        }
-    }
+    for (int i = 0; i < count; i++)
+        printf("%-4u %-4u %-5u %s\n", records[i].pid, records[i].ppid,
+               records[i].state, records[i].comm);
+    kfree(records);
 }
 
 // ---- pstree: a hierarchical (parent -> children) view of the process table ---------------

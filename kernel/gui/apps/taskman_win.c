@@ -183,23 +183,24 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int status_y = cy + (int)ch - HEADER_H;
     int avail_h  = status_y - rows_y;
     int max_rows = avail_h / ROW_H;
-    if (max_rows < 1) max_rows = 1;
+    if (max_rows < 0) max_rows = 0;
+    if (max_rows > MON_ROWS) max_rows = MON_ROWS;
+    int count = process_monitor_snapshot(tm->rows, max_rows > 0 ? max_rows : 1,
+                                        &tm->scroll_offset, &tm->process_total);
+    if (count > max_rows) count = max_rows;
 
-    for (int i = 0; i < max_rows; i++) {
-        int idx = i + tm->scroll_offset;
-        if (idx >= process_count) break;
-        process_t* p = process_table[idx];
-        if (!p) continue;
+    for (int i = 0; i < count; i++) {
+        const process_info_t* p = &tm->rows[i].info;
 
         int ry = rows_y + i * ROW_H;
         uint32_t bg = (i & 1) ? fb_rgb(50, 50, 55) : THEME_WINDOW_BG;
         fb_fill_rect(cx, ry, cw, ROW_H, bg);
 
-        char pid_str[8];
+        char pid_str[12];
         snprintf(pid_str, sizeof(pid_str), "%u", p->pid);
         font_draw_string(cx + 4, ry + 1, pid_str, THEME_TEXT, bg);
 
-        char name[25];
+        char name[(COL_NAME - COL_PID) / FONT_WIDTH];
         strncpy(name, p->comm, sizeof(name) - 1);
         name[sizeof(name) - 1] = '\0';
         font_draw_string(cx + COL_PID + 4, ry + 1, name, fb_rgb(180,220,180), bg);
@@ -210,12 +211,8 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         snprintf(cpu_str, sizeof(cpu_str), "%u", p->cpu_time);
         font_draw_string(cx + COL_STATE + 4, ry + 1, cpu_str, fb_rgb(200,200,200), bg);
 
-        // HEAP: the process's heap footprint (program_break - heap_start), in KB. Scalar reads
-        // only (no page-table walk), so it is as cheap and safe as the CPU column; a kernel
-        // thread with no user heap shows 0K.
-        char mem_str[16];
-        uint64_t heap_b = (p->program_break > p->heap_start) ? (p->program_break - p->heap_start) : 0;
-        snprintf(mem_str, sizeof(mem_str), "%uK", (uint32_t)(heap_b / 1024));
+        char mem_str[24];
+        snprintf(mem_str, sizeof(mem_str), "%lluK", (unsigned long long)(tm->rows[i].heap_bytes / 1024));
         font_draw_string(cx + COL_CPU + 4, ry + 1, mem_str, fb_rgb(200,200,200), bg);
     }
 
@@ -226,7 +223,7 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     mon_size(detected, sizeof(detected), memory_total);
     mon_size(managed, sizeof(managed), (uint64_t)mem_total * 1024 * 1024);
     snprintf(status, sizeof(status), "Procs: %d  RAM detected: %s  Pool: %s",
-             process_count, detected, managed);
+             tm->process_total, detected, managed);
     font_draw_string(cx + 4, status_y + 2, status, fb_rgb(180,200,220), THEME_PANEL_HEADER);
 }
 
@@ -244,6 +241,6 @@ void taskman_win_key(window_t* win, int key) {
 
     if (key == KEY_UP && tm->scroll_offset > 0)
         tm->scroll_offset--;
-    else if (key == KEY_DOWN && tm->scroll_offset < process_count - 1)
+    else if (key == KEY_DOWN && tm->scroll_offset < tm->process_total - 1)
         tm->scroll_offset++;
 }

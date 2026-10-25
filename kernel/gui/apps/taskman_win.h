@@ -7,9 +7,12 @@
 // Samples kept in each scrolling performance graph (ring buffer). At ~4 Hz this is ~24 s of
 // history — enough to see a trend without holding a lot of state.
 #define MON_HISTORY 96
+#define MON_ROWS 64
 
 typedef struct {
     int scroll_offset;
+    int process_total;
+    process_monitor_info_t rows[MON_ROWS];
     unsigned char cpu_hist[MON_HISTORY];   // CPU utilization samples, 0..100
     unsigned char mem_hist[MON_HISTORY];   // memory-in-use samples, 0..100
     unsigned char net_hist[MON_HISTORY];   // network activity samples, 0..100 (pkt/s, scaled)

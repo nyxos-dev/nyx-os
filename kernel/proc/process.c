@@ -26,6 +26,15 @@ static int publish_process(process_t* p) {
     return room;
 }
 
+static void process_copy_info(process_info_t* rec, const process_t* p) {
+    memset_asm(rec, 0, sizeof(*rec));
+    rec->pid = p->pid;
+    rec->ppid = p->ppid;
+    rec->state = p->state;
+    rec->cpu_time = p->cpu_time;
+    for (int j = 0; j < 31 && p->comm[j]; j++) rec->comm[j] = p->comm[j];
+}
+
 int process_snapshot(process_info_t* records, int max) {
     if (!records || max <= 0) return 0;
     int count = 0;
@@ -33,16 +42,38 @@ int process_snapshot(process_info_t* records, int max) {
     for (int i = 0; i < process_count && count < max; i++) {
         process_t* p = process_table[i];
         if (!p || !p->pid || p->reap_claimed) continue;
-        process_info_t* rec = &records[count++];
-        memset_asm(rec, 0, sizeof(*rec));
-        rec->pid = p->pid;
-        rec->ppid = p->ppid;
-        rec->state = p->state;
-        rec->cpu_time = p->cpu_time;
-        for (int j = 0; j < 31 && p->comm[j]; j++) rec->comm[j] = p->comm[j];
+        process_copy_info(&records[count++], p);
     }
     spin_unlock_irqrestore(&sched_lock, flags);
     return count;
+}
+
+int process_monitor_snapshot(process_monitor_info_t* rows, int max, int* offset, int* total) {
+    if (!rows || max <= 0 || !offset || !total) return 0;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    int count = 0;
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (p && p->pid && !p->reap_claimed) count++;
+    }
+    int first = *offset;
+    int last = count > max ? count - max : 0;
+    if (first > last) first = last;
+    if (first < 0) first = 0;
+    *offset = first;
+    *total = count;
+    int seen = 0, copied = 0;
+    for (int i = 0; i < process_count && copied < max; i++) {
+        process_t* p = process_table[i];
+        if (!p || !p->pid || p->reap_claimed) continue;
+        if (seen++ < first) continue;
+        process_monitor_info_t* row = &rows[copied++];
+        process_copy_info(&row->info, p);
+        uint64_t start = p->heap_start, end = p->program_break;
+        row->heap_bytes = end > start ? end - start : 0;
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return copied;
 }
 
 void init_process(void) {

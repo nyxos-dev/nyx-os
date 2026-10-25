@@ -120,7 +120,8 @@ def main():
     else:
         user = (ROOT/'user/syscall.h').read_text()
         record_type = re.search(r'typedef struct \{[^{}]+\} nyx_procinfo_t;', user)[0].replace('nyx_procinfo_t', 'process_info_t')
-    helper = function(source, 'int process_snapshot(') if 'int process_snapshot(' in source else ''
+    helper = function(source, 'static void process_copy_info(') if 'static void process_copy_info(' in source else ''
+    helper += function(source, 'int process_snapshot(') if 'int process_snapshot(' in source else ''
     code = PREFIX.replace('@TYPE@', record_type) + helper
     code += '\nstatic long run(void) {\n' + body(syscall, 'case SYS_GETPROCS:') + '\n}\n' + TESTS
     with tempfile.TemporaryDirectory(prefix='nyx-process-snapshot-') as temp:

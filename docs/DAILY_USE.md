@@ -1007,6 +1007,11 @@ The immediate data and desktop priorities are:
     Low-level alarm posting remains callable while the scheduler holds its lock.
     See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md) for scope and evidence.
 
+73. Development version 6.5.268 gives Nyx Monitor and the kernel `ps` command
+    owned process records before rendering or printing. The monitor preserves
+    its heap column without changing the userspace enumeration ABI, and clamps
+    scrolling after collection. See [PROCESS_SNAPSHOT.md](PROCESS_SNAPSHOT.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
