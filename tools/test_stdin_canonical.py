@@ -2,14 +2,20 @@
 """Exercise canonical/raw read loops with a scripted keyboard and echo sink.
 
 Run on Linux x86_64 or WSL. No process is scheduled and no privileged instruction
-executes; blocking, signal delivery and IRQ scheduling still require kernel tests.
+executes. Return-path checks extract the actual functions and simulate interrupts,
+signals and scheduling; real syscall return and signal delivery require QEMU.
 """
+import argparse
 import os
+import sys
 from pathlib import Path
 import platform
 import shlex
 import subprocess
 import tempfile
+
+sys.dont_write_bytecode = True
+from test_pipe_signals import function
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -129,12 +135,113 @@ int main(void) {
 '''
 
 
+RETURN_PREFIX = r'''
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <errno.h>
+enum { STDIN_LINE_ECHO=1, STDIN_LINE_ERASE=2, STDIN_LINE_DONE=4 };
+enum { KEY_UP=128, KEY_DOWN, KEY_RIGHT, KEY_LEFT, KEY_HOME, KEY_END };
+typedef struct {
+    int blocked_in_kernel, tty_pending_len;
+    uint8_t tty_pending[3];
+} process_t;
+static process_t proc;
+static uint64_t user_cr3=123, user_rsp=456;
+static int host_if, mode, yields, stops;
+volatile uint32_t tick_count;
+static process_t* get_cur_proc(void) { return mode==5 ? NULL : &proc; }
+static int getkey_poll(void) {
+    if (mode==0 || (mode==1 && yields) || (mode==3 && stops)) return 'A';
+    return 0;
+}
+static char getchar_poll(void) { return (char)getkey_poll(); }
+static int signal_pending(process_t* p) {
+    (void)p;
+    return mode==2 || (mode==3 && !stops) || (mode==4 && yields);
+}
+static int signal_check_stop(process_t* p) {
+    (void)p;
+    assert(!host_if);
+    if (mode!=3) return 0;
+    stops++;
+    user_cr3=777; user_rsp=888;
+    return 1;
+}
+static void host_yield(void) {
+    assert(++yields<=2);
+    host_if=1;
+    tick_count++;
+    user_cr3=777; user_rsp=888;
+    assert(mode==5 || proc.blocked_in_kernel);
+}
+'''
+RETURN_MAIN = r'''
+int main(int argc, char** argv) {
+    assert(argc==3);
+    int kind=atoi(argv[1]);
+    mode=atoi(argv[2]);
+    char out[2]={0};
+    int result;
+    if (kind==0) result=stdin_read_line(out,mode==6?0:1);
+    else if (kind==1) result=stdin_read_raw(out,mode==6?0:1);
+    else result=stdin_readkey(1);
+    int expected=(mode==2||mode==4)?-EINTR:(mode==5||mode==6)?0:kind==2?'A':1;
+    assert(result==expected && user_cr3==123 && user_rsp==456 && !proc.blocked_in_kernel);
+    if (host_if) {
+        fprintf(stderr,"RETURN_WITH_INTERRUPTS_ENABLED kind=%d mode=%d\n",kind,mode);
+        return 2;
+    }
+    return 0;
+}
+'''
+
+
+def check_returns(cc, work, compare_ref):
+    def run(ref=None):
+        source = (subprocess.check_output(
+            ['git', 'show', f'{ref}:kernel/core/syscall.c'], cwd=ROOT, text=True)
+            if ref else (ROOT / 'kernel/core/syscall.c').read_text(encoding='utf-8'))
+        code = '\n'.join(function(source, name) for name in
+                         ['stdin_line_key', 'stdin_read_line', 'stdin_read_raw', 'stdin_readkey'])
+        code = code.replace('__asm__ volatile("cli")', '(host_if=0)')
+        code = code.replace('__asm__ volatile("sti")', '(host_if=1)')
+        code = code.replace('__asm__ volatile("sti; hlt")', 'host_yield()')
+        assert '__asm__' not in code, 'Unmodelled privileged instruction'
+        path, exe = work / 'returns.c', work / 'returns'
+        path.write_text(RETURN_PREFIX + code + RETURN_MAIN, encoding='utf-8')
+        subprocess.run([*cc, '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',
+                        '-fsanitize=address,undefined', '-fno-pie', '-no-pie',
+                        str(path), '-o', str(exe)], check=True)
+        failed = []
+        for kind in range(3):
+            for mode in range(7):
+                result = subprocess.run([str(exe), str(kind), str(mode)],
+                                        capture_output=True, text=True, timeout=10)
+                if result.returncode:
+                    assert result.returncode == 2 and result.stderr.strip() == (
+                        f'RETURN_WITH_INTERRUPTS_ENABLED kind={kind} mode={mode}'), result.stderr
+                    failed.append((kind, mode))
+        return failed
+    assert not run(), 'stdin return context must remain masked'
+    print('PASS 21 stdin return cases under ASan/UBSan: canonical/raw/readkey, immediate/delayed key or signal, stop, no process, zero capacity/timeout; IRQs simulated')
+    if compare_ref:
+        failed = run(compare_ref)
+        assert failed == [(kind, mode) for kind in range(3) for mode in (2, 3, 4)], failed
+        print('PASS baseline exposes 9 interrupt/stop return failures; 12 controls pass')
+
+
 def main():
     if platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64"):
         raise SystemExit("Run this test on Linux x86_64 or WSL")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--compare-ref', help='Pre-fix commit expected to fail the nine signal/stop cases')
+    args = parser.parse_args()
     cc = shlex.split(os.environ.get("CC", "cc"))
     with tempfile.TemporaryDirectory(prefix="nyx-stdin-") as temporary:
         work = Path(temporary)
+        check_returns(cc, work, args.compare_ref)
         source = work / "stdin_test.c"
         source.write_text(HARNESS.replace("@ROOT@", ROOT.as_posix()), encoding="utf-8")
         flags = ["-std=gnu99", "-O2", "-ffreestanding", "-Wall", "-Wextra", "-Wshadow", "-Werror",

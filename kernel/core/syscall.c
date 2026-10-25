@@ -245,8 +245,7 @@ static int stdin_read_line(char* kbuf, int max) {
             if (!self) break;                    /* no process context: don't block */
             if (signal_pending(self)) {          /* a signal (e.g. Ctrl-C) is waiting */
                 __asm__ volatile("cli");
-                if (signal_check_stop(self)) { __asm__ volatile("sti"); continue; }  /* Ctrl-Z: resumed */
-                __asm__ volatile("sti");
+                if (signal_check_stop(self)) continue;  /* Ctrl-Z: resumed, keep return context masked */
                 len = -EINTR;                    /* real signal: bail so the syscall returns + delivers */
                 break;
             }
@@ -295,8 +294,7 @@ static int stdin_read_raw(char* kbuf, int max) {
             if (!self) break;
             if (signal_pending(self)) {
                 __asm__ volatile("cli");
-                if (signal_check_stop(self)) { __asm__ volatile("sti"); continue; }  /* Ctrl-Z: resumed */
-                __asm__ volatile("sti");
+                if (signal_check_stop(self)) continue;  /* Ctrl-Z: resumed, keep return context masked */
                 len = -EINTR; break;
             }
             self->blocked_in_kernel = 1;
@@ -362,8 +360,7 @@ static int stdin_readkey(uint32_t timeout_ms) {
         if (k) { result = k; break; }
         if (self && signal_pending(self)) {
             __asm__ volatile("cli");
-            if (signal_check_stop(self)) { __asm__ volatile("sti"); continue; }  /* Ctrl-Z: resumed */
-            __asm__ volatile("sti");
+            if (signal_check_stop(self)) continue;  /* Ctrl-Z: resumed, keep return context masked */
             result = -EINTR; break;
         }
         if (timeout_ms != 0 && (int32_t)(tick_count - deadline) >= 0) break;  /* timed out -> 0 (0 = block forever) */

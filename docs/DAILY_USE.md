@@ -620,6 +620,31 @@ The immediate data and desktop priorities are:
     rebuilding when this shared-libc layout changes. A stable external ABI or
     runtime symbol resolution remains separate work.
 
+49. Development version 6.5.244 keeps interrupts masked on interrupted and
+    stop/resume returns from canonical stdin, raw stdin and timed key reads.
+    Their saved per-CPU user CR3/RSP is restored before the syscall can deliver
+    the signal or return to userspace. The existing wait loop still enables
+    interrupts while yielding; a resumed reader continues waiting for input.
+    The actual-function host suite covers 21 cases under ASan/UBSan with
+    simulated IRQs, signals and scheduling. Baseline 243 fails nine signal/stop
+    return cases; the corrected source and 12 controls pass. Existing canonical
+    EOF/edit/echo/capacity and raw escape/pending-byte checks also pass.
+    The existing keyevtest gains --wait-return: run it from a Nyx terminal and
+    type a at each of its three resumed prompts. It checks SIGUSR1 interruption,
+    SIGSTOP/SIGCONT followed by a key, and SIGKILL while stopped for each input
+    mode, including handler count, read result, stop status and final reaping.
+    On the rebuilt image, two runs pass all 18 checks with real PS/2 keys.
+    The warning-free build passes 230 kernel tests and four-CPU login. Two
+    threads runs produce correct 8000 counters/heap/fds; libctest, the previous
+    21 signal/pipe checks, four-stage input/EOF, six scheduler heartbeats,
+    terminal drag and the next command pass. Screenshots are inspected,
+    both disk fixtures remain exact, and the owned VM closes.
+    These are bounded checks, not a measured race frequency, long-session
+    stability, terminal ownership, job-wide signal routing or general syscall
+    qualification. The before/after failure is a simulated host invariant;
+    no deterministic pre-fix QEMU crash is claimed. Remote CI is recorded
+    separately after publication.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

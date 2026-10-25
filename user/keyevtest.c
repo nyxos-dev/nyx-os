@@ -50,6 +50,76 @@ static int foreground_signal_test(void) {
     return foreground_interrupts == 1 ? 0 : 1;
 }
 
+static volatile int wait_interrupts;
+
+static void wait_interrupt(int sig) {
+    if (sig == SIGUSR1) wait_interrupts++;
+}
+
+static long wait_collect(int child, int* status, int options) {
+    for (int i = 0; i < 500; i++) {
+        long result = waitpid3(child, status, options | WNOHANG);
+        if (result) return result;
+        usleep(10000);
+    }
+    return 0;
+}
+
+/* Run from a terminal: type 'a' at each of the three "resumed" prompts. */
+static int wait_return_test(void) {
+    int failed = 0;
+    for (int kind = 0; kind < 3; kind++) {
+        for (int action = 0; action < 3; action++) {
+            int ready[2], status = -1;
+            if (pipe(ready)) return 1;
+            int child = (int)fork();
+            if (child < 0) { close(ready[0]); close(ready[1]); return 1; }
+            if (!child) {
+                close(ready[0]);
+                wait_interrupts = 0;
+                if (signal(SIGUSR1, wait_interrupt) == SIG_ERR ||
+                    ttymode(kind == 1 ? TTY_RAW : TTY_CANON) < 0) exit(2);
+                if (write(ready[1], "R", 1) != 1) exit(3);
+                close(ready[1]);
+                char byte = '?';
+                long n = kind == 2 ? readkey(0) : read(0, &byte, 1);
+                int ok = action == 0 ? (n == -4 && wait_interrupts == 1) :
+                         action == 1 && !wait_interrupts &&
+                         (kind == 2 ? n == 'a' : n == 1 && byte == 'a');
+                printf("keyevtest: wait child kind=%d action=%d result=%ld signals=%d %s\n",
+                       kind, action, n, wait_interrupts, ok ? "PASS" : "FAIL");
+                exit(ok ? 0 : 4);
+            }
+            close(ready[1]);
+            char byte;
+            int ok = read(ready[0], &byte, 1) == 1 && byte == 'R';
+            close(ready[0]);
+            if (setfg(child)) ok = 0;
+            usleep(200000);  /* child enters its stdin wait before the signal */
+            if (action == 0) {
+                if (kill(child, SIGUSR1)) ok = 0;
+            } else {
+                if (kill(child, SIGSTOP)) ok = 0;
+                long stopped = wait_collect(child, &status, WUNTRACED);
+                if (stopped != child || !WIFSTOPPED(status) || WSTOPSIG(status) != SIGSTOP) ok = 0;
+                if (kill(child, action == 1 ? SIGCONT : SIGKILL)) ok = 0;
+                if (action == 1) printf("keyevtest: wait kind=%d resumed; type a\n", kind);
+            }
+            long reaped = wait_collect(child, &status, 0);
+            if (reaped != child || status != (action == 2 ? 137 : 0)) ok = 0;
+            if (!reaped) {
+                kill(child, SIGKILL);
+                if (wait_collect(child, &status, 0) != child) return 1;
+            }
+            if (setfg((long)getpid())) ok = 0;
+            printf("keyevtest: wait kind=%d action=%d %s\n", kind, action, ok ? "PASS" : "FAIL");
+            if (!ok) failed++;
+        }
+    }
+    printf("keyevtest: wait returns %s (%d failures)\n", failed ? "FAIL" : "PASS", failed);
+    return failed ? 1 : 0;
+}
+
 static int raw_read_test(int ordered) {
     const int capacities[] = {1, 2, 3, 4, 16};
     const char* expected[] = {"\033[Az", "\033[Bz", "\033[Cz", "\033[Daz", "\033[A\033[B\033[C\033[D\033[H\033[Fz"};
@@ -87,6 +157,7 @@ static int raw_read_test(int ordered) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && !strcmp(argv[1], "--wait-return")) return wait_return_test();
     if (argc == 2 && !strcmp(argv[1], "--key-order")) return raw_read_test(1);
     if (argc == 2 && !strcmp(argv[1], "--raw-reads")) return raw_read_test(0);
     if (argc == 2 && !strcmp(argv[1], "--foreground")) return foreground_test();
