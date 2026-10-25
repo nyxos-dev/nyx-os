@@ -3031,21 +3031,41 @@ int title_set_selftest(void) {
     return rc;
 }
 
+static int window_accepts_input(const window_t* win) {
+    return win && win->visible && win->state != WSTATE_MINIMIZED
+        && win->workspace == current_workspace;
+}
+
+static window_t* focused_window(void) {
+    window_t* win = find_window(focused_id);
+    return window_accepts_input(win) ? win : NULL;
+}
+
+static void clear_window_focus(void) {
+    focused_id = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i]) windows[i]->focused = 0;
+}
+
 static void focus_next_window(void) {
     // Find the highest-z-order visible, non-minimized window
     window_t* best = NULL;
     for (int i = 0; i < MAX_WINDOWS; i++) {
-        if (!windows[i] || !windows[i]->visible) continue;
-        if (windows[i]->state == WSTATE_MINIMIZED) continue;
-        if (windows[i]->workspace != current_workspace) continue;
+        if (!window_accepts_input(windows[i])) continue;
         if (!best || windows[i]->z_order > best->z_order)
             best = windows[i];
     }
     if (best) {
         window_focus(best->id);
     } else {
-        focused_id = 0;
+        clear_window_focus();
     }
+}
+
+static void workspace_select(int ws) {
+    if (ws < 0 || ws >= WORKSPACE_COUNT || ws == current_workspace) return;
+    current_workspace = ws;
+    focus_next_window();
 }
 
 // Alt+Tab: focus the next window in a stable, repeatable cycle.
@@ -3064,11 +3084,11 @@ static void window_cycle_focus(void) {
     for (int step = 1; step <= MAX_WINDOWS; step++) {
         int i = (start + step) % MAX_WINDOWS;
         window_t* w = windows[i];
-        if (!w || !w->visible || w->state == WSTATE_MINIMIZED) continue;
-        if (w->workspace != current_workspace) continue;
+        if (!window_accepts_input(w)) continue;
         window_focus(w->id);
         return;
     }
+    clear_window_focus();
 }
 
 void window_request_close(int id) {
@@ -3139,7 +3159,7 @@ int window_focus_selftest(void) {
 
 void window_focus(int id) {
     window_t* win = find_window(id);
-    if (!win || !win->visible || win->state == WSTATE_MINIMIZED) return;
+    if (!window_accepts_input(win)) return;
     win->focused = 1;
     raise_window(windows, MAX_WINDOWS, win);
     focused_id = id;
@@ -3430,8 +3450,9 @@ static void window_snap_to(int id, int state) {
 
 void window_set_workspace(int id, int ws) {
     window_t* win = find_window(id);
-    if (!win) return;
+    if (!win || ws < 0 || ws >= WORKSPACE_COUNT || ws == win->workspace) return;
     win->workspace = ws;
+    if (focused_id == id) focus_next_window();
 }
 
 int window_get_count(void) { return window_count; }
@@ -4657,13 +4678,7 @@ void compositor_run(void) {
         // published in full — the cursor-only fast present below would miss it.
         int mm_dispatched = 0;
         if (mx != mouse_x || my != mouse_y) {
-            window_t* fwin = NULL;
-            for (int i = 0; i < MAX_WINDOWS; i++) {
-                if (windows[i] && windows[i]->id == focused_id) {
-                    fwin = windows[i];
-                    break;
-                }
-            }
+            window_t* fwin = focused_window();
             if (fwin && fwin->on_mousemove) {
                 fwin->on_mousemove(fwin, mx, my, btns);
                 mm_dispatched = 1;
@@ -4677,7 +4692,7 @@ void compositor_run(void) {
             int notches = wz - mouse_z;
             int steps = notches < 0 ? -notches : notches;
             if (steps > 8) steps = 8;                    // clamp a fast flick
-            window_t* fwin = find_window(focused_id);
+            window_t* fwin = focused_window();
             if (fwin && fwin->on_key) {
                 int keycode = (notches > 0) ? KEY_WHEEL_UP : KEY_WHEEL_DOWN;
                 for (int s = 0; s < steps; s++) fwin->on_key(fwin, keycode);
@@ -5130,7 +5145,7 @@ void compositor_run(void) {
                      * still contains the pointer, in its CONTENT area (below the
                      * title bar). Never re-pick — re-picking is what leaked the
                      * click to lower windows once the top one closed/moved. */
-                    window_t* fwin = find_window(focused_id);
+                    window_t* fwin = focused_window();
                     if (fwin && fwin->on_pressed && window_hit(fwin, mx, my)
                         && my >= fwin->y + TITLE_H) {
                         fwin->on_pressed(fwin, mx, my, 1);
@@ -5178,7 +5193,7 @@ void compositor_run(void) {
             }
             // Ctrl+1..4: workspace switching
             if (is_ctrl_pressed() && k >= '1' && k <= '4') {
-                current_workspace = k - '1';
+                workspace_select(k - '1');
                 redraw = 1;
                 goto done_click;
             }
@@ -5194,7 +5209,7 @@ void compositor_run(void) {
                     redraw = 1;
                     goto done_click;
                 }
-                window_t* awin = find_window(focused_id);
+                window_t* awin = focused_window();
                 if (awin) {
                     if (k == KEY_F4) {                 // Alt+F4: close
                         window_request_close(awin->id);
@@ -5239,7 +5254,7 @@ void compositor_run(void) {
             }
 
             // Route all keys to focused window's key handler
-            window_t* fwin = find_window(focused_id);
+            window_t* fwin = focused_window();
             if (fwin && fwin->on_key && k > 0) {
                 fwin->on_key(fwin, k);
                 redraw = 1;

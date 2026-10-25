@@ -929,6 +929,18 @@ The immediate data and desktop priorities are:
     resource concurrency, long sessions, hardware and real init supervision
     remain open. See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md).
 
+63. Development version 6.5.258 repairs focus when switching workspaces and
+    filters keyboard, wheel, motion, held-button and window-management input
+    against the active workspace. An empty workspace no longer edits or closes
+    an invisible terminal. Invalid workspace transfers are ignored and moving
+    a focused window repairs focus. The host regression fails on the previous
+    source; 309 focus/input checks, existing desktop regressions, 230 KATs and
+    four-CPU login pass. A separate GUI trial verifies two terminal workspaces,
+    empty-space input/close protection, minimize/recover, snap/restore, drag
+    and subsequent commands. Fast modifier delivery, persistent window arrangements,
+    long sessions and hardware remain outside this qualification. See
+    [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

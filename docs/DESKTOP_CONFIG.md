@@ -101,6 +101,44 @@ intact; the VM is closed. All six snap zones, gap/resolution combinations and
 workspace transfer are host checks, not additional GUI or hardware claims.
 
 
+## Workspace focus and input (6.5.258)
+
+`Ctrl+1` through `Ctrl+4` select one of four workspaces. The destination's
+highest stacked visible, non-minimized window receives focus; an empty workspace
+has no focused window. Returning restores focus to that workspace's top window.
+`Alt+Tab` cycles eligible windows on the active workspace and clears stale focus
+when there are none. A direct focus request cannot target another workspace.
+
+Previously a switch changed the rendered workspace without changing focus.
+Typing in an empty workspace could edit an invisible terminal, and `Alt+F4`
+could close it. Keyboard input, window-management shortcuts, wheel events,
+mouse motion and held presses now check the target's visibility, minimized
+state and workspace before calling its handlers. Moving the focused window
+through `window_set_workspace` repairs focus; invalid workspace IDs are ignored.
+The close-request API still supports intentional programmatic closes.
+
+`python3 tools/test_window_workspace.py` performs 309 ASan/UBSan host checks
+using the actual compositor functions and dispatch branches: four workspaces,
+empty destinations, stable cycles, hidden/minimized targets, window transfer,
+invalid IDs, keyboard, wheel, motion, held press and close routing. The previous
+source fails the focus-isolation regression. The existing 577 minimize/recovery,
+434 configuration and 72 desktop-idle checks pass. The kernel builds without
+warnings, passes 230 KATs and reaches login with four CPUs.
+
+A separate four-CPU, 5 GiB QEMU/TCG GUI trial at 1024x768 uses explicit PS/2
+make/break events. Two terminals retain independent pending text across workspace
+switches; empty workspaces ignore typing, wheel input, `Alt+Tab` and `Alt+F4`.
+Returning restores focus, commands execute, minimized windows recover through
+the taskbar, and snap/restore, drag and active-window close succeed. Twenty-one
+state checkpoints pass; two disk fixtures remain byte-identical and the VM closes.
+The preceding source visibly edits an invisible terminal and closes it from an
+empty workspace. Host checks additionally cover programmatic workspace transfer
+and deliberately stale hidden/minimized targets.
+
+These checks do not qualify fast modifier delivery, long sessions, physical
+hardware or desktop performance. No new CPU reduction is claimed. Workspace
+arrangements remain session state; this change does not persist open windows.
+
 ## Verification and limits
 
 Development version 6.5.207 adds 234 host configuration checks covering the
