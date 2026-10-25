@@ -203,6 +203,13 @@ void fileman_refresh(fileman_win_t* fm) {
     fileman_apply_search(fm);
 }
 
+static void fileman_refresh_status(fileman_win_t* fm) {
+    char status[sizeof(fm->status)];
+    memcpy(status, fm->status, sizeof(status));
+    fileman_refresh(fm);
+    memcpy(fm->status, status, sizeof(status));
+}
+
 // Format a byte count as a compact human-readable string (B / KB / MB) for the
 // Size column. Integer math only (the kernel printf has no %f).
 static void fileman_fmt_size(uint32_t b, char* out, int n) {
@@ -343,6 +350,10 @@ static void ctx_paste(fileman_win_t* fm) {
     for (int i = 0; fm->clipboard_path[i]; i++)
         if (fm->clipboard_path[i] == '/') basename = &fm->clipboard_path[i] + 1;
     char dst[256];
+    if (strlen(fm->cwd) + strlen(basename) + 2 > sizeof(dst)) {
+        snprintf(fm->status, sizeof(fm->status), "Paste failed: path too long");
+        return;
+    }
     if (strcmp(fm->cwd, "/") == 0)
         snprintf(dst, sizeof(dst), "/%s", basename);
     else
@@ -364,12 +375,15 @@ static void ctx_paste(fileman_win_t* fm) {
         else
             snprintf(fm->status, sizeof(fm->status), "Paste failed");
     } else if (fm->clipboard_mode == 2) {
-        vfs_rename(fm->clipboard_path, dst);
-        snprintf(fm->status, sizeof(fm->status), "Moved: %s", basename);
-        fm->clipboard_mode = 0;
-        fm->clipboard_path[0] = '\0';
+        if (vfs_rename(fm->clipboard_path, dst) == 0) {
+            snprintf(fm->status, sizeof(fm->status), "Moved: %s", basename);
+            fm->clipboard_mode = 0;
+            fm->clipboard_path[0] = '\0';
+        } else {
+            snprintf(fm->status, sizeof(fm->status), "Move failed; cut retained");
+        }
     }
-    fileman_refresh(fm);
+    fileman_refresh_status(fm);
 }
 
 // Snapshot the selected entry's details into the props_* fields and open the
@@ -1000,10 +1014,12 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
                     else
                         snprintf(fm->status, sizeof(fm->status), "Copy failed (name exists?)");
                 } else {                                   // plain drag → move
-                    vfs_rename(src, dst);
-                    snprintf(fm->status, sizeof(fm->status), "Moved %s -> %s", basename, dstdir);
+                    if (vfs_rename(src, dst) == 0)
+                        snprintf(fm->status, sizeof(fm->status), "Moved %s -> %s", basename, dstdir);
+                    else
+                        snprintf(fm->status, sizeof(fm->status), "Move failed (name exists?)");
                 }
-                fileman_refresh(fm);
+                fileman_refresh_status(fm);
             }
         }
         fm->mouse_down = 0;
@@ -1211,9 +1227,11 @@ void fileman_win_key(window_t* win, int key) {
                 }
                 char old_path[256];
                 fileman_get_path(fm, fm->entries[fm->sel_index], old_path, sizeof(old_path));
-                vfs_rename(old_path, path);
-                snprintf(fm->status, sizeof(fm->status), "Renamed to: %s", fm->input_buf);
-                fileman_refresh(fm);
+                if (vfs_rename(old_path, path) == 0)
+                    snprintf(fm->status, sizeof(fm->status), "Renamed to: %s", fm->input_buf);
+                else
+                    snprintf(fm->status, sizeof(fm->status), "Rename failed (name exists?)");
+                fileman_refresh_status(fm);
             } else if (fm->input_mode == 2) {
                 // Create directory
                 if (vfs_mkdir(path, 0) == 0) {

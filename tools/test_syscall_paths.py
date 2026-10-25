@@ -80,6 +80,10 @@ def main():
             checked='static int path_resolve(' in source
             wrapper=('#define CHECKED 1\nstatic int normalize(const char*c,const char*p,char*o,int n){return path_resolve(c,p,o,n);}' if checked else '#define CHECKED 0\nstatic int normalize(const char*c,const char*p,char*o,int n){path_resolve(c,p,o,n);return 0;}')
             code=h.replace('@WRAPPER@',wrapper)
+            if 'return vfs_normalize_path(' in source:
+                vfs=(subprocess.check_output(['git','show',ref+':kernel/fs/vfs.c'],text=True)
+                     if ref else (r/'kernel/fs/vfs.c').read_text(encoding='utf-8'))
+                code=code.replace('@NORMALIZE@',fn(vfs,'int vfs_normalize_path(')+'\n@NORMALIZE@')
             for marker,sig in [('@COPY@','static int copy_str_from_user('),('@CHECKEDCOPY@','static int copy_exec_string('),('@NORMALIZE@',('static int' if checked else 'static void')+' path_resolve('),('@COPY_PATH@','static int copy_path_from_user('),('@KAT@','int path_resolve_selftest(')]:
                 code=code.replace(marker,fn(source,sig))
             code=code.replace('static int copy_exec_string(', 'static __attribute__((unused)) int copy_exec_string(')

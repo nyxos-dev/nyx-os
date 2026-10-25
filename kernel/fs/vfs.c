@@ -372,7 +372,10 @@ static vfs_node_t* resolve_parent(const char* path, char* child_name) {
         char peek[MAX_NAME];
         char* after = path_token(next, peek);
         if (!after || !*peek) {
-            if (child_name) strncpy(child_name, token, MAX_NAME-1);
+            if (child_name) {
+                strncpy(child_name, token, MAX_NAME-1);
+                child_name[MAX_NAME-1] = '\0';
+            }
             return dir;
         }
         // `token` is an intermediate: it MUST already resolve to a directory, else the
@@ -1262,46 +1265,131 @@ void hide_file(const char* path) {
     (void)path;
 }
 
-void vfs_rename(const char* old, const char* new) {
-    char _ao[256], _an[256];
-    old = vfs_abs(old, _ao, sizeof(_ao));   // so `mv a b` in the mounted home
-    new = vfs_abs(new, _an, sizeof(_an));   // resolves both endpoints onto the disk
-    // If either endpoint is on a mounted FS, the ramdisk tree walk below can't
-    // find or place it. Fall back to copy-then-delete, which works for files
-    // across any mix of ramdisk and mounted FS (vfs_cp/vfs_unlink are both
-    // mount-aware). Directories on a mount aren't moved — that would need a
-    // recursive copy — and vfs_cp fails cleanly on them, so `old` is preserved.
-    if (vfs_find_mount(old) || vfs_find_mount(new)) {
-        if (vfs_cp(old, new) == 0)
-            vfs_unlink(old);
-        return;
+int vfs_normalize_path(const char* cwd, const char* path, char* out, int outsz) {
+    if (!path || !out || outsz < 2) return -1;
+    char buf[MAX_PATH];
+    size_t plen = strlen(path);
+    if (plen >= sizeof(buf)) return -1;
+    if (path[0] == '/') {
+        memcpy(buf, path, plen + 1);
+    } else {
+        const char* c = (cwd && cwd[0]) ? cwd : "/";
+        size_t clen = strlen(c);
+        if (clen + 1 + plen >= sizeof(buf)) return -1;
+        memcpy(buf, c, clen);
+        buf[clen] = '/';
+        memcpy(buf + clen + 1, path, plen + 1);
     }
-    char child_name[MAX_NAME];
-    vfs_node_t* parent = resolve_parent(old, child_name);
-    if (!parent) return;
-    vfs_node_t* ino = find_child(parent, child_name);
-    if (!ino) return;
-    char new_name[MAX_NAME];
-    vfs_node_t* new_parent = resolve_parent(new, new_name);
-    if (!new_parent) { strncpy(ino->name, new, MAX_NAME-1); return; }
-    if (new_parent != parent) {
-        // Append to the destination FIRST — if it's at MAX_CHILDREN, abort the move
-        // and leave `ino` in its original parent rather than orphaning it (or writing
-        // past the destination's children[]). The rename below only runs once the move
-        // has committed, so a dest-full failure leaves the source FULLY unchanged (it
-        // used to rename ino here first, so a failed cross-dir move left "/a/x" as "/a/y").
-        if (vfs_append_child(new_parent, ino) != 0) return;
-        for (uint32_t i = 0; i < parent->child_count; i++) {
-            if (parent->children[i] == ino) {
-                for (uint32_t j = i; j < parent->child_count - 1; j++)
-                    parent->children[j] = parent->children[j+1];
-                parent->child_count--;
-                break;
-            }
+    char* comps[32]; int nc = 0;
+    char* s = buf;
+    while (*s) {
+        while (*s == '/') s++;
+        if (!*s) break;
+        char* start = s;
+        while (*s && *s != '/') s++;
+        if (*s) *s++ = '\0';
+        if (start[0] == '.' && start[1] == '\0') continue;
+        if (start[0] == '.' && start[1] == '.' && start[2] == '\0') {
+            if (nc > 0) nc--;
+            continue;
         }
+        if (nc >= (int)(sizeof(comps) / sizeof(comps[0]))) return -1;
+        comps[nc++] = start;
+    }
+    size_t need = nc ? 0 : 1;
+    for (int i = 0; i < nc; i++) need += 1 + strlen(comps[i]);
+    if (need >= (size_t)outsz) return -1;
+    int o = 0;
+    if (nc == 0) out[o++] = '/';
+    else for (int i = 0; i < nc; i++) {
+        out[o++] = '/';
+        for (char* p = comps[i]; *p; p++) out[o++] = *p;
+    }
+    out[o] = '\0';
+    return 0;
+}
+
+static int vfs_move_path(const char* path, char* out) {
+    if (!path || !*path || vfs_normalize_path(vfs_getcwd(), path, out, MAX_PATH) < 0)
+        return -1;
+    const char* p = out;
+    while (*p) {
+        while (*p == '/') p++;
+        const char* start = p;
+        while (*p && *p != '/') p++;
+        if (p - start >= MAX_NAME) return -1;
+    }
+    return 0;
+}
+
+static int vfs_move_resolved(const char* old, const char* new) {
+    if (!strcmp(old, new)) return vfs_stat(old, NULL, NULL);
+    mount_entry_t* src_mount = vfs_find_mount(old);
+    mount_entry_t* dst_mount = vfs_find_mount(new);
+    if (src_mount || dst_mount) {
+        int64_t src_id = 0;
+        if (src_mount) {
+            if (!src_mount->resolve || !src_mount->unlink) return -1;
+            const char* sub = old + strlen(src_mount->mount_point);
+            src_id = src_mount->resolve(*sub ? sub : "/");
+            if (src_id <= 0) return -1;
+        }
+        if (dst_mount) {
+            if (!dst_mount->resolve || !dst_mount->write_file) return -1;
+            const char* sub = new + strlen(dst_mount->mount_point);
+            int64_t dst_id = dst_mount->resolve(*sub ? sub : "/");
+            if (dst_id < 0) return -1;
+            if (src_mount == dst_mount && src_id == dst_id) return 0;
+            if (dst_id > 0) return -1;
+        } else {
+            char name[MAX_NAME];
+            vfs_node_t* dst_parent = resolve_parent(new, name);
+            if (!dst_parent || dst_parent->type != 1 || find_child(dst_parent, name)) return -1;
+        }
+        // Copy/unlink is not atomic: a failed unlink can leave both copies.
+        if (vfs_cp(old, new) < 0) return -1;
+        return vfs_unlink(old);
+    }
+    char child_name[MAX_NAME], new_name[MAX_NAME];
+    vfs_node_t* parent = resolve_parent(old, child_name);
+    if (!parent) return -1;
+    vfs_node_t* ino = find_child(parent, child_name);
+    if (!ino) return -1;
+    vfs_node_t* new_parent = resolve_parent(new, new_name);
+    if (!new_parent || new_parent->type != 1) return -1;
+    vfs_node_t* occupied = find_child(new_parent, new_name);
+    if (occupied == ino) return 0;
+    if (occupied) return -1;
+    uint32_t depth = 0;
+    for (vfs_node_t* ancestor = new_parent; ancestor; ancestor = ancestor->parent) {
+        if (ancestor == ino) return -1;
+        if (ancestor == &nodes[0]) break;  // root is its own parent
+        if (++depth >= MAX_INODES) return -1;
+    }
+    uint32_t index;
+    for (index = 0; index < parent->child_count; index++)
+        if (parent->children[index] == ino) break;
+    if (index == parent->child_count) return -1;
+    if (new_parent != parent) {
+        if (vfs_append_child(new_parent, ino) < 0) return -1;
+        for (uint32_t j = index; j + 1 < parent->child_count; j++)
+            parent->children[j] = parent->children[j + 1];
+        parent->child_count--;
         ino->parent = new_parent;
     }
-    strncpy(ino->name, new_name, MAX_NAME-1);   // rename only after any cross-dir move succeeded
+    strcpy(ino->name, new_name);
+    return 0;
+}
+
+int vfs_rename(const char* old, const char* new) {
+    // Keep paths off the 4 KiB task stack across copy/unlink and the disk driver.
+    char* paths = (char*)kmalloc(2 * MAX_PATH);
+    if (!paths) return -1;
+    int result = -1;
+    if (vfs_move_path(old, paths) == 0 && vfs_move_path(new, paths + MAX_PATH) == 0)
+        result = vfs_move_resolved(paths, paths + MAX_PATH);
+    kfree(paths);
+    return result;
 }
 
 dirent_t* vfs_readdir(int fd) {
@@ -1888,9 +1976,8 @@ int vfs_cp(const char* src, const char* dst) {
                     if (ssize) {
                         dst_ino->data = (uint8_t*)kmalloc(ssize);
                         if (dst_ino->data) memcpy(dst_ino->data, sbuf, ssize);
-                        else dst_ino->size = 0;
                     }
-                    if (vfs_append_child(dst_parent, dst_ino) == 0) {
+                    if ((!ssize || dst_ino->data) && vfs_append_child(dst_parent, dst_ino) == 0) {
                         rc = 0;
                     } else {
                         if (dst_ino->data) kfree(dst_ino->data);

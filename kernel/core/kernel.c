@@ -9924,6 +9924,7 @@ static const char* path_into_dir_dest(const char* src, const char* dst, char* bu
     while (b > 0 && src[b - 1] != '/') b--;              // b = start of src's last component
     int dl = (int)strlen(dst);
     while (dl > 1 && dst[dl - 1] == '/') dl--;           // strip a trailing slash on dst
+    if (dl + 1 + sl - b >= bufsz) return NULL;
     int o = 0;
     for (int k = 0; k < dl && o < bufsz - 1; k++) buf[o++] = dst[k];
     if (o < bufsz - 1) buf[o++] = '/';
@@ -9944,6 +9945,7 @@ static void cmd_cp(int argc, char** argv) {
     // directory destination outright, so without this `cp file dir` just failed.
     char dstbuf[256];
     const char* dst = path_into_dir_dest(argv[1], argv[2], dstbuf, sizeof(dstbuf));
+    if (!dst) { printf("destination path too long\n"); return; }
     if (!path_last_component_ok(dst)) { printf("cp: invalid destination name '%s'\n", dst); return; }
     if (vfs_cp(argv[1], dst) < 0) printf("cp: failed to copy %s to %s\n", argv[1], dst);
 }
@@ -10206,8 +10208,10 @@ static void cmd_mv(int argc, char** argv) {
     // own name, colliding with the directory. Shared with cp via path_into_dir_dest.
     char dstbuf[256];
     const char* dst = path_into_dir_dest(argv[1], argv[2], dstbuf, sizeof(dstbuf));
+    if (!dst) { printf("destination path too long\n"); return; }
     if (!path_last_component_ok(dst)) { printf("mv: invalid destination name '%s'\n", dst); return; }
-    vfs_rename(argv[1], dst);
+    if (vfs_rename(argv[1], dst) < 0)
+        printf("mv: failed to move %s to %s (destination may exist)\n", argv[1], dst);
 }
 
 static void cmd_useradd(int argc, char** argv) {

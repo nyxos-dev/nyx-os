@@ -10,6 +10,44 @@ static int cmp_int(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+static int move_bytes(const char* path, const char* expected) {
+    char buf[16];
+    int fd = open(path, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    long n = read(fd, buf, sizeof(buf));
+    int closed = close(fd);
+    return closed == 0 && n == (long)strlen(expected) && !memcmp(buf, expected, n);
+}
+
+static int test_moves(void) {
+    char dir[64], a[80], b[80];
+    snprintf(dir, sizeof(dir), "/mnt/libctest-move-%d", (int)getpid());
+    if (mkdir(dir, 0755) < 0) return 0;
+    snprintf(a, sizeof(a), "%s/a", dir);
+    snprintf(b, sizeof(b), "%s/b", dir);
+    const char* paths[] = {a, b};
+    const char* data[] = {"KEEP", "STAY"};
+    int ok = 1;
+    for (int i = 0; i < 2; i++) {
+        int fd = open(paths[i], O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) { ok = 0; break; }
+        long written = write(fd, data[i], 4);
+        if (close(fd) < 0 || written != 4) { ok = 0; break; }
+    }
+    if (ok) ok = rename(a, a) == 0 && rename(a, b) < 0 &&
+                 move_bytes(a, "KEEP") && move_bytes(b, "STAY");
+    if (ok) ok = unlink(b) == 0;
+    for (int i = 0; ok && i < 16; i++) {
+        struct stat st;
+        ok = rename(a, b) == 0 && stat(a, &st) < 0 && move_bytes(b, "KEEP") &&
+             rename(b, a) == 0 && stat(b, &st) < 0 && move_bytes(a, "KEEP");
+    }
+    unlink(a);
+    unlink(b);
+    if (unlink(dir) < 0) ok = 0;
+    return ok;
+}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     int ok = 1;
@@ -70,6 +108,12 @@ int main(int argc, char** argv) {
         }
         printf("LIBCTEST: fileio(open/write/stat/lseek/read) %s\n", io_ok ? "PASS" : "FAIL");
         if (!io_ok) ok = 0;
+    }
+
+    {
+        int move_ok = test_moves();
+        printf("LIBCTEST: rename(no-op/collision/32 moves) %s\n", move_ok ? "PASS" : "FAIL");
+        if (!move_ok) ok = 0;
     }
 
     /* ctype (character classification/conversion) — a lexer's staples. */

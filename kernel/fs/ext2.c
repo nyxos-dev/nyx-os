@@ -566,7 +566,9 @@ int ext2_sync_bgd(uint32_t group) {
 
 int ext2_sync_superblock(void) {
     if (!ext2_fs.block_size || ext2_io_failed) return -1;
-    uint8_t sb_buf[1024];
+    // ext2_lock serializes callers; a dedicated buffer keeps nested move/write
+    // paths within the 4 KiB task stack without reusing a live block buffer.
+    static uint8_t sb_buf[1024];
     __builtin_memset(sb_buf, 0, 1024);
     __builtin_memcpy(sb_buf, &ext2_fs.sb, sizeof(ext2_superblock_t));
     if (write_sectors(2, 2, sb_buf) < 0) return -1;

@@ -962,6 +962,15 @@ The immediate data and desktop priorities are:
     File Manager translation and copy/move persistence remain separate work.
     See [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md).
 
+66. Development version 6.5.261 makes file moves report their real outcome,
+    preserves same-path files and refuses occupied destinations. RAM moves reject
+    invalid parents, cycles and capacity failures; mounted moves retain the source
+    when copying fails. The installed `mv` uses the existing syscall, and File
+    Manager retains its cut clipboard and error message on failure. Move-path
+    and EXT2 superblock buffers stay off the 4 KiB task stack; frame budgets and
+    target stack guards check the nested disk path. See [VFS_MOVES.md](VFS_MOVES.md) for the exact contract, verification and remaining
+    concurrency, copy-paste and power-loss limitations.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
