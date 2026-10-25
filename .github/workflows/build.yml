@@ -146,6 +146,9 @@ jobs:
       - name: Test timeout duration bounds and tick wrap
         run: python3 tools/test_timeout.py
 
+      - name: Test foreground terminal repaint gating
+        run: python3 tools/test_foreground_redraw.py
+
       - name: Test bounded IPv4 neighbour transmission
         run: python3 tools/test_ip_pending.py
 

@@ -704,7 +704,7 @@ static int run_foreground_elf_redir(const char* path, char* const* argv, int arg
         if (!child || child->state == PROC_ZOMBIE) break;
         if (child->state == PROC_STOPPED)     // no job control here: just resume
             signal_raise(child, SIGCONT);
-        compositor_redraw_now();
+        compositor_foreground_tick();
         sleep(60);
     }
     int code = find_process((uint32_t)pid) ? kwait((uint32_t)pid) : -1; // missing status is a failure
@@ -781,7 +781,7 @@ static void cmd_timeout(int argc, char** argv) {
             signal_raise(child, SIGKILL);
             timed_out = 1;
         }
-        compositor_redraw_now();
+        compositor_foreground_tick();
         sleep(60);
     }
     int code = find_process((uint32_t)pid) ? kwait((uint32_t)pid) : 0;   // reap

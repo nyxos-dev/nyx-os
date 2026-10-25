@@ -824,6 +824,30 @@ The immediate data and desktop priorities are:
     is inspected after recovery. General Internet compatibility, broader routing,
     fragmentation and socket lifetime/cancellation remain separate work.
 
+58. Development version 6.5.253 gates unchanged foreground terminal repaints.
+    The existing 60 ms wait remains; captured output requests the next paint and
+    quiet terminal/welcome scenes refresh after 500 ms. Visible other renderers,
+    animated wallpaper and notifications keep unconditional repainting. Forced
+    redraws and process-exit paints remain available; input ownership is unchanged.
+    See [PROCESS.md](PROCESS.md). Actual gate/capture code passes 29 sanitized host
+    checks with mocked time/rendering. Existing timeout (369), package install
+    (407 plus alias cases), terminal palette (241), capture ownership (15,312),
+    kernel pipe dispatch (16), desktop configuration (428) and idle (72) checks
+    pass. The warning-free build passes 230 kernel tests and four-CPU login.
+    Paired QEMU sessions use four qemu64 CPUs, 5 GiB, 1024x768, identical disk
+    inputs and three samples of about eight seconds per state. QEMU process CPU
+    time, as a percentage of one host core, changes from 65.7% to 41.1% for
+    canonical cat input wait and 71.8% to 42.2% for the raw shell wait. Ordinary
+    terminal idle is 36.1% versus 35.1%. These are host emulator measurements;
+    guest BSP percentages are recorded separately, not whole-machine usage.
+    Real PS/2 input checks canonical echo/EOF, raw shell commands/exit, timeout,
+    live top refresh, scheduler-demo heartbeats, dragging and a later command.
+    A separate ring-3 wintest displays changing pixels, completes 160 frames and
+    destroys its window. Two persistent fixtures remain byte-exact in both
+    target sessions. Exact-source CI is recorded separately. This bounded result
+    does not qualify other renderer costs, long sessions or physical hardware,
+    and does not make foreground jobs asynchronous.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

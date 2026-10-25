@@ -294,6 +294,24 @@ Each window owns its ANSI parser and displays partial lines without modifying
 its editable input. Descriptor redirection and pipe capture take precedence over
 session routing; foreground capture keeps its existing synchronous callback.
 
+### Foreground terminal repainting (6.5.253)
+
+The kernel's synchronous `exec` and `timeout` waits still yield for 60 ms per
+iteration. `compositor_foreground_tick` now uses the terminal capture revision
+to avoid painting an unchanged terminal scene on every iteration. New captured
+output is painted at the next pump; otherwise desktop indicators refresh after
+500 ms. The static welcome card also qualifies. Visible nonterminal renderers,
+animated wallpaper and notifications keep the previous unconditional path.
+Explicit forced redraws, including process exit, remain available.
+
+This reduces repeated software rendering while canonical or raw terminal reads
+wait for input. It does not change input ownership, make foreground execution
+asynchronous, or qualify the performance of other applications. Source:
+`kernel/gui/core/compositor.c`, `kernel/gui/apps/terminal_win.c` and the two
+foreground loops in `kernel/core/kernel.c`. `tools/test_foreground_redraw.py`
+executes the gate and capture code with mocked time and rendering; actual CPU
+and GUI evidence is scoped in [DAILY_USE.md](DAILY_USE.md).
+
 ## 10. Limits and non-goals
 
 - Up to **512** tasks and **32** open fds per process — fixed arrays, no dynamic

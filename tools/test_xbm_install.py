@@ -155,6 +155,7 @@ static int spawn_user_path_args_redir(const char* path, char* const* argv, int a
 }
 static process_t* find_process(uint32_t pid) { (void)pid; return child_exists ? &simulated_child : NULL; }
 static void compositor_redraw_now(void) {}
+#define compositor_foreground_tick compositor_redraw_now
 static void signal_raise(process_t* proc, int signal) { if (signal != SIGCONT) abort(); child_resumes++; proc->state = 1; }
 static void sleep(int milliseconds) { (void)milliseconds; child_sleeps++; simulated_child.state = PROC_ZOMBIE; if (child_vanish) child_exists = 0; }
 static int kwait(uint32_t pid) { (void)pid; child_waits++; return child_status; }

@@ -42,6 +42,7 @@ static void signal_raise(process_t* p, int sig) {
 }
 static uint32_t get_ticks(void) { return ticks; }
 static void compositor_redraw_now(void) { draws++; }
+#define compositor_foreground_tick compositor_redraw_now
 static void sleep(int ms) {
     CHECK(ms == 60 && elapsed < 10000000000ULL);
     ticks += step; elapsed += step;

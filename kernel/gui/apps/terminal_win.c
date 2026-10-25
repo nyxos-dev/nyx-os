@@ -343,9 +343,17 @@ static int terminal_output_putchar(terminal_win_t* t, int c) {
     }
     return c;
 }
+static uint32_t capture_revision;
+
+uint32_t terminal_capture_revision(void) {
+    return __atomic_load_n(&capture_revision, __ATOMIC_ACQUIRE);
+}
+
 int terminal_capture_putchar(int c) {
     if (!capture_term || !capture_term->capturing) return c;
-    return terminal_output_putchar(capture_term, c);
+    int result = terminal_output_putchar(capture_term, c);
+    __atomic_add_fetch(&capture_revision, 1, __ATOMIC_RELEASE);
+    return result;
 }
 
 static void terminal_flush_pending(terminal_win_t* t) {

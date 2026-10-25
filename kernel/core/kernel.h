@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.252"
+#define KERNEL_VERSION "6.5.253"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1161,6 +1161,7 @@ void rtc_read_time(rtc_time_t* time);
 // Compositor
 void compositor_init(void);
 void compositor_run(void);
-void compositor_redraw_now(void);   // one-shot recomposite (foreground-exec wait loop)
+void compositor_redraw_now(void);   // forced one-shot recomposite
+void compositor_foreground_tick(void); // output-aware foreground wait repaint
 
 #endif // KERNEL_H

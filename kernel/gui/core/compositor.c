@@ -2050,6 +2050,35 @@ void compositor_redraw_now(void) {
     frame_dirty = 0;
 }
 
+// A foreground terminal waiting for input has no new pixels. Keep its output
+// responsive at the existing pump cadence, but refresh quiet desktop indicators
+// only twice a second. The welcome card is static; other renderers and animated scenes retain the
+// unconditional path until they expose their own damage notifications.
+#define FOREGROUND_IDLE_REFRESH_MS 500u
+
+void compositor_foreground_tick(void) {
+    if (!fb_get_width() || !fb_get_height()) return;
+    static uint32_t last_revision, last_draw;
+    static int initialized;
+    uint32_t now = get_ticks();
+    uint32_t revision = terminal_capture_revision();
+    int continuous = wallpaper_animated() || notify_active_count(now);
+    for (int i = 0; i < MAX_WINDOWS && !continuous; i++) {
+        window_t* win = windows[i];
+        if (win && win->visible && win->state != WSTATE_MINIMIZED &&
+            win->workspace == current_workspace && win->draw != terminal_win_draw &&
+            win->draw != welcome_draw_fn)
+            continuous = 1;
+    }
+    if (initialized && !continuous && revision == last_revision &&
+        (uint32_t)(now - last_draw) < FOREGROUND_IDLE_REFRESH_MS) return;
+    // Snapshot before drawing so output produced during the paint is not lost.
+    last_revision = revision;
+    last_draw = now;
+    initialized = 1;
+    compositor_redraw_now();
+}
+
 // Dirty-rect groundwork (FLUIDEZ): is any window ABOVE `a` (higher z, so it draws
 // on top in redraw_all's sorted pass) overlapping a's footprint — INCLUDING the
 // drop-shadow margin, since a higher window's shadow can fall onto a? If so, a
