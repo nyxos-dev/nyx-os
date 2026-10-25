@@ -131,8 +131,44 @@ fork/exec churn. The pipe/sleep/futex and keyboard host regressions also pass.
 
 This protects object lifetime for PID-based posting. It does not make every
 signal field atomic, serialize all delivery-state transitions, implement
-process groups or change foreground ownership. Raw kernel shell readers and
-the GUI process monitor still require separate audits.
+process groups or change foreground ownership. Other raw kernel shell readers
+still require separate audits. Development 6.5.268 protects Monitor and kernel
+`ps` with owned records; see [PROCESS_SNAPSHOT.md](PROCESS_SNAPSHOT.md).
+
+## Stack-canary scan lifetime (6.5.269)
+
+`stackcheck` reads task canaries while holding `sched_lock`, excluding
+collector-claimed entries and tasks without a kernel stack. Excluding a claimed
+entry is necessary even under the lock: its collector frees the stack before
+reacquiring the lock to remove the process-table entry.
+
+The scan reserves a 2 KiB buffer for up to 512 damaged-stack PID values before
+locking. It releases the lock before formatting warnings or freeing that buffer;
+reporting retains no process or stack pointer. If allocation fails, the command
+prints `stackcheck: out of memory; scan not performed`. It does not report a
+successful inspection. The canary word, allocation stamping and overflow
+detection remain unchanged.
+
+`tools/test_stack_lifetime.py` passes 1,624 ASan/UBSan checks of the actual scan
+and shell reporting bodies. Cases cover intact and damaged stacks, null entries,
+missing stacks, collector-claimed freed stacks, all 512 entries, full-width PID
+reporting, allocation failure and collection immediately after unlock or during
+reporting. Controlled tests of 6.5.268 reproduce two heap-use-after-free paths:
+reading an already-freed claimed stack and reading the PID after its process
+is collected. These are host interleaving models, not newly reproduced guest
+crashes. The scan detects damage at inspection time; it does not prevent later
+overflow, serialize stack writes or replace guard pages.
+
+The warning-free kernel passes 230 self-tests and four-CPU startup. A four-CPU,
+5 GiB QEMU/TCG desktop run uses actual PS/2 input for 12 repeated scans while
+64 children exit at staggered times and their parent collects them. Completed
+scans overlap collection milestones; scans before and after the workload also
+pass. Both scheduler demo tasks finish their heartbeats, all three AP workers
+run, and two allocator stress runs report zero integrity errors, with balanced
+page counts on the second run. A later command and terminal drag succeed; two
+offline disk controls stay byte-identical and the disposable VM closes. These
+checks use default placement and do not force the host interleavings, qualify
+all SMP workloads or establish a CPU performance improvement.
 
 ## Remaining limits
 

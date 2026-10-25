@@ -1012,6 +1012,11 @@ The immediate data and desktop priorities are:
     its heap column without changing the userspace enumeration ABI, and clamps
     scrolling after collection. See [PROCESS_SNAPSHOT.md](PROCESS_SNAPSHOT.md).
 
+74. Development version 6.5.269 protects `stackcheck` from concurrent process
+    collection. The scan skips collector-claimed stacks and copies damaged
+    stack PID values before reporting. Allocation failure reports that the
+    scan was not performed. See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

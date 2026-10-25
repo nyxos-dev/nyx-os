@@ -119,18 +119,24 @@ static void* alloc_task_stack(void) {
     stack_canary_place(m);
     return m;
 }
-// Scan every live task's kernel-stack canary. Returns the count of SMASHED stacks (0 = all intact),
-// logging each. kernel_stack == stack_mem+4096, so the canary lives at kernel_stack-4096.
+// The collector frees claimed stacks outside sched_lock. Skip them even while
+// holding the lock, and retain only PID values for reporting after unlocking.
 int stack_canary_sweep(void) {
+    uint32_t* pids = kmalloc(MAX_PROCESSES * sizeof(*pids));
+    if (!pids) return -1;
     int smashed = 0;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
     for (int i = 0; i < process_count; i++) {
         process_t* p = process_table[i];
-        if (!p || !p->kernel_stack) continue;
+        if (!p || p->reap_claimed || !p->kernel_stack) continue;
         if (!stack_canary_intact((void*)((uintptr_t)p->kernel_stack - 4096))) {
-            smashed++;
-            printf("[STACKGUARD] pid %d: kernel stack canary SMASHED\n", p->pid);
+            pids[smashed++] = p->pid;
         }
     }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    for (int i = 0; i < smashed; i++)
+        printf("[STACKGUARD] pid %u: kernel stack canary SMASHED\n", pids[i]);
+    kfree(pids);
     return smashed;
 }
 // KAT: stamp a canary, confirm intact, corrupt a byte, confirm the check fails, restore.

@@ -145,6 +145,9 @@ jobs:
           python3 tools/test_process_reap.py
           python3 tools/test_scheduler_handoff.py
 
+      - name: Test stack-canary scan lifetime and allocation failure
+        run: python3 tools/test_stack_lifetime.py
+
       - name: Test memory reporting and free options
         run: |
           python3 tools/test_memory_reporting.py

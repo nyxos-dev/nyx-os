@@ -7673,7 +7673,8 @@ static void cmd_notify(int argc, char** argv) {
 static void cmd_stackcheck(int argc, char** argv) {
     (void)argc; (void)argv;
     int smashed = stack_canary_sweep();
-    if (smashed == 0) printf("stackcheck: all task kernel-stack canaries intact\n");
+    if (smashed < 0) printf("stackcheck: out of memory; scan not performed\n");
+    else if (smashed == 0) printf("stackcheck: all task kernel-stack canaries intact\n");
     else              printf("stackcheck: %d task kernel-stack(s) SMASHED\n", smashed);
 }
 
