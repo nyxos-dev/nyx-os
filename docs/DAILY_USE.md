@@ -645,6 +645,28 @@ The immediate data and desktop priorities are:
     no deterministic pre-fix QEMU crash is claimed. Remote CI is recorded
     separately after publication.
 
+50. Development version 6.5.245 removes the compositor's fixed 100,000-PAUSE
+    spin per iteration. Its existing 5 ms idle wait now depends on queued keys,
+    pointer/wheel changes and button transitions; an open menu or an unchanged
+    held button does not disable that wait. Network polling, background tasks,
+    application ticks and redraw processing retain their existing order.
+    The actual idle decision passes 72 ASan/UBSan host cases; 244 fails 24.
+    The 407 configuration checks and 230 QEMU kernel tests pass, with a
+    warning-free build and four-CPU boot. A separate graphical run checks a
+    four-stage interactive pipeline and EOF, scheduler heartbeats, terminal
+    dragging, subsequent commands and opening a disk file in the editor.
+    In paired QEMU TCG trials (four qemu64 CPUs, 5 GiB configured RAM, 1024x768,
+    static wallpaper), each idle state has three eight-second samples. QEMU
+    process CPU time divided by wall time is normalized to one host CPU:
+    terminal idle falls from 102.0% to 33.8%; open Start menu 111.8% to 33.7%;
+    context menu 111.8% to 34.2%; a stationary held button in terminal content
+    111.8% to 34.1%. The sampled guest BSP indicator is 0-1% after the change;
+    that counter is not host utilization or total multicore utilization.
+    These are bounded emulator measurements, not physical power measurements
+    or an idle-CPU guarantee. Active dragging, rendering effects, residual
+    emulator overhead, screensaver pacing and long sessions remain separate
+    performance work. Existing socket-return corruption is not fixed here.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

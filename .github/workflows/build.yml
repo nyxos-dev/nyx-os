@@ -97,7 +97,9 @@ jobs:
         run: python3 tools/test_window_minimize.py
 
       - name: Test desktop config persistence and session isolation
-        run: python3 tools/test_desktop_config.py
+        run: |
+          python3 tools/test_desktop_config.py
+          python3 tools/test_desktop_idle.py
 
       - name: Test terminal palettes, ANSI rendering and console capture ownership
         run: python3 tools/test_terminal_palette.py

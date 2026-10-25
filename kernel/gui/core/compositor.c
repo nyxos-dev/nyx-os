@@ -4522,17 +4522,12 @@ void compositor_run(void) {
     int drag_dmg_valid = 0, ddx = 0, ddy = 0, ddw = 0, ddh = 0;
     while (!quit) {
         drag_dmg_valid = 0;   // recomputed by the drag handler each iteration
-        // Idle-yield: when nothing is happening — no key queued, no mouse button
-        // held, the pointer hasn't moved, and no drag/resize/menu is active — sleep
-        // briefly instead of busy-polling, so background jobs (or the CPU itself)
-        // get the time. Any activity skips the sleep, so interactivity is unchanged;
-        // the wakeup is within ~5ms (imperceptible). sleep() blocks via the scheduler
-        // when it's running, or idles (hlt) to the tick otherwise.
-        if (!keyboard_has_input() && mouse_get_buttons() == 0 &&
+        // An open menu or a stationary held button is not new input. Yield until
+        // the next poll even during a drag; a press/release, motion or queued key
+        // skips this wait. Ticks, network and background work still run below.
+        if (!keyboard_has_input() && mouse_get_buttons() == prev_btns &&
             mouse_get_x() == mouse_x && mouse_get_y() == mouse_y &&
-            mouse_get_z() == mouse_z &&
-            !drag_id && !resize_id && drag_icon_idx < 0 &&
-            !ctx_menu_open && !start_menu_open) {
+            mouse_get_z() == mouse_z) {
             sleep(5);
         }
 
@@ -5431,7 +5426,6 @@ done_click:
             fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);   // erase the old cursor
             fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H); // draw the new one
         }
-        for (int d = 0; d < 100000; d++) __asm__ volatile("pause");
     }
 
     for (int i = 0; i < MAX_WINDOWS; i++)
