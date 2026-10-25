@@ -125,6 +125,9 @@ jobs:
           python3 tools/test_storage_errors.py
           python3 tools/test_ext2_io.py
 
+      - name: Test waited-child CPU reference cleanup
+        run: python3 tools/test_process_reap.py
+
       - name: Test memory reporting and free options
         run: |
           python3 tools/test_memory_reporting.py

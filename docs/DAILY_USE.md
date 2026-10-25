@@ -902,6 +902,20 @@ The immediate data and desktop priorities are:
     both produce the exact 301-byte trace and exit zero. N++ lowering remains on
     the host. These are bounded checks, not a long-session or hardware qualification.
 
+61. Development version 6.5.256 clears per-CPU references before freeing a child
+    collected by `waitpid`, and serializes its process-table compaction against
+    AP scans. The stale FPU owner reproduced on 6.5.255 is absent in the same
+    controlled QEMU case. Host checks cover wait results, resource handoff and
+    unrelated CPU owners; 308 checks pass and the previous source fails 64.
+    The warning-free image passes 230 kernel tests and four-CPU login. Seven
+    deliberate exception/lifetime cases pass, followed by normal thread use.
+    GUI checks pass two thread runs, 20 fork/exec/pipe rounds, socket replacement,
+    scheduler heartbeats, window movement and continued terminal input, with
+    unrelated disk files preserved. The opt-in AP-parent serial case still
+    times out returning to the kernel prompt after exit; general SMP churn,
+    remote-task quiescence and real userspace init are not claimed fixed.
+    See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md) for scope and remaining limits.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

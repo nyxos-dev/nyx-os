@@ -1124,8 +1124,7 @@ void irq_scheduler_tick(void) {
     // from process_table[current_idx].
     //
     // current_idx is an INDEX, and the reap paths (reap_zombies, do_waitpid)
-    // swap-remove from process_table — on any core, and in do_waitpid's case
-    // without even taking sched_lock. That compaction silently redirects the
+    // swap-remove from process_table — on any core. That compaction can redirect the
     // index at a different process. The comment 30 lines below already knew this
     // ("current_idx can come to point at an AP-pinned task... which can hold
     // anything") and guarded `cur->stack` against it — but the CR3 decision here
@@ -1302,10 +1301,13 @@ int do_waitpid(int wpid, int* out_code, int options) {
             if (child->page_directory && !addr_space_shared(child->page_directory, child))
                 free_page_directory((uint64_t*)child->page_directory);
             if (child->kernel_stack) kfree((void*)((uintptr_t)child->kernel_stack - 4096));
+            uint64_t sfl = spin_lock_irqsave(&sched_lock);
             int last = --process_count;                   // swap-remove, keeping current_idx valid
             process_table[zi] = process_table[last];
             process_table[last] = NULL;
             if (current_idx == last) current_idx = zi;
+            sched_forget(child);                          // also retire remote FPU ownership
+            spin_unlock_irqrestore(&sched_lock, sfl);
             kfree(child);
             break;
         }
