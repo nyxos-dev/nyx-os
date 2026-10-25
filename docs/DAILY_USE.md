@@ -589,6 +589,37 @@ The immediate data and desktop priorities are:
     instruction in its compiler-produced boot image. Publication of this change
     requires a verified build-baseline correction in a separate increment.
 
+48. Development version 6.5.243 selects the baseline x86-64 instruction set
+    explicitly for kernel and user C compilation, including TinyCC support
+    objects and the standalone DOOM build. Relevant objects depend on the
+    makefile, so an incremental build does not retain objects from the previous
+    architecture settings. Custom host compiler selection still works.
+    The 241 CI compile/host checks succeeded, but both boot jobs failed before
+    self-tests/login: its artifact contains BMI2 SHLX at init_memory address
+    0x12f542, unsupported by the documented qemu64 CPU. The exact downloaded CI
+    image reproduces that fault locally. This is distinct from the sleep/futex
+    return fixes and is retained as failed historical evidence.
+    The build-contract test simulates a v3 compiler default, expands 267 actual
+    kernel/user compilation recipes and captures four standalone DOOM commands
+    in a temporary tree. GCC feature queries verify that their target flags
+    disable post-baseline ISA extensions. The previous configuration fails.
+    The corrected local build emits no compiler/linker warnings; RTC, nine
+    assembly and 103 user-ELF metadata checks pass, along with 230 kernel tests
+    and four-CPU login. On the rebuilt image, actual PS/2 input runs libctest
+    with ALL PASS, two thread workloads with correct 8000 counters/heap/fds,
+    and the previous 21 signal/pipe checks. Four-stage terminal input/EOF,
+    six scheduler heartbeats, terminal drag and the next command pass.
+    Screenshots are inspected, both disk fixtures remain exact, and the VM
+    closes. These checks do not establish general hardware compatibility,
+    AVX context support, all DOOM gameplay paths or long-session stability.
+    Remote descendant CI is checked separately after publication.
+    A retained external probe initially faulted because its absolute printf
+    binding was 0x30001564 while the rebuilt libc exports 0x30001567. Relinking
+    that unchanged probe against the new libc resolves the fixture mismatch.
+    Bundled programs are relinked by make; persisted external binaries need
+    rebuilding when this shared-libc layout changes. A stable external ABI or
+    runtime symbol resolution remains separate work.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

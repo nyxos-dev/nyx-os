@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/nyxos-dev/nyx-os/releases/tag/v6.5.0-LTS"><img src="https://img.shields.io/badge/release-v6.5.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.5.242-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.5.243-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -74,7 +74,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.5.242 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.5.243 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768
@@ -188,6 +188,12 @@ NyxOS has a family of sibling ports in **17 languages** — and every one boots.
 ## Build & run
 
 **Prerequisites:** an `x86_64-elf` cross-toolchain (or host GCC with `-m64`), `nasm` ≥ 2.14, GNU make, and QEMU ≥ 8.0.
+
+Target C builds explicitly select `-march=x86-64 -mtune=generic`, including
+user programs and the standalone DOOM build. A host compiler that defaults to
+x86-64-v3 must not silently introduce BMI2/AVX instructions into Nyx binaries.
+Keep this baseline when using a custom compiler; it matches the documented
+QEMU CPU and the kernel's current floating-point context support.
 
 ```bash
 git clone https://github.com/nyxos-dev/nyx-os.git

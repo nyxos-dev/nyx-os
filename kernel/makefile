@@ -3,6 +3,9 @@
 # ============================================================
 
 CC = gcc
+# Keep target code independent of the host distribution/compiler ISA default.
+# qemu64 and the kernel FPU save path do not provide the x86-64-v3/AVX ABI.
+TARGET_CC = $(CC) -march=x86-64 -mtune=generic
 AS = nasm
 LD = ld
 OBJCOPY = objcopy
@@ -75,10 +78,10 @@ nyx-kernel.bin: $(OBJS) linker.ld
 # a change to ANY included header — kernel.h's KERNEL_VERSION, tcp.h's TCP_MAX_CONNS,
 # … — rebuilds the objects that include it. (kernel.h stays listed as a belt-and-
 # braces prereq for the very first build, before any .d files exist.)
-%.o: %.c core/kernel.h
-	$(CC) $(CFLAGS) -c $< -o $@
+%.o: %.c core/kernel.h makefile
+	$(TARGET_CC) $(CFLAGS) -c $< -o $@
 
-%.o: %.asm
+%.o: %.asm makefile
 	$(AS) $(ASFLAGS) $< -o $@
 
 # User-space programs (x86_64 native)
@@ -119,15 +122,15 @@ $(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/init.o
 $(USER_DIR)/args.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/args.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/args.o
 
-$(USER_DIR)/args.o: $(USER_DIR)/args.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/args.o: $(USER_DIR)/args.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Toolchain self-test (Phase 2): exercises the libc primitives the in-OS compiler needs.
 $(USER_DIR)/libctest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/libctest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/libctest.o
 
-$(USER_DIR)/libctest.o: $(USER_DIR)/libctest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/libctest.o: $(USER_DIR)/libctest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # ---- TinyCC port (Phase 2 in-OS C compiler) --------------------------------
 # Vendored TinyCC 0.9.27 (user/tcc/, LGPL) cross-compiled with host GCC against
@@ -138,16 +141,16 @@ $(USER_DIR)/libctest.o: $(USER_DIR)/libctest.c $(USER_DIR)/libc.h $(USER_DIR)/sy
 TCC_DIR    = $(USER_DIR)/tcc
 TCC_CFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -w \
              -I$(TCC_DIR)/nyxshim -I$(TCC_DIR) -I$(USER_DIR)
-$(TCC_DIR)/tcc_main.o: $(TCC_DIR)/tcc.c
-	$(CC) $(TCC_CFLAGS) -c $< -o $@
-$(TCC_DIR)/nyxshim.o: $(TCC_DIR)/nyxshim/nyxshim.c
-	$(CC) $(TCC_CFLAGS) -c $< -o $@
+$(TCC_DIR)/tcc_main.o: $(TCC_DIR)/tcc.c makefile
+	$(TARGET_CC) $(TCC_CFLAGS) -c $< -o $@
+$(TCC_DIR)/nyxshim.o: $(TCC_DIR)/nyxshim/nyxshim.c makefile
+	$(TARGET_CC) $(TCC_CFLAGS) -c $< -o $@
 # libtcc1: tcc's own runtime library (float<->64-bit-int + long-double helpers its
 # codegen emits, e.g. __floatundixf/__fixunsxfdi). Header-free; built as a NyxOS-target
 # object and shipped in the initramfs as /libtcc1.o, so the in-OS `cc` can LINK the
 # tcc-built tcc_self.o into a runnable tcc_self.elf (v6.4.11).
-$(TCC_DIR)/libtcc1.o: $(TCC_DIR)/lib/libtcc1.c
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(TCC_DIR)/include -c $< -o $@
+$(TCC_DIR)/libtcc1.o: $(TCC_DIR)/lib/libtcc1.c makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(TCC_DIR)/include -c $< -o $@
 $(USER_DIR)/tcc.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.o $(TCC_DIR)/nyxshim.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.o $(TCC_DIR)/nyxshim.o
 
@@ -155,103 +158,103 @@ $(USER_DIR)/tcc.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.
 $(USER_DIR)/fault.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/fault.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/fault.o
 
-$(USER_DIR)/fault.o: $(USER_DIR)/fault.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/fault.o: $(USER_DIR)/fault.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Catchable-SIGSEGV demo (installs a handler, derefs NULL, recovers via longjmp).
 $(USER_DIR)/segv.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/segv.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/segv.o
-$(USER_DIR)/segv.o: $(USER_DIR)/segv.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/segv.o: $(USER_DIR)/segv.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Userspace TCP sockets demo (connects to the kernel loopback echo on 127.0.0.1:7).
 $(USER_DIR)/sockdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sockdemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/sockdemo.o
-$(USER_DIR)/sockdemo.o: $(USER_DIR)/sockdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sockdemo.o: $(USER_DIR)/sockdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Userspace TCP server demo (fork: parent bind/listen/accepts, child connects).
 $(USER_DIR)/srvdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/srvdemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/srvdemo.o
-$(USER_DIR)/srvdemo.o: $(USER_DIR)/srvdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/srvdemo.o: $(USER_DIR)/srvdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Userspace UDP sockets demo (SOCK_DGRAM sendto/recvfrom over loopback).
 $(USER_DIR)/udpdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/udpdemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/udpdemo.o
-$(USER_DIR)/udpdemo.o: $(USER_DIR)/udpdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/udpdemo.o: $(USER_DIR)/udpdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # nc — netcat: bridge stdin/stdout to a TCP or UDP socket.
 $(USER_DIR)/nc.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/nc.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/nc.o
-$(USER_DIR)/nc.o: $(USER_DIR)/nc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/nc.o: $(USER_DIR)/nc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # wget — userspace HTTP/1.0 client (TCP sockets + a DNS-over-UDP resolver).
 $(USER_DIR)/wget.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/wget.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/wget.o
-$(USER_DIR)/wget.o: $(USER_DIR)/wget.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/wget.o: $(USER_DIR)/wget.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # netstorm — concurrent multi-process TCP stress repro (fork + loopback echo).
 $(USER_DIR)/netstorm.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/netstorm.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/netstorm.o
-$(USER_DIR)/netstorm.o: $(USER_DIR)/netstorm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/netstorm.o: $(USER_DIR)/netstorm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # stat — demo of the v5.8.80 POSIX syscalls (stat/fstat/lseek/getppid).
 $(USER_DIR)/stat.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/stat.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/stat.o
-$(USER_DIR)/stat.o: $(USER_DIR)/stat.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/stat.o: $(USER_DIR)/stat.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # vfsfill — VFS directory-child-cap hardening test (v5.8.81)
 $(USER_DIR)/vfsfill.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/vfsfill.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/vfsfill.o
-$(USER_DIR)/vfsfill.o: $(USER_DIR)/vfsfill.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/vfsfill.o: $(USER_DIR)/vfsfill.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # fsx — dup / rename / per-process cwd demo (v5.8.82)
 $(USER_DIR)/fsx.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/fsx.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/fsx.o
-$(USER_DIR)/fsx.o: $(USER_DIR)/fsx.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/fsx.o: $(USER_DIR)/fsx.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # vmtest — proves the user/kernel address boundary (user_v2p hardening)
 $(USER_DIR)/vmtest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/vmtest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/vmtest.o
-$(USER_DIR)/vmtest.o: $(USER_DIR)/vmtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/vmtest.o: $(USER_DIR)/vmtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 # stacktest — demand-grown user stack + guard-page demo (v5.8.85)
 $(USER_DIR)/stacktest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/stacktest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/stacktest.o
-$(USER_DIR)/stacktest.o: $(USER_DIR)/stacktest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/stacktest.o: $(USER_DIR)/stacktest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # threads — clone(CLONE_VM) + futex mutex demo (v5.8.87)
 $(USER_DIR)/threads.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/threads.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/threads.o
-$(USER_DIR)/threads.o: $(USER_DIR)/threads.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/threads.o: $(USER_DIR)/threads.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # sigrec — multi-fault recovery demo (sigsetjmp/siglongjmp catch repeated SIGSEGV).
 $(USER_DIR)/sigrec.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sigrec.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/sigrec.o
-$(USER_DIR)/sigrec.o: $(USER_DIR)/sigrec.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sigrec.o: $(USER_DIR)/sigrec.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # alarmdemo — timer-driven SIGALRM via alarm().
 $(USER_DIR)/alarmdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/alarmdemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/alarmdemo.o
-$(USER_DIR)/alarmdemo.o: $(USER_DIR)/alarmdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/alarmdemo.o: $(USER_DIR)/alarmdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # polldemo — poll() I/O multiplexing over a pipe + a socket.
 $(USER_DIR)/polldemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/polldemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/polldemo.o
-$(USER_DIR)/polldemo.o: $(USER_DIR)/polldemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/polldemo.o: $(USER_DIR)/polldemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # The pager. less.elf and more.elf are the same program (full-screen pager).
 $(USER_DIR)/less.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/less.o
@@ -260,18 +263,18 @@ $(USER_DIR)/less.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/less.o
 $(USER_DIR)/more.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/less.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/less.o
 
-$(USER_DIR)/less.o: $(USER_DIR)/less.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/less.o: $(USER_DIR)/less.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # pstorm + bigread: deterministic fork+pipe+execve churn reproducer (debug-only).
 $(USER_DIR)/pstorm.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/pstorm.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/pstorm.o
-$(USER_DIR)/pstorm.o: $(USER_DIR)/pstorm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/pstorm.o: $(USER_DIR)/pstorm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/bigread.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/bigread.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/bigread.o
-$(USER_DIR)/bigread.o: $(USER_DIR)/bigread.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/bigread.o: $(USER_DIR)/bigread.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # The userspace shell + its coreutils (crt0 + libc + program)
 $(USER_DIR)/sh.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sh.o
@@ -352,117 +355,117 @@ $(USER_DIR)/date.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/date.o
 
 $(USER_DIR)/cal.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/cal.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/cal.o
-$(USER_DIR)/cal.o: $(USER_DIR)/cal.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/cal.o: $(USER_DIR)/cal.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/xxd.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/xxd.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/xxd.o
-$(USER_DIR)/xxd.o: $(USER_DIR)/xxd.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/xxd.o: $(USER_DIR)/xxd.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/tr.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/tr.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/tr.o
-$(USER_DIR)/tr.o: $(USER_DIR)/tr.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/tr.o: $(USER_DIR)/tr.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/fold.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/fold.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/fold.o
-$(USER_DIR)/fold.o: $(USER_DIR)/fold.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/fold.o: $(USER_DIR)/fold.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/cksum.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/cksum.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/cksum.o
-$(USER_DIR)/cksum.o: $(USER_DIR)/cksum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/cksum.o: $(USER_DIR)/cksum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/base64.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/base64.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/base64.o
-$(USER_DIR)/base64.o: $(USER_DIR)/base64.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/base64.o: $(USER_DIR)/base64.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/base32.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/base32.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/base32.o
-$(USER_DIR)/base32.o: $(USER_DIR)/base32.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/base32.o: $(USER_DIR)/base32.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/comm.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/comm.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/comm.o
-$(USER_DIR)/comm.o: $(USER_DIR)/comm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/comm.o: $(USER_DIR)/comm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/join.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/join.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/join.o
-$(USER_DIR)/join.o: $(USER_DIR)/join.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/join.o: $(USER_DIR)/join.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/cmp.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/cmp.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/cmp.o
-$(USER_DIR)/cmp.o: $(USER_DIR)/cmp.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/cmp.o: $(USER_DIR)/cmp.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/sum.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sum.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/sum.o
-$(USER_DIR)/sum.o: $(USER_DIR)/sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sum.o: $(USER_DIR)/sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/column.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/column.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/column.o
-$(USER_DIR)/column.o: $(USER_DIR)/column.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/column.o: $(USER_DIR)/column.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/printf.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/printf.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/printf.o
-$(USER_DIR)/printf.o: $(USER_DIR)/printf.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/printf.o: $(USER_DIR)/printf.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/dd.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/dd.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/dd.o
-$(USER_DIR)/dd.o: $(USER_DIR)/dd.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/dd.o: $(USER_DIR)/dd.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/tee.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/tee.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/tee.o
-$(USER_DIR)/tee.o: $(USER_DIR)/tee.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/tee.o: $(USER_DIR)/tee.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/paste.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/paste.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/paste.o
-$(USER_DIR)/paste.o: $(USER_DIR)/paste.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/paste.o: $(USER_DIR)/paste.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/factor.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/factor.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/factor.o
-$(USER_DIR)/factor.o: $(USER_DIR)/factor.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/factor.o: $(USER_DIR)/factor.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/expand.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/expand.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/expand.o
-$(USER_DIR)/expand.o: $(USER_DIR)/expand.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/expand.o: $(USER_DIR)/expand.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/od.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/od.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/od.o
-$(USER_DIR)/od.o: $(USER_DIR)/od.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/od.o: $(USER_DIR)/od.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/basename.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/basename.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/basename.o
-$(USER_DIR)/basename.o: $(USER_DIR)/basename.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/basename.o: $(USER_DIR)/basename.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/dirname.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/dirname.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/dirname.o
-$(USER_DIR)/dirname.o: $(USER_DIR)/dirname.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/dirname.o: $(USER_DIR)/dirname.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/unexpand.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/unexpand.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/unexpand.o
-$(USER_DIR)/unexpand.o: $(USER_DIR)/unexpand.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/unexpand.o: $(USER_DIR)/unexpand.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/sha256sum.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sha256sum.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/sha256sum.o
-$(USER_DIR)/sha256sum.o: $(USER_DIR)/sha256sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sha256sum.o: $(USER_DIR)/sha256sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/md5sum.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/md5sum.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/md5sum.o
-$(USER_DIR)/md5sum.o: $(USER_DIR)/md5sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/md5sum.o: $(USER_DIR)/md5sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/rev.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/rev.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/rev.o
-$(USER_DIR)/rev.o: $(USER_DIR)/rev.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/rev.o: $(USER_DIR)/rev.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/split.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/split.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/split.o
-$(USER_DIR)/split.o: $(USER_DIR)/split.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/split.o: $(USER_DIR)/split.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/sha512sum.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sha512sum.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/sha512sum.o
-$(USER_DIR)/sha512sum.o: $(USER_DIR)/sha512sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sha512sum.o: $(USER_DIR)/sha512sum.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/sleep.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/sleep.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/sleep.o
@@ -485,130 +488,130 @@ $(USER_DIR)/which.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/which.
 $(USER_DIR)/clear.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/clear.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/clear.o
 
-$(USER_DIR)/sh.o: $(USER_DIR)/sh.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sh.o: $(USER_DIR)/sh.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/echo.o: $(USER_DIR)/echo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/echo.o: $(USER_DIR)/echo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/upper.o: $(USER_DIR)/upper.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/upper.o: $(USER_DIR)/upper.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/cat.o: $(USER_DIR)/cat.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/cat.o: $(USER_DIR)/cat.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/wc.o: $(USER_DIR)/wc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/wc.o: $(USER_DIR)/wc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/ls.o: $(USER_DIR)/ls.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/ls.o: $(USER_DIR)/ls.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/grep.o: $(USER_DIR)/grep.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/grep.o: $(USER_DIR)/grep.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/head.o: $(USER_DIR)/head.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/head.o: $(USER_DIR)/head.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/uniq.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/uniq.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/uniq.o
-$(USER_DIR)/uniq.o: $(USER_DIR)/uniq.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/uniq.o: $(USER_DIR)/uniq.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/cut.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/cut.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/cut.o
-$(USER_DIR)/cut.o: $(USER_DIR)/cut.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/cut.o: $(USER_DIR)/cut.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/nl.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/nl.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/nl.o
-$(USER_DIR)/nl.o: $(USER_DIR)/nl.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/nl.o: $(USER_DIR)/nl.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/tac.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/tac.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/tac.o
-$(USER_DIR)/tac.o: $(USER_DIR)/tac.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/tac.o: $(USER_DIR)/tac.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/seq.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/seq.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/seq.o
-$(USER_DIR)/seq.o: $(USER_DIR)/seq.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/seq.o: $(USER_DIR)/seq.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/diff.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/diff.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/diff.o
-$(USER_DIR)/diff.o: $(USER_DIR)/diff.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/diff.o: $(USER_DIR)/diff.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/tail.o: $(USER_DIR)/tail.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/tail.o: $(USER_DIR)/tail.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/mkdir.o: $(USER_DIR)/mkdir.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/mkdir.o: $(USER_DIR)/mkdir.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/rm.o: $(USER_DIR)/rm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/rm.o: $(USER_DIR)/rm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/touch.o: $(USER_DIR)/touch.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/touch.o: $(USER_DIR)/touch.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/sort.o: $(USER_DIR)/sort.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sort.o: $(USER_DIR)/sort.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/find.o: $(USER_DIR)/find.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/find.o: $(USER_DIR)/find.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/ps.o: $(USER_DIR)/ps.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/ps.o: $(USER_DIR)/ps.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/kill.o: $(USER_DIR)/kill.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/kill.o: $(USER_DIR)/kill.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/top.o: $(USER_DIR)/top.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/top.o: $(USER_DIR)/top.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/edit.o: $(USER_DIR)/edit.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/edit.o: $(USER_DIR)/edit.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/dltest.o: $(USER_DIR)/dltest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/dltest.o: $(USER_DIR)/dltest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/libdemo.o: $(USER_DIR)/libdemo.c
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/libdemo.o: $(USER_DIR)/libdemo.c makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/pmap.o: $(USER_DIR)/pmap.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/pmap.o: $(USER_DIR)/pmap.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/free.o: $(USER_DIR)/free.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/free.o: $(USER_DIR)/free.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/env.o: $(USER_DIR)/env.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/env.o: $(USER_DIR)/env.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/date.o: $(USER_DIR)/date.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/date.o: $(USER_DIR)/date.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/sleep.o: $(USER_DIR)/sleep.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/sleep.o: $(USER_DIR)/sleep.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/cp.o: $(USER_DIR)/cp.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/cp.o: $(USER_DIR)/cp.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/mv.o: $(USER_DIR)/mv.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/mv.o: $(USER_DIR)/mv.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/uname.o: $(USER_DIR)/uname.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/uname.o: $(USER_DIR)/uname.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/whoami.o: $(USER_DIR)/whoami.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/whoami.o: $(USER_DIR)/whoami.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/which.o: $(USER_DIR)/which.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/which.o: $(USER_DIR)/which.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/clear.o: $(USER_DIR)/clear.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/clear.o: $(USER_DIR)/clear.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm
+$(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm makefile
 	nasm -f elf64 $< -o $@
 
 # Nyx C "hello": crt0 + runtime + transpiled output. Reuses the existing crt0
@@ -617,14 +620,14 @@ $(USER_DIR)/hello_nyx.elf: $(USER_DIR)/crt0.o $(USER_DIR)/nyxrt.o $(USER_DIR)/he
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ \
 	    $(USER_DIR)/crt0.o $(USER_DIR)/nyxrt.o $(USER_DIR)/hello_nyx.o
 
-$(USER_DIR)/nyxrt.o: $(USER_DIR)/nyxrt.c $(USER_DIR)/nyxrt.h
-	$(CC) $(NYXCFLAGS) -c $< -o $@
+$(USER_DIR)/nyxrt.o: $(USER_DIR)/nyxrt.c $(USER_DIR)/nyxrt.h makefile
+	$(TARGET_CC) $(NYXCFLAGS) -c $< -o $@
 
-$(USER_DIR)/hello_nyx.o: $(USER_DIR)/hello_nyx.c $(USER_DIR)/nyxrt.h
-	$(CC) $(NYXCFLAGS) -c $< -o $@
+$(USER_DIR)/hello_nyx.o: $(USER_DIR)/hello_nyx.c $(USER_DIR)/nyxrt.h makefile
+	$(TARGET_CC) $(NYXCFLAGS) -c $< -o $@
 
-$(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Shared libc: libc.o prelinked at the fixed VA SHARED_LIBC_BASE (0x30000000). The
 # kernel loads this at boot and maps it into every process; programs link against
@@ -638,11 +641,11 @@ $(USER_DIR)/libc.so: $(USER_DIR)/libc.o
 # user/tcc/lib/va_list.c into a small object shipped in the initramfs. `cc` links it so
 # tcc-compiled code that DEFINES a varargs function (tcc's <stdarg.h> lowers va_start/
 # va_arg to these) can link. It references only memset + abort, both in our libc.o. (v6.3.5)
-$(USER_DIR)/va_list.o: $(TCC_DIR)/lib/va_list.c
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -c $< -o $@
+$(USER_DIR)/va_list.o: $(TCC_DIR)/lib/va_list.c makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -c $< -o $@
 
-$(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # Generate initramfs C header.
 # FORCE + content-compare: the recipe runs on EVERY make (FORCE is a phony that is
@@ -658,7 +661,7 @@ fs/initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USE
 	@python3 $(MKINITRAMFS) $@.tmp c >/dev/null
 	@if cmp -s $@.tmp $@ 2>/dev/null; then rm -f $@.tmp; else mv $@.tmp $@; echo "  [initramfs] regenerated $@"; fi
 
-initramfs.o: initramfs.c fs/initramfs_data.h
+initramfs.o: initramfs.c fs/initramfs_data.h makefile
 
 .PHONY: FORCE
 FORCE:
@@ -691,57 +694,57 @@ clean:
 # layer + doom_userlibc (the syscall-backed libc) with system gcc and links crt0 with
 # NO libc.so. See user/build_doom.sh; it self-locates, so `make` triggers it here and
 # mkinitramfs then globs the resulting user/doom.elf into the image as `/doom.elf`.
-$(USER_DIR)/doom.elf: $(USER_DIR)/doomgeneric_nyxos.c $(USER_DIR)/doom_userlibc.c $(USER_DIR)/doom_nullsound.c $(USER_DIR)/build_doom.sh $(USER_DIR)/crt0.o
-	bash $(USER_DIR)/build_doom.sh
+$(USER_DIR)/doom.elf: $(USER_DIR)/doomgeneric_nyxos.c $(USER_DIR)/doom_userlibc.c $(USER_DIR)/doom_nullsound.c $(USER_DIR)/build_doom.sh $(USER_DIR)/crt0.o makefile
+	CC="$(TARGET_CC)" LD="$(LD)" bash $(USER_DIR)/build_doom.sh
 
 # munmaptest: partial-munmap VMA split/trim test (v5.9.27)
 $(USER_DIR)/munmaptest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/munmaptest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/munmaptest.o
-$(USER_DIR)/munmaptest.o: $(USER_DIR)/munmaptest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/munmaptest.o: $(USER_DIR)/munmaptest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # mprotecttest: partial-mprotect VMA split test (v5.9.28)
 $(USER_DIR)/mprotecttest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/mprotecttest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/mprotecttest.o
-$(USER_DIR)/mprotecttest.o: $(USER_DIR)/mprotecttest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/mprotecttest.o: $(USER_DIR)/mprotecttest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # fbtest: fullscreen framebuffer syscalls test (v5.9.29 DOOM enabler)
 $(USER_DIR)/fbtest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/fbtest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/fbtest.o
-$(USER_DIR)/fbtest.o: $(USER_DIR)/fbtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/fbtest.o: $(USER_DIR)/fbtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # keyevtest: raw key-event path test (v5.9.30 DOOM DG_GetKey enabler)
 $(USER_DIR)/keyevtest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/keyevtest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/keyevtest.o
-$(USER_DIR)/keyevtest.o: $(USER_DIR)/keyevtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/keyevtest.o: $(USER_DIR)/keyevtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # wintest: user-space window syscalls test (v6.4.354, #77) — opens a real desktop window
 $(USER_DIR)/wintest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/wintest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/wintest.o
-$(USER_DIR)/wintest.o: $(USER_DIR)/wintest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h $(USER_DIR)/uwin.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/wintest.o: $(USER_DIR)/wintest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h $(USER_DIR)/uwin.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # test / [ (POSIX conditional) + true + false: shell-scripting primitives
 $(USER_DIR)/test.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/test.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/test.o
-$(USER_DIR)/test.o: $(USER_DIR)/test.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/test.o: $(USER_DIR)/test.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/true.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/true.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/true.o
-$(USER_DIR)/true.o: $(USER_DIR)/true.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/true.o: $(USER_DIR)/true.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/false.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/false.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/false.o
-$(USER_DIR)/false.o: $(USER_DIR)/false.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/false.o: $(USER_DIR)/false.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/yes.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/yes.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/yes.o
-$(USER_DIR)/yes.o: $(USER_DIR)/yes.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/yes.o: $(USER_DIR)/yes.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 $(USER_DIR)/arch.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/arch.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/arch.o
-$(USER_DIR)/arch.o: $(USER_DIR)/arch.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
-	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/arch.o: $(USER_DIR)/arch.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h makefile
+	$(TARGET_CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@

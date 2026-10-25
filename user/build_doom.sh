@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/kernel/doom_src"
 OUT="$ROOT/user/doom_obj"; mkdir -p "$OUT"
 CC=${CC:-gcc}; LD=${LD:-ld}
-CF="-std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -fcommon -fno-builtin \
+CF="-std=gnu99 -Os -ffreestanding -nostdlib -m64 -march=x86-64 -mtune=generic -mno-red-zone -fcommon -fno-builtin \
   -fno-tree-loop-distribute-patterns -w -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 \
   -DNORMALUNIX -I$SRC -I$ROOT/user"
 # Exclude the other platforms' backends and the SDL/allegro/GUS sound; doom_utils is

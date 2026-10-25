@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise bounded RTC sampling and inspect built ELF stack declarations."""
+"""Check target CPU flags, bounded RTC sampling and ELF stack declarations."""
 import os
+import re
 from pathlib import Path
 import shlex
 import struct
@@ -8,6 +9,49 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def check_cpu_baseline():
+    # Emulate a distribution whose compiler defaults to v3. Inspect the actual
+    # expanded recipes, then ask GCC which ISA features their target flags enable.
+    commands = subprocess.check_output(
+        ['make', '-C', str(ROOT / 'kernel'), '-Bn', '--no-print-directory',
+         'CC=gcc -march=x86-64-v3', 'all'], text=True)
+    recipes = [shlex.split(line) for line in commands.splitlines()
+               if line.startswith('gcc ') and ' -c ' in line]
+    if len(recipes) < 100:
+        raise RuntimeError('Expected kernel and user C compilation recipes')
+    flag_sets = {tuple(arg for arg in recipe[1:] if arg.startswith('-m'))
+                 for recipe in recipes}
+    # DOOM can also be built directly, outside make. Exercise its shell-expanded
+    # flags in a temporary source tree, with capture tools instead of a linker.
+    with tempfile.TemporaryDirectory(prefix='nyx-cpu-contract-') as temporary:
+        work = Path(temporary)
+        (work / 'user').mkdir()
+        (work / 'kernel/doom_src').mkdir(parents=True)
+        script = work / 'user/build_doom.sh'
+        script.write_bytes((ROOT / 'user/build_doom.sh').read_bytes())
+        (work / 'kernel/doom_src/probe.c').touch()
+        capture = work / 'capture'
+        capture.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CAPTURE_LOG"\n')
+        capture.chmod(0o755)
+        env = dict(os.environ, CC=str(capture)+' -march=x86-64-v3', LD=str(capture),
+                   CAPTURE_LOG=str(work / 'commands'))
+        subprocess.run(['bash', str(script)], env=env, check=True, capture_output=True)
+        doom_recipes = [shlex.split(line) for line in (work / 'commands').read_text().splitlines()
+                        if ' -c ' in line]
+        assert len(doom_recipes) == 4
+        flag_sets.update(tuple(arg for arg in recipe if arg.startswith('-m'))
+                         for recipe in doom_recipes)
+    forbidden = {'__AVX__', '__AVX2__', '__BMI__', '__BMI2__', '__FMA__',
+                 '__F16C__', '__LZCNT__', '__POPCNT__', '__SSE3__', '__SSSE3__',
+                 '__SSE4_1__', '__SSE4_2__'}
+    for flags in flag_sets:
+        macros = subprocess.check_output(['gcc', *flags, '-dM', '-E', '-x', 'c', '-'], input='', text=True)
+        enabled = set(re.findall(r'^#define (\w+)', macros, re.M))
+        if enabled & forbidden:
+            raise RuntimeError(f'Target recipe requires unsupported CPU features: {sorted(enabled & forbidden)}; {flags}')
+    print(f'OK: CPU baseline for {len(recipes)} expanded kernel/user recipes and four standalone DOOM recipes, with simulated v3 compiler default')
 HARNESS = r'''
 #include "@ROOT@/kernel/core/kernel.h"
 static void test_outb(uint16_t port, uint8_t value);
@@ -95,6 +139,7 @@ def check_metadata():
 
 
 def main():
+    check_cpu_baseline()
     cc = shlex.split(os.environ.get("CC", "cc"))
     with tempfile.TemporaryDirectory(prefix="nyx-build-contract-") as temporary:
         work = Path(temporary)
