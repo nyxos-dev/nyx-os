@@ -667,6 +667,29 @@ The immediate data and desktop priorities are:
     emulator overhead, screensaver pacing and long sessions remain separate
     performance work. Existing socket-return corruption is not fixed here.
 
+51. Development version 6.5.246 preserves per-CPU user CR3/RSP across the
+    blocking connect, accept, TCP read and UDP recvfrom calls. It masks interrupts
+    before restoring those slots, before copyout, descriptor allocation or return.
+    Socket polling, wait bounds and transport semantics are unchanged.
+    The actual syscall bodies pass 51 ASan/UBSan host cases covering immediate
+    and repeated waits, data/error/zero returns, allocation failure, descriptor
+    rejection/exhaustion and copyout failure. Version 245 fails 28 of these cases.
+    Scheduling and transport are mocked in that host test; disassembly separately
+    confirms CLI precedes the restored slots in all four compiled paths.
+    The corrected four-byte delayed UDP reproducer now returns exact data and
+    reaps its child successfully in QEMU. Existing sockdemo and udpdemo gain
+    `--wait-return` checks with separate child sockets and copy-on-write sentinels;
+    delayed accept/read, UDP sender metadata and empty-queue timeout pass. The
+    existing netstorm completes four children and 100 echo round trips without
+    corruption, compared with four faulting children on the audited 244 baseline.
+    Default TCP/UDP demos, poll multiplexing, four loopback pings, TCP loopback
+    with and without a dropped packet, and RTL8139/slirp DHCP pass. A warning-free
+    build, 230 kernel tests, four-CPU boot, scheduler heartbeats and graphical
+    terminal interaction pass; two disk fixtures remain exact. These bounded
+    checks do not establish general socket lifetime, fork descriptor inheritance,
+    signal cancellation or physical-network stability. TCP receive still returns
+    zero for both closure and timeout. Exact-source remote CI is recorded separately.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

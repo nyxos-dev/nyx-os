@@ -817,7 +817,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (internal & UFD_SOCK_FLAG) {                 /* socket read -> tcp_recv (blocks) */
                 char* sbuf = (char*)kmalloc(count);
                 if (!sbuf) return -1;
+                uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
                 int n = nsock_recv(UFD_SOCK_ID(internal), sbuf, count);
+                __asm__ volatile("cli" ::: "memory");
+                user_cr3 = saved_cr3;
+                user_rsp = saved_ursp;
                 if (n > 0 && copy_to_user(a2, sbuf, n) != 0) n = -1;
                 kfree(sbuf);
                 return n;                                    /* 0 = peer closed the connection */
@@ -880,7 +884,15 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             int internal;
             if (ufd_lookup((int)a1, &internal) != 0) return -1;
             if (!(internal & UFD_SOCK_FLAG)) return -1;
-            return nsock_connect(UFD_SOCK_ID(internal), (uint32_t)a2, (uint16_t)a3);
+            /* Socket waits yield through sleep(), which can leave IRQs enabled
+             * and per-CPU return slots overwritten by another process. Restore
+             * our slots with IRQs masked before any copyout or syscall return. */
+            uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
+            int result = nsock_connect(UFD_SOCK_ID(internal), (uint32_t)a2, (uint16_t)a3);
+            __asm__ volatile("cli" ::: "memory");
+            user_cr3 = saved_cr3;
+            user_rsp = saved_ursp;
+            return result;
         }
         case SYS_BIND: {
             int internal;
@@ -901,7 +913,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             int internal;
             if (ufd_lookup((int)a1, &internal) != 0) return -1;
             if (!(internal & UFD_SOCK_FLAG)) return -1;
+            uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
             int cs = nsock_accept(UFD_SOCK_ID(internal));
+            __asm__ volatile("cli" ::: "memory");
+            user_cr3 = saved_cr3;
+            user_rsp = saved_ursp;
             if (cs < 0) return -1;
             int ufd = ufd_alloc(UFD_SOCK_MAKE(cs));
             if (ufd < 0) { nsock_close(cs); return -1; }    /* fd table full */
@@ -933,7 +949,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             char* rbuf = (char*)kmalloc(len);
             if (!rbuf) return -1;
             uint32_t src_ip = 0; uint16_t src_port = 0;
+            uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
             int n = nsock_recvfrom(UFD_SOCK_ID(internal), rbuf, len, &src_ip, &src_port);
+            __asm__ volatile("cli" ::: "memory");
+            user_cr3 = saved_cr3;
+            user_rsp = saved_ursp;
             if (n > 0 && copy_to_user(a2, rbuf, n) != 0) n = -1;
             kfree(rbuf);
             if (n > 0) {

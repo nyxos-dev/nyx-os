@@ -143,6 +143,9 @@ jobs:
       - name: Test timeout duration bounds and tick wrap
         run: python3 tools/test_timeout.py
 
+      - name: Test socket syscall return context after waits
+        run: python3 tools/test_socket_return.py
+
       - name: Test rm option and operand boundaries
         run: python3 tools/test_rm_options.py
 
