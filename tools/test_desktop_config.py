@@ -89,20 +89,25 @@ mount_entry_t* vfs_find_mount(const char* path) {
     return !strncmp(path, "/mnt/", 5) ? &mount : NULL;
 }
 static int checks;
-static uint32_t draw_x, draw_y, palette_fills[2];
-static int outside_draw, palette_labels;
+static uint32_t draw_x, draw_y, palette_fills[2], decoration_fills[2];
+static int outside_draw, palette_labels, decoration_labels_seen;
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
-    if (x < draw_x || y < draw_y || x + w > draw_x + 400 || y + h > draw_y + 520) outside_draw++;
+    if (x < draw_x || y < draw_y || x + w > draw_x + 400 || y + h > draw_y + 556) outside_draw++;
     for (int i = 0; i < 2; i++)
         if (x == draw_x + WP_TERM_X(i) && y == draw_y + WP_TERM_OY && w == WP_TERM_BW && h == WP_TERM_BH)
             palette_fills[i] = color;
+    for (int i = 0; i < 2; i++)
+        if (x == draw_x + WP_DEC_X(i) && y == draw_y + WP_DEC_OY && w == WP_TERM_BW && h == WP_TERM_BH)
+            decoration_fills[i] = color;
 }
 void font_draw_string(uint32_t x, uint32_t y, const char* text, uint32_t fg, uint32_t bg) {
     (void)fg; (void)bg;
-    if (x < draw_x || y < draw_y || x + strlen(text) * FONT_WIDTH > draw_x + 400 || y + FONT_HEIGHT > draw_y + 520)
+    if (x < draw_x || y < draw_y || x + strlen(text) * FONT_WIDTH > draw_x + 400 || y + FONT_HEIGHT > draw_y + 556)
         outside_draw++;
     if (y == draw_y + WP_TERM_OY + (WP_TERM_BH - FONT_HEIGHT) / 2 &&
         (!strcmp(text, "Classic") || !strcmp(text, "Nightfall"))) palette_labels++;
+    if (y == draw_y + WP_DEC_OY + (WP_TERM_BH - FONT_HEIGHT) / 2 &&
+        (!strcmp(text, "Classic") || !strcmp(text, "Flat"))) decoration_labels_seen++;
 }
 #define CHECK(expr) do { checks++; if (!(expr)) { puts("FAIL: " #expr); return 1; } } while (0)
 static const char* message(void) { return toasts[0].body; }
@@ -131,6 +136,24 @@ int main(void) {
     CHECK(wgt_sample_tick(61000) && !wgt_net_bps);
     sample_bytes += 1000;
     CHECK(wgt_sample_tick(61500) && wgt_net_bps == 2000);
+    CHECK(!strcmp(desktop_decoration_name(), "classic"));
+    strcpy(system_config, "decoration = flat\n");
+    alice[0] = 0; apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "flat"));
+    strcpy(alice, "decoration = unknown\n"); apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "flat"));
+    strcpy(alice, "decoration = classic\n"); apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "classic"));
+    desktop_set_decoration("flat"); save_nyx_config();
+    CHECK(strstr(alice, "decoration = flat\n"));
+    reset_nyx_config(); apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "flat"));
+    system_config[0] = 0;
+    strcpy(g_login_home, "/mnt/home/bob"); apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "classic"));
+    strcpy(g_login_home, "/mnt/home/alice"); apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "flat"));
+    reset_nyx_config(); alice[0] = 0;
     strcpy(system_config, "terminal_palette = nightfall\n");
     apply_nyx_config();
     CHECK(!wgt_net_sample.ready && !wgt_net_bps);
@@ -185,20 +208,43 @@ int main(void) {
     CHECK(strstr(alice, "terminal_palette = nightfall\n") && !strcmp(message(), "Saved in your home on disk"));
     CHECK(wallpaper_base_color() == 0x123456 && !g_widget_on && g_gaps == 8 && g_panel_tint == 42);
     draw_x = win.x; draw_y = win.y + TITLE_H;
-    wallpaper_win_draw(&win, draw_x, draw_y, 400, 520);
+    wallpaper_win_draw(&win, draw_x, draw_y, 400, 556);
     CHECK(!outside_draw && palette_labels == 2 && palette_fills[1] == THEME_ACCENT && palette_fills[0] == fb_rgb(48,48,58));
     reset_nyx_config(); apply_nyx_config();
     CHECK(!strcmp(terminal_palette_name(), "nightfall"));
     wallpaper_win_click(&win, win.x + WP_TERM_X(0) + WP_TERM_BW - 1, ty + WP_TERM_BH - 1, 1);
     CHECK(!strcmp(terminal_palette_name(), "classic") && strstr(alice, "terminal_palette = classic\n"));
     palette_labels = 0;
-    wallpaper_win_draw(&win, draw_x, draw_y, 400, 520);
+    wallpaper_win_draw(&win, draw_x, draw_y, 400, 556);
     CHECK(!outside_draw && palette_labels == 2 && palette_fills[0] == THEME_ACCENT && palette_fills[1] == fb_rgb(48,48,58));
     fault = 1; clear_message(); wallpaper_win_click(&win, tx, ty, 1);
     CHECK(!strcmp(terminal_palette_name(), "nightfall") && strstr(message(), "failed"));
     CHECK(strstr(alice, "terminal_palette = classic\n"));
     fault = 0; clear_message(); wallpaper_win_click(&win, tx, ty, 1);
     CHECK(strstr(alice, "terminal_palette = nightfall\n") && !strcmp(message(), "Saved in your home on disk"));
+    int dx = win.x + WP_DEC_X(1), dy = win.y + TITLE_H + WP_DEC_OY;
+    saved_writes = writes;
+    wallpaper_win_click(&win, dx, dy, 2);
+    CHECK(writes == saved_writes && !strcmp(desktop_decoration_name(), "classic"));
+    for (int i = 0; i < 4; i++) {
+        wallpaper_win_click(&win, dx + missed[i][0], dy + missed[i][1], 1);
+        CHECK(writes == saved_writes && !strcmp(desktop_decoration_name(), "classic"));
+    }
+    wallpaper_win_click(&win, dx, dy, 1);
+    CHECK(writes == saved_writes + 1 && !strcmp(desktop_decoration_name(), "flat"));
+    CHECK(strstr(alice, "decoration = flat\n") && strstr(alice, "terminal_palette = nightfall\n"));
+    decoration_labels_seen = 0;
+    wallpaper_win_draw(&win, draw_x, draw_y, 400, 556);
+    CHECK(!outside_draw && decoration_labels_seen == 2 && decoration_fills[1] == THEME_ACCENT && decoration_fills[0] == fb_rgb(48,48,58));
+    reset_nyx_config(); apply_nyx_config();
+    CHECK(!strcmp(desktop_decoration_name(), "flat"));
+    fault = 1; clear_message();
+    wallpaper_win_click(&win, win.x + WP_DEC_X(0), dy, 1);
+    CHECK(!strcmp(desktop_decoration_name(), "classic") && strstr(message(), "failed"));
+    CHECK(strstr(alice, "decoration = flat\n"));
+    fault = 0;
+    wallpaper_win_click(&win, dx + WP_TERM_BW - 1, dy + WP_TERM_BH - 1, 1);
+    CHECK(!strcmp(desktop_decoration_name(), "flat"));
     strcpy(g_login_home, "/home/alice"); clear_message();
     wallpaper_win_click(&win, win.x + WP_TERM_X(0), ty, 1);
     CHECK(!strcmp(terminal_palette_name(), "classic") && !strcmp(message(), "Saved in RAM; lost on reboot"));
@@ -214,6 +260,7 @@ int main(void) {
     CHECK(g_widget_on && g_corner_radius == WIN_RADIUS && g_shadows && !g_panel_tint && !g_title_center && !g_wallpaper_dim);
     CHECK(!strcmp(terminal_palette_name(), "classic"));
     CHECK(strstr(alice, "terminal_palette = classic\n"));
+    CHECK(!strcmp(desktop_decoration_name(), "classic") && strstr(alice, "decoration = classic\n"));
     for (int i = 1; i <= 10; i++) {
         fault = i; clear_message(); save_nyx_config();
         CHECK(strstr(message(), "failed") != NULL);

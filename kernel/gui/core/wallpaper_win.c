@@ -129,7 +129,12 @@ static const char* term_names[2] = { "classic", "nightfall" };
 
 // "Reset to defaults" button (below the Terminal row): restores the seeded rice —
 // Nightfall wallpaper, Morado accent, panel on in the bottom-right — and persists it.
-#define WP_RST_OY  490
+#define WP_DEC_OY   490
+#define WP_DEC_X(i) WP_TERM_X(i)
+static const char* decoration_labels[2] = { "Classic", "Flat" };
+static const char* decoration_names[2] = { "classic", "flat" };
+
+#define WP_RST_OY  526
 #define WP_RST_X   16
 #define WP_RST_W   168
 #define WP_RST_H   26
@@ -376,6 +381,18 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
                          term_labels[i], sel ? fb_rgb(255, 255, 255) : fb_rgb(200, 200, 210), fill);
     }
 
+    font_draw_string(cx + 12, cy + WP_DEC_OY + (WP_TERM_BH - FONT_HEIGHT) / 2,
+                     "Windows:", THEME_TEXT, bg);
+    for (int i = 0; i < 2; i++) {
+        int x = cx + WP_DEC_X(i), y = cy + WP_DEC_OY;
+        int sel = !strcmp(desktop_decoration_name(), decoration_names[i]);
+        uint32_t fill = sel ? THEME_ACCENT : fb_rgb(48, 48, 58);
+        fb_fill_rect(x, y, WP_TERM_BW, WP_TERM_BH, fill);
+        int text_width = (int)strlen(decoration_labels[i]) * FONT_WIDTH;
+        font_draw_string(x + (WP_TERM_BW - text_width) / 2, y + (WP_TERM_BH - FONT_HEIGHT) / 2,
+                         decoration_labels[i], THEME_TEXT, fill);
+    }
+
     // --- Reset button: one click back to the seeded defaults ------------------
     {
         int x = cx + WP_RST_X, y = cy + WP_RST_OY;
@@ -436,6 +453,15 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
         int x = cx + WP_TERM_X(i), y = cy + WP_TERM_OY;
         if (mx >= x && mx < x + WP_TERM_BW && my >= y && my < y + WP_TERM_BH) {
             terminal_set_palette(term_names[i]);
+            save_nyx_config();
+            return;
+        }
+    }
+
+    if (btn == 1) for (int i = 0; i < 2; i++) {
+        int x = cx + WP_DEC_X(i), y = cy + WP_DEC_OY;
+        if (mx >= x && mx < x + WP_TERM_BW && my >= y && my < y + WP_TERM_BH) {
+            desktop_set_decoration(decoration_names[i]);
             save_nyx_config();
             return;
         }

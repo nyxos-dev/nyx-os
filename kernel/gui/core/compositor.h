@@ -113,6 +113,8 @@ int window_set_title(int id, const char* title);
 void display_set_mode(uint32_t w, uint32_t h);
 void theme_set_accent(uint32_t rgb);   // set the runtime UI accent (the wallpaper picker + nyx.conf)
 void save_nyx_config(void);            // save in the current home and report disk/RAM/error
+const char* desktop_decoration_name(void);
+int desktop_set_decoration(const char* name);
 void reset_nyx_config(void);           // reset every desktop config knob before load or GUI reset
 void window_destroy(int id);
 void window_request_close(int id);

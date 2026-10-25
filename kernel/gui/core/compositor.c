@@ -58,6 +58,7 @@ static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 =
 static int g_gaps      = 0;         // WM gaps (px) inset around + between snapped/maximized tiles — nyx.conf `gaps` (0 = classic tiling, off)
 static uint32_t g_border_color = 0; // focused-window outline override — nyx.conf `border` (0 = follow the UI accent)
 static uint32_t g_border_inactive = 0; // unfocused-window outline override — nyx.conf `border_inactive` (0 = neutral bevel)
+static int g_flat_decoration = 0;
 static int g_panel_tint = 0;        // taskbar tint toward the wallpaper colour, 0-100% — nyx.conf `panel_tint` (0 = off)
 static int g_shadows   = 1;         // window + start-menu drop shadows — nyx.conf `shadow` (off = flat, no shadows)
 static int g_title_center = 0;      // title-bar text alignment — nyx.conf `title_align` (0 = left default, 1 = center)
@@ -223,7 +224,7 @@ static void draw_cursor(int mx, int my) {
                                                  visible instead of blending in */
 
 static void draw_x_button(int x, int y, int size, uint32_t color) {
-    fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_CLOSE);
+    if (!g_flat_decoration) fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_CLOSE);
     int pad = 4;
     for (int i = 0; i < size - pad * 2; i++) {
         compositor_draw_pixel(x + pad + i, y + pad + i, color);
@@ -239,14 +240,14 @@ static void draw_x_button(int x, int y, int size, uint32_t color) {
 // x+size-4, so the square had two stubs poking out the right — a few px off on every
 // window. The dash was also 2px wider than the X. Fixed by centring all three the same.)
 static void draw_min_button(int x, int y, int size, uint32_t color) {
-    fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_MIN);
+    if (!g_flat_decoration) fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_MIN);
     int p = 4;
     for (int i = 0; i < size - 2 * p; i++)
         compositor_draw_pixel(x + p + i, y + size / 2, color);      // centred dash
 }
 
 static void draw_max_button(int x, int y, int size, uint32_t color) {
-    fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_MAX);     // brand purple (light) = identity
+    if (!g_flat_decoration) fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_MAX);     // brand purple (light) = identity
     int p = 4, e = size - 1 - p;                                     // inner square [p, e]
     for (int i = 0; i <= e - p; i++) {
         compositor_draw_pixel(x + p + i, y + p,     color);         // top edge
@@ -353,9 +354,22 @@ void theme_set_accent(uint32_t rgb) {
 // A button filled with the same top-lit vertical gradient the title bars use,
 // centred on `base` (±amt), with a transparent-background label so the text sits
 // directly on the gradient. Used for the taskbar's Menu button and window tabs.
+static void fill_chrome(int x, int y, int w, int h, uint32_t base, int amount) {
+    if (g_flat_decoration) fb_fill_rect(x, y, w, h, base);
+    else fb_fill_vgrad(x, y, w, h, col_lighten(base, amount), col_darken(base, amount));
+}
+
+const char* desktop_decoration_name(void) { return g_flat_decoration ? "flat" : "classic"; }
+int desktop_set_decoration(const char* name) {
+    if (!strcmp(name, "flat")) g_flat_decoration = 1;
+    else if (!strcmp(name, "classic")) g_flat_decoration = 0;
+    else return -1;
+    return 0;
+}
+
 static void draw_grad_button(int x, int y, int w, int h, uint32_t base, uint32_t fg,
                              const char* label, int amt) {
-    fb_fill_vgrad(x, y, w, h, col_lighten(base, amt), col_darken(base, amt));
+    fill_chrome(x, y, w, h, base, amt);
     if (label) {
         int tw = (int)strlen(label) * FONT_WIDTH;
         font_draw_string_trans(x + (w - tw) / 2, y + (h - FONT_HEIGHT) / 2, label, fg);
@@ -387,7 +401,7 @@ static void fit_title(const char* title, int avail_px, char* out, int outsz) {
 
 static int title_text_x(int left, int right, int textw, int center);   // fwd (defined with its KAT below)
 static void draw_titlebar(window_t* win) {
-    uint32_t base = win->focused ? title_active : title_inactive;
+    uint32_t base = g_flat_decoration ? THEME_PANEL_HEADER : (win->focused ? title_active : title_inactive);
     // A subtle top-lit vertical gradient gives the bar some dimension to sit with
     // the drop shadows. It is centred on `base` (lighten top, darken bottom by the
     // same amount), so the mid rows — where the title text sits — are ~base; the
@@ -404,7 +418,7 @@ static void draw_titlebar(window_t* win) {
     for (uint32_t row = 0; row < TITLE_H; row++) {
         int inset = (row < (uint32_t)R) ? fb_corner_inset((int)row, R) : 0;
         fb_fill_rect(win->x + inset, win->y + row, win->w - 2 * inset, 1,
-                     vgrad_row(gtop, gbot, (int)row, TITLE_H));
+                     g_flat_decoration ? base : vgrad_row(gtop, gbot, (int)row, TITLE_H));
     }
 
     // Left edge of the leftmost button present, so the title can be truncated to end
@@ -452,6 +466,10 @@ static void draw_window_frame(window_t* win) {
     uint32_t ina_lo = g_border_inactive ? col_darken(g_border_inactive, 28) : THEME_FRAME_LO;
     uint32_t hi = win->focused ? acc_hi : ina_hi;
     uint32_t lo = win->focused ? acc_lo : ina_lo;
+    if (g_flat_decoration) {
+        hi = win->focused ? acc_hi : (g_border_inactive ? g_border_inactive : THEME_ROW_DIV);
+        lo = hi;
+    }
     int x = win->x, y = win->y, w = (int)win->w, H = (int)win_total_h(win);
     int R = win_radius(win);
 
@@ -847,8 +865,9 @@ static void draw_taskbar(void) {
 
     // Subtle top-lit gradient bar with a 1px highlight along its top edge, to sit
     // with the windows' gradient title bars rather than reading as a flat slab.
-    fb_fill_vgrad(0, tb_y, fw, TASKBAR_H, col_lighten(taskbar_bg_effective(), 12), col_darken(taskbar_bg_effective(), 10));
-    fb_fill_rect(0, tb_y, fw, 1, col_lighten(taskbar_bg_effective(), 34));
+    if (g_flat_decoration) fb_fill_rect(0, tb_y, fw, TASKBAR_H, taskbar_bg_effective());
+    else fb_fill_vgrad(0, tb_y, fw, TASKBAR_H, col_lighten(taskbar_bg_effective(), 12), col_darken(taskbar_bg_effective(), 10));
+    fb_fill_rect(0, tb_y, fw, 1, g_flat_decoration ? THEME_ROW_DIV : col_lighten(taskbar_bg_effective(), 34));
 
     // The Menu button is the brand launcher, so it always wears the accent (dimmed
     // when the menu is closed, full-strength when open) instead of blending in.
@@ -875,7 +894,11 @@ static void draw_taskbar(void) {
         // an unfocused one gets a quiet bar gradient; a minimized one a flatter,
         // greyer fill so it reads as dormant.
         int bh = TASKBAR_H - 8;
-        if (windows[i]->state == WSTATE_MINIMIZED)
+        if (g_flat_decoration) {
+            uint32_t base = windows[i]->focused && windows[i]->state != WSTATE_MINIMIZED
+                          ? col_blend(THEME_ACCENT, taskbar_bg_effective(), 20) : taskbar_bg_effective();
+            fb_fill_rect(bx, tb_y + 4, bw, bh, base);
+        } else if (windows[i]->state == WSTATE_MINIMIZED)
             fb_fill_vgrad(bx, tb_y + 4, bw, bh, fb_rgb(58, 58, 64), fb_rgb(44, 44, 50));
         else if (windows[i]->focused)
             fb_fill_vgrad(bx, tb_y + 4, bw, bh, col_lighten(taskbar_hl, 16), col_darken(taskbar_hl, 16));
@@ -889,7 +912,7 @@ static void draw_taskbar(void) {
         // open windows, and nothing for a minimized (dormant) one.
         if (windows[i]->state != WSTATE_MINIMIZED) {
             int ind_w = windows[i]->focused ? bw - 16 : 12;
-            uint32_t ind_c = windows[i]->focused ? fb_rgb(150, 110, 235) : col_darken(THEME_ACCENT, 30);
+            uint32_t ind_c = windows[i]->focused ? THEME_ACCENT : col_darken(THEME_ACCENT, 30);
             fb_fill_rect(bx + (bw - ind_w) / 2, tb_y + TASKBAR_H - 6, ind_w, 2, ind_c);
         }
         bx += bw + 2;
@@ -1422,7 +1445,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 96, 400, 520, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 96, 400, 556, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
@@ -4242,7 +4265,7 @@ void reset_nyx_config(void) {
     g_widget_on = 1; g_widget_pos = 0;
     wgt_reset_samples();
     g_clock_12h = 0; g_desktop_icons_visible = 0; g_gaps = 0;
-    g_border_color = 0; g_border_inactive = 0; g_panel_tint = 0;
+    g_border_color = 0; g_border_inactive = 0; g_panel_tint = 0; g_flat_decoration = 0;
     g_corner_radius = WIN_RADIUS; g_shadows = 1;
     g_title_center = 0; g_wallpaper_dim = 0;
 }
@@ -4287,6 +4310,7 @@ static int read_nyx_config(const char* path, char* buf, int cap) {
 
 static void apply_config_text(const char* buf) {
     char val[64];
+    if (nyxconf_get(buf, "decoration", val, sizeof val)) desktop_set_decoration(val);
     if (nyxconf_get(buf, "terminal_palette", val, sizeof val))
         terminal_set_palette(val);
     if (nyxconf_get(buf, "wallpaper", val, sizeof val)) {
@@ -4408,7 +4432,8 @@ void save_nyx_config(void) {
         "shadow = %s\n"
         "title_align = %s\n"
         "wallpaper_dim = %d\n"
-        "terminal_palette = %s\n",
+        "terminal_palette = %s\n"
+        "decoration = %s\n",
         wallpaper_style_name(wallpaper_style()),
         acc,
         g_widget_on ? "on" : "off",
@@ -4421,7 +4446,7 @@ void save_nyx_config(void) {
         g_corner_radius,
         g_shadows ? "on" : "off",
         g_title_center ? "center" : "left",
-        g_wallpaper_dim, terminal_palette_name());
+        g_wallpaper_dim, terminal_palette_name(), desktop_decoration_name());
     char path[96], check[640];
     if (n <= 0 || n >= (int)sizeof buf || !user_config_path(path, sizeof path)) {
         notify_push("Desktop settings", "Could not save your settings");

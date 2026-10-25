@@ -690,6 +690,28 @@ The immediate data and desktop priorities are:
     signal cancellation or physical-network stability. TCP receive still returns
     zero for both closure and timeout. Exact-source remote CI is recorded separately.
 
+52. Development version 6.5.247 adds selectable flat window decoration in the
+    existing wallpaper settings. Dark title bars, unfilled window controls,
+    accent focus outlines and flat taskbar tabs use the existing palette. The
+    `decoration = flat` or `classic` setting follows system/user configuration
+    layering, saves with other desktop settings and resets to classic. The
+    taskbar focus marker follows the selected accent in both styles. Existing
+    tiling, floating windows, gaps, shadows and rounding remain independent.
+    The host configuration/picker harness passes 428 checks; the idle-loop
+    regression passes 72 cases. A warning-free build, 230 kernel tests and
+    four-CPU QEMU boot pass. Real PS/2 input selects the flat style, tiles terminal
+    and editor, restores a floating terminal and drags it before another command.
+    A fresh boot restores flat decoration, eight-pixel gaps and Nightfall terminal
+    colours; GUI reset restores classic defaults. Two disk fixtures remain exact.
+    With QEMU TCG, four qemu64 CPUs, 5 GiB RAM, 1024x768 and a static wallpaper,
+    three eight-second idle samples average 34.0% host CPU for classic and 33.5%
+    for flat decoration, normalized to one host CPU. Guest BSP samples are 0% in
+    both. This small difference does not establish a performance improvement;
+    no idle cost increase was observed in this bounded comparison. Active
+    rendering, animation, hardware acceleration and physical hardware are not
+    covered. This is an optional decoration style, not a complete desktop redesign.
+    Exact-source remote CI is recorded separately.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
