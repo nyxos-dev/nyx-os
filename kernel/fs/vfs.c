@@ -798,7 +798,8 @@ int vfs_open(const char* path, int flags, mode_t mode) {
         if (dents) kfree(dents);
 
         // Otherwise a regular file.
-        uint32_t exists = me->resolve ? me->resolve(sub) : 0;
+        int64_t exists = me->resolve ? me->resolve(sub) : -1;
+        if (exists < 0) return -1;
         if (!exists && !(flags & 1)) return -1;        // read of a missing file
         vfs_node_t* n = alloc_node();
         if (!n) return -1;
@@ -807,16 +808,25 @@ int vfs_open(const char* path, int flags, mode_t mode) {
         n->mount_ent = me;
         strcpy(n->mpath, sub);
         if (!exists && (flags & 1)) {
-            if (me->write_file) me->write_file(sub, "", 0);   // create empty
-        } else if (exists && me->read_file) {
-            uint32_t sz = me->get_size ? me->get_size(sub) : 0;
-            if (sz > 0) {
-                n->data = (uint8_t*)kmalloc(sz);
-                if (n->data) {
-                    int r = me->read_file(sub, n->data, sz);
-                    n->size = (r > 0) ? (uint32_t)r : 0;
-                }
+            if (!me->write_file || me->write_file(sub, "", 0) != 0) {
+                free_node(n);
+                return -1;
             }
+        } else if (exists && me->read_file) {
+            int64_t sz = me->get_size ? me->get_size(sub) : -1;
+            if (sz < 0 || sz > VFS_MAX_FILE_SIZE) { free_node(n); return -1; }
+            if (sz > 0) {
+                n->data = (uint8_t*)kmalloc((uint32_t)sz);
+                if (!n->data || me->read_file(sub, n->data, (uint32_t)sz) != sz) {
+                    if (n->data) kfree(n->data);
+                    free_node(n);
+                    return -1;
+                }
+                n->size = (uint32_t)sz;
+            }
+        } else if (exists) {
+            free_node(n);
+            return -1;
         }
         n->open_refs = 1;
         return node_to_handle(n);
@@ -861,12 +871,15 @@ int vfs_read(int fd, void* buf, size_t count) {
     return count;
 }
 
-// Flush a mount-backed node's full contents back to its filesystem, then mark it clean.
-static void flush_mount_node(vfs_node_t* ino) {
-    if (!ino->mount_backed || !ino->mount_ent) return;
+// Only a complete successful filesystem write makes a mount-backed node clean.
+static int flush_mount_node(vfs_node_t* ino) {
+    if (!ino->mount_backed) return 0;
+    if (!ino->mount_ent) return -1;
     mount_entry_t* me = (mount_entry_t*)ino->mount_ent;
-    if (me->write_file) me->write_file(ino->mpath, ino->data ? ino->data : (uint8_t*)"", ino->size);
+    if (!me->write_file || me->write_file(ino->mpath, ino->data ? ino->data : (uint8_t*)"", ino->size) != (int)ino->size)
+        return -1;
     ino->dirty = 0;
+    return 0;
 }
 
 // WHOLE-FILE write: sets the file to exactly these `count` bytes (offset 0, size = count). There
@@ -888,7 +901,8 @@ int vfs_write(int fd, const void* buf, size_t count) {
     }
     memcpy(ino->data, buf, count);
     ino->size = count;
-    flush_mount_node(ino);            // persist to disk if this is a mount file
+    ino->dirty = 1;
+    if (flush_mount_node(ino) < 0) return -1;
     return count;
 }
 
@@ -1048,8 +1062,9 @@ int vfs_close(int fd) {
     // Persist a mount file's deferred writes at the last close (v6.4.10 write-back).
     // Skip an orphaned (unlinked-while-open) file: POSIX drops its data at last close,
     // so flushing it back to its path would wrongly resurrect it. flush_mount_node is a
-    // no-op for non-mount nodes and clears the dirty flag.
-    if (ino->dirty && !ino->orphaned) flush_mount_node(ino);
+    // no-op for non-mount nodes; a failed flush leaves dirty set until release.
+    int rc = 0;
+    if (ino->dirty && !ino->orphaned) rc = flush_mount_node(ino);
 
     /* At zero refs, two kinds of node go back to the pool: a transient
      * mount mirror (which only ever existed for this fd), and one that was
@@ -1060,7 +1075,7 @@ int vfs_close(int fd) {
         ino->size = 0;
         free_node(ino);
     }
-    return 0;
+    return rc;       // close consumes the handle even when persistence fails
 }
 
 // 1 if `path` names a directory in the ramdisk tree (used by chdir to reject a
@@ -1319,11 +1334,11 @@ dirent_t* vfs_readdir(int fd) {
 // cross-core lock; auth.c's passwd helpers take it too, so a login credential check
 // and a /mnt file op serialize against each other. These thin wrappers still sit on
 // the mount function-pointers, so ext2.c needs no internal changes.
-static uint32_t fs_resolve(const char* p) {
-    uint64_t fl = ext2_lock_acquire(); uint32_t r = ext2_resolve(p);   ext2_lock_release(fl); return r;
+static int64_t fs_resolve(const char* p) {
+    uint64_t fl = ext2_lock_acquire(); int64_t r = ext2_resolve(p);   ext2_lock_release(fl); return r;
 }
-static uint32_t fs_get_size(const char* p) {
-    uint64_t fl = ext2_lock_acquire(); uint32_t r = ext2_get_size(p);  ext2_lock_release(fl); return r;
+static int64_t fs_get_size(const char* p) {
+    uint64_t fl = ext2_lock_acquire(); int64_t r = ext2_get_size(p);  ext2_lock_release(fl); return r;
 }
 static int fs_read_file(const char* p, void* b, uint32_t n) {
     uint64_t fl = ext2_lock_acquire(); int r = ext2_read_file(p, b, n); ext2_lock_release(fl); return r;
@@ -1817,14 +1832,15 @@ int vfs_cp(const char* src, const char* dst) {
             dirent_t probe;
             if (src_me->readdir(sub, &probe, 1) >= 0) return -1;
         }
-        if (src_me->resolve && !src_me->resolve(sub)) return -1;   // missing
-        ssize = src_me->get_size ? src_me->get_size(sub) : 0;
+        if (!src_me->resolve || src_me->resolve(sub) <= 0) return -1;
+        int64_t source_size = src_me->get_size ? src_me->get_size(sub) : -1;
+        if (source_size < 0 || source_size > VFS_MAX_FILE_SIZE) return -1;
+        ssize = (uint32_t)source_size;
         sbuf = (uint8_t*)kmalloc(ssize ? ssize : 1);
         if (!sbuf) return -1;
         if (ssize) {
             int r = src_me->read_file(sub, sbuf, ssize);
-            if (r < 0) { kfree(sbuf); return -1; }
-            ssize = (r > 0) ? (uint32_t)r : 0;
+            if (r < 0 || (uint32_t)r != ssize) { kfree(sbuf); return -1; }
         }
     } else {
         vfs_node_t* src_ino = resolve_path(src);
@@ -1841,7 +1857,7 @@ int vfs_cp(const char* src, const char* dst) {
     if (dst_me && dst_me->write_file) {
         const char* sub = dst + strlen(dst_me->mount_point);
         if (!*sub) sub = "/";
-        rc = dst_me->write_file(sub, sbuf, ssize) >= 0 ? 0 : -1;
+        rc = dst_me->write_file(sub, sbuf, ssize) == (int)ssize ? 0 : -1;
     } else {
         char child_name[MAX_NAME];
         vfs_node_t* dst_parent = resolve_parent(dst, child_name);

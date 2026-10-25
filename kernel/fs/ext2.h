@@ -121,8 +121,9 @@ int  ext2_mount(uint8_t drive, uint32_t part_lba);
 int  ext2_read_inode(uint32_t ino, ext2_inode_t* inode);
 int  ext2_read_block(uint32_t block, void* buf);
 int  ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf);
-uint32_t ext2_resolve(const char* path);
-uint32_t ext2_get_size(const char* path);
+// resolve: inode > 0, absent = 0, error = -1; get_size: bytes >= 0 or error = -1.
+int64_t ext2_resolve(const char* path);
+int64_t ext2_get_size(const char* path);
 int  ext2_read_file(const char* path, void* buf, uint32_t maxlen);
 int  ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries);
 // Adversarial self-test for the directory-block scanner (it parses untrusted

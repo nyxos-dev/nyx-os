@@ -179,7 +179,8 @@ static int fallback_add(const char* user, const char* pass, int avatar) {
 static int passwd_exists(void) {
     if (ext2_fs.block_size == 0) return 0;
     uint64_t fl = ext2_lock_acquire();     // shares the ext2 driver with /mnt ops
-    int r = (ext2_resolve(AUTH_PATH) != 0);
+    int64_t ino = ext2_resolve(AUTH_PATH);
+    int r = ino < 0 ? -1 : ino > 0;
     ext2_lock_release(fl);
     return r;
 }
@@ -232,7 +233,12 @@ int auth_setup(void) {
     }
 
     // Disk present with an existing user file → use it (persistent accounts).
-    if (passwd_exists()) {
+    int exists = passwd_exists();
+    if (exists < 0) {
+        printf("[AUTH] Cannot read persistent account metadata\n");
+        return -1;
+    }
+    if (exists) {
         printf("[AUTH] Persistent user file found at %s\n", AUTH_PATH);
         return 0;
     }
@@ -286,12 +292,14 @@ static void lockout_record(lockout_t* L, int success, uint32_t now) {
 static int auth_verify_core(const char* username, const char* password) {
     if (!username || !password) return 0;
 
-    if (ext2_fs.block_size == 0 || !passwd_exists())
+    int exists = passwd_exists();
+    if (exists < 0) return 0;
+    if (!exists)
         return fallback_verify(username, password);
 
     char buf[2048];
     int len = read_passwd(buf, sizeof(buf) - 1);
-    if (len < 0) return fallback_verify(username, password);
+    if (len < 0) return 0;
     buf[len] = '\0';
 
     char line[300];
@@ -375,7 +383,10 @@ void auth_add_user(const char* username, const char* password, int avatar) {
 
     static char existing[3072];   // off-stack (see write_passwd note; #68)
     int exlen = read_passwd(existing, sizeof(existing) - 1);
-    if (exlen < 0) exlen = 0;
+    if (exlen < 0) {
+        printf("[AUTH] Cannot read persistent accounts; user not added\n");
+        return;
+    }
     existing[exlen] = '\0';
 
     // Reject a duplicate username (a name at the start of a line, up to its ':').

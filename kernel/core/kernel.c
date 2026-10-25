@@ -1716,8 +1716,9 @@ static void cmd_echo(int argc, char** argv) {
     if (fd < 0) { printf("echo: cannot write '%s'\n", path); return; }
     uint32_t off = 0;
     if (append) { uint32_t sz = 0; if (vfs_fstat(fd, &sz, 0) == 0) off = sz; }
-    vfs_pwrite(fd, payload, (uint32_t)n, off);
-    vfs_close(fd);
+    int written = vfs_pwrite(fd, payload, (uint32_t)n, off);
+    int closed = vfs_close(fd);
+    if (written != n || closed < 0) printf("echo: write failed for '%s'\n", path);
 }
 
 // POSIX basename into out[cap]: strip the directory prefix and, if `suffix` is a PROPER
@@ -5975,15 +5976,8 @@ static void cmd_write(int argc, char** argv) {
     if (pos < 1023) content[pos++] = '\n';
     content[pos] = '\0';
 
-    // Try mount-aware write first
-    if (vfs_write_file(argv[1], content, pos) >= 0) return;
-
-    // Fallback: create in RAM VFS
-    int fd = vfs_open(argv[1], 0, 0);
-    if (fd < 0) fd = vfs_open(argv[1], 1, 0);
-    if (fd < 0) { printf("write: cannot create '%s'\n", argv[1]); return; }
-    vfs_write(fd, content, pos);
-    vfs_close(fd);
+    if (vfs_write_file(argv[1], content, pos) != pos)
+        printf("write: write failed for '%s'\n", argv[1]);
 }
 
 #define HIST_MAX 10
@@ -6782,14 +6776,15 @@ static void pkg_hex_encode(const uint8_t* in, int n, char* out) {   // lowercase
     for (int i = 0; i < n; i++) { out[2 * i] = H[in[i] >> 4]; out[2 * i + 1] = H[in[i] & 15]; }
     out[2 * n] = '\0';
 }
-// Mounted vfs_open can fail or return a short image despite an existing file.
+// Mounted vfs_open can fail despite an existing file.
 // Use backing metadata for existence and require the complete image on every read.
 static int pkg_path_exists(const char* path) {
     mount_entry_t* mount = vfs_find_mount(path);
     if (!mount) return vfs_stat(path, NULL, NULL) == 0;
     if (!mount->resolve) return -1;
     const char* sub = path + strlen(mount->mount_point);
-    return mount->resolve(*sub ? sub : "/") != 0;
+    int64_t exists = mount->resolve(*sub ? sub : "/");
+    return exists < 0 ? -1 : exists > 0;
 }
 
 static int pkg_file_image(const char* path, int fd, uint8_t** data, uint32_t* size) {
@@ -6800,7 +6795,7 @@ static int pkg_file_image(const char* path, int fd, uint8_t** data, uint32_t* si
     if (mount) {
         const char* sub = path + strlen(mount->mount_point);
         if (!*sub) sub = "/";
-        if (!mount->resolve || !mount->get_size || !mount->resolve(sub) ||
+        if (!mount->resolve || !mount->get_size || mount->resolve(sub) <= 0 ||
             *size != mount->get_size(sub)) return 0;
     }
     return 1;
@@ -10167,8 +10162,9 @@ static void cmd_nyxverify(int argc, char** argv) {
     if (gpt_find_nyx(dev, &nx_start, &nx_sectors) != 0) { printf("nyxverify: no NyxOS partition in the GPT\n"); return; }
     if (ext2_mount(dev, (uint32_t)nx_start) != 0) { printf("nyxverify: ext2 mount failed\n"); return; }
     printf("=== nyxverify: NyxOS ext2 @ LBA %u (block size %u) ===\n", (uint32_t)nx_start, ext2_fs.block_size);
-    uint32_t ino = ext2_resolve("/boot/nyx-kernel.bin");
-    if (!ino) { printf("  /boot/nyx-kernel.bin: NOT FOUND in the ext2\n"); return; }
+    int64_t resolved = ext2_resolve("/boot/nyx-kernel.bin");
+    if (resolved <= 0) { printf("  /boot/nyx-kernel.bin: absent or unreadable\n"); return; }
+    uint32_t ino = (uint32_t)resolved;
     ext2_inode_t inode;
     if (ext2_read_inode(ino, &inode) < 0) { printf("  inode %u read failed\n", ino); return; }
     printf("  /boot/nyx-kernel.bin: inode %u  size %u  block[0]=%u block[1]=%u\n",

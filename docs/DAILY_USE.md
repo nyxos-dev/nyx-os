@@ -872,6 +872,36 @@ The immediate data and desktop priorities are:
     thread-group FD-table races, final close during a blocking operation and
     socket inheritance through fork remain open. See [NETWORK.md](NETWORK.md).
 
+60. Development version 6.5.255 propagates storage failures through ATA, EXT2 and
+    VFS. Failed transfers do not populate the sector cache; an I/O error invalidates
+    cached sectors and prevents further writes on that mount. Data, allocation,
+    directory and flush errors reach callers. Metadata lookup distinguishes an
+    absent file from an unreadable file, and open/copy reject incomplete images.
+    Persistent account read errors neither select fallback credentials nor replace
+    existing accounts while adding a user. Deferred userspace writes report a
+    persistence failure at the last close, which still consumes the descriptor.
+    Kernel redirection reports the failure, and the editor retains its dirty text.
+    See [FILESYSTEM.md](FILESYSTEM.md) for the contract and recovery limits.
+    Host tests inject every I/O failure reached by twelve bounded filesystem
+    operations, including direct, single-indirect and double-indirect files.
+    ATA/account, VFS open/write/close/copy, editor, configuration and package
+    regressions pass separately. The previous source fails the new ATA, EXT2 and
+    account regressions. QEMU compares a clean write with rejected data writes,
+    flush failures and read failures on disposable disks, using offline byte
+    comparisons and read-only filesystem checks. This does not establish atomic
+    writes, automatic metadata recovery or hardware durability.
+    The final warning-free image passes 230 kernel tests and four-CPU boot.
+    Host coverage includes 39,392 EXT2 checks, 2,512 mounted VFS checks, 24 ATA
+    checks, 17 account-error checks, 78 editor cases and 434 configuration checks.
+    A four-CPU GUI run saves a 13-byte control file, retains a 21-byte edited
+    document after a real rejected disk write, presents the dirty-close dialog,
+    and saves that document to temporary RAM storage. The on-disk controls remain
+    exact and the read-only filesystem check passes. A separate serial run freshly
+    installs/verifies four N compiler packages, passes 18 driver cases and uses
+    installed `ncc`/`ngen` plus in-OS `cc` to generate two Workbench executables;
+    both produce the exact 301-byte trace and exit zero. N++ lowering remains on
+    the host. These are bounded checks, not a long-session or hardware qualification.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

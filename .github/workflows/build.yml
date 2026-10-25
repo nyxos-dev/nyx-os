@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y make nasm gcc binutils python3 \
-            grub-common grub-pc-bin xorriso mtools
+            grub-common grub-pc-bin xorriso mtools e2fsprogs
 
       - name: Build kernel and userland
         run: |
@@ -119,6 +119,11 @@ jobs:
 
       - name: Test VFS write bounds and sparse growth
         run: python3 tools/test_vfs_growth.py
+
+      - name: Test ATA, EXT2 and account storage failures
+        run: |
+          python3 tools/test_storage_errors.py
+          python3 tools/test_ext2_io.py
 
       - name: Test memory reporting and free options
         run: |

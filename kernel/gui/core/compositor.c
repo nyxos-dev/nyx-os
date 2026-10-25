@@ -4316,11 +4316,14 @@ static int read_nyx_config(const char* path, char* buf, int cap) {
         const char* sub = path + strlen(me->mount_point);
         if (!*sub) sub = "/";
         if (!me->resolve || !me->read_file || !me->get_size || !me->readdir) return -2;
-        if (!me->resolve(sub)) return -1;
+        int64_t exists = me->resolve(sub);
+        if (exists < 0) return -2;
+        if (!exists) return -1;
         dirent_t entry;
         if (me->readdir(sub, &entry, 1) >= 0) return -2;
-        size = me->get_size(sub);
-        if (size >= (uint32_t)cap) return -2;
+        int64_t backing_size = me->get_size(sub);
+        if (backing_size < 0 || backing_size >= cap) return -2;
+        size = (uint32_t)backing_size;
         n = me->read_file(sub, buf, (uint32_t)cap - 1);
         if (me->get_size(sub) != size) return -2;
     } else {

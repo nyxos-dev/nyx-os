@@ -181,15 +181,20 @@ static void editor_open(editor_win_t* ed, const char* path) {
     uint32_t expected = 0;
     if (mount) {
         if (!*sub) sub = "/";
-        if (!mount->resolve || !mount->get_size || !mount->resolve(sub)) {
+        if (!mount->resolve || !mount->get_size || mount->resolve(sub) <= 0) {
             snprintf(ed->status, sizeof(ed->status), "Open failed: cannot verify backing file");
             return;
         }
-        expected = mount->get_size(sub);
-        if (expected > EDITOR_MAX_BYTES) {
+        int64_t backing_size = mount->get_size(sub);
+        if (backing_size < 0) {
+            snprintf(ed->status, sizeof(ed->status), "Open failed: cannot read backing size");
+            return;
+        }
+        if (backing_size > EDITOR_MAX_BYTES) {
             snprintf(ed->status, sizeof(ed->status), "Open failed: document exceeds editor capacity");
             return;
         }
+        expected = (uint32_t)backing_size;
     }
     int fd = vfs_open(filename, 0, 0);
     if (fd < 0) {
@@ -199,10 +204,9 @@ static void editor_open(editor_win_t* ed, const char* path) {
     uint32_t size = 0;
     int isdir = 0;
     uint8_t* data = vfs_fdata(fd);
-    // Mounted open may return a prefix, or size=0 after OOM/read failure.
-    // fstat alone sees that prefix too; compare with independent backing size.
+    // Check the backing size again before replacing the current document.
     if (vfs_fstat(fd, &size, &isdir) != 0 || isdir || (size && !data) ||
-        (mount && (size != expected || !mount->resolve(sub) || size != mount->get_size(sub)))) {
+        (mount && (size != expected || mount->resolve(sub) <= 0 || size != mount->get_size(sub)))) {
         snprintf(ed->status, sizeof(ed->status), "Open failed: incomplete or invalid file image");
         vfs_close(fd);
         return;

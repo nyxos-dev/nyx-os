@@ -32,11 +32,10 @@ void     ext2_lock_release(uint64_t fl) { spin_unlock_irqrestore(&ext2_lock, fl)
 
 // ---- Sector cache (v5.9.26) -------------------------------------------------
 // Every disk access funnels through read_sectors / write_sectors, so a cache here
-// is coherent BY CONSTRUCTION: a write refreshes the cached line in place and a read
-// consults it first, so there is no higher-level invalidation to get wrong — the
-// class of bug that makes FS caches dangerous. Direct-mapped by sector number,
-// write-through (the disk is always current, so nothing to flush and a crash can't
-// lose a cached write). It removes the driver's biggest cost: ext2 re-reads the same
+// keeps only successfully transferred sectors. A failed write invalidates its
+// line because the device may have accepted only part of the transfer. This is
+// write-through, but device-cache durability still requires a successful flush.
+// It removes the driver's biggest cost: ext2 re-reads the same
 // metadata blocks (superblock, group descriptors, inode tables, bitmaps) on every
 // single path resolution, and each block was fetched A SECTOR AT A TIME over PIO.
 // Guarded by ext2_lock like the rest of the driver (read/write_sectors run only
@@ -47,29 +46,44 @@ static uint8_t  sc_data[SC_LINES][512];
 static uint32_t sc_tag[SC_LINES];       // FS-relative sector number cached in this line
 static uint8_t  sc_valid[SC_LINES];
 static uint64_t sc_hits = 0, sc_misses = 0;
+static int ext2_io_failed;
 
-static void sc_read1(uint32_t lba, void* buf) {
+static int ext2_io_error(void) {
+    /* A failed metadata transfer may leave allocation state uncertain. Refuse
+     * further mutations on this mount rather than reusing possibly live blocks. */
+    ext2_io_failed = 1;
+    for (int i = 0; i < SC_LINES; i++) sc_valid[i] = 0;
+    return -1;
+}
+
+static int sc_read1(uint32_t lba, void* buf) {
     uint32_t i = lba % SC_LINES;
     if (sc_valid[i] && sc_tag[i] == lba) {              // hit: serve from cache, no disk
         __builtin_memcpy(buf, sc_data[i], 512);
         sc_hits++;
-        return;
+        return 0;
     }
-    blk_read1(ext2_fs.drive, ext2_fs.part_start_lba + lba, buf);
+    sc_misses++;
+    if (blk_read1(ext2_fs.drive, ext2_fs.part_start_lba + lba, buf) < 0) return ext2_io_error();
     __builtin_memcpy(sc_data[i], buf, 512);
     sc_tag[i] = lba; sc_valid[i] = 1;
-    sc_misses++;
+    return 0;
 }
 
-static void sc_write1(uint32_t lba, const void* buf) {
-    blk_write1(ext2_fs.drive, ext2_fs.part_start_lba + lba, buf);
+static int sc_write1(uint32_t lba, const void* buf) {
+    if (ext2_io_failed) return -1;
     uint32_t i = lba % SC_LINES;
+    sc_valid[i] = 0;
+    if (blk_write1(ext2_fs.drive, ext2_fs.part_start_lba + lba, buf) < 0) return ext2_io_error();
     __builtin_memcpy(sc_data[i], buf, 512);            // write-through: keep the line coherent
     sc_tag[i] = lba; sc_valid[i] = 1;
+    return 0;
 }
 
-static void read_sectors(uint32_t lba, uint8_t count, void* buf) {
-    for (uint8_t i = 0; i < count; i++) sc_read1(lba + i, (uint8_t*)buf + (uint32_t)i * 512);
+static int read_sectors(uint32_t lba, uint8_t count, void* buf) {
+    for (uint8_t i = 0; i < count; i++)
+        if (sc_read1(lba + i, (uint8_t*)buf + (uint32_t)i * 512) < 0) return -1;
+    return 0;
 }
 
 // Cache stats for `df`.
@@ -157,7 +171,7 @@ static int read_block_group_bgd(uint32_t group, ext2_bgd_t* bgd) {
     // number would otherwise read (and on the write/free paths, write) a block-group
     // descriptor at an arbitrary block far outside the BGD table. block_groups is the fixed
     // FS geometry computed once at mount; a real inode always lands in [0, block_groups).
-    if (group >= ext2_fs.block_groups) return -1;
+    if (!ext2_fs.block_size || group >= ext2_fs.block_groups) return -1;
     uint32_t bgd_per_block = ext2_fs.block_size / sizeof(ext2_bgd_t);
     uint32_t bgd_block_offset = group / bgd_per_block;
     uint32_t bgd_in_block = group % bgd_per_block;
@@ -166,7 +180,7 @@ static int read_block_group_bgd(uint32_t group, ext2_bgd_t* bgd) {
     uint8_t* buf = get_meta_buf();
     if (!buf) return -1;
 
-    ext2_read_block(block, buf);
+    if (ext2_read_block(block, buf) < 0) return -1;
     __builtin_memcpy(bgd, buf + bgd_in_block * sizeof(ext2_bgd_t), sizeof(ext2_bgd_t));
     return 0;
 }
@@ -176,6 +190,8 @@ void init_ext2(void) {
 }
 
 int ext2_mount(uint8_t drive, uint32_t part_lba) {
+    ext2_fs.block_size = 0;
+    ext2_io_failed = 0;
     ext2_fs.drive = drive;
     ext2_fs.part_start_lba = part_lba;
 
@@ -185,7 +201,7 @@ int ext2_mount(uint8_t drive, uint32_t part_lba) {
     for (int i = 0; i < SC_LINES; i++) sc_valid[i] = 0;
 
     uint8_t sb_buf[1024];
-    read_sectors(2, 2, sb_buf);
+    if (read_sectors(2, 2, sb_buf) < 0) return -1;
     __builtin_memcpy(&ext2_fs.sb, sb_buf, sizeof(ext2_superblock_t));
 
     if (ext2_fs.sb.magic != EXT2_SUPER_MAGIC)
@@ -203,16 +219,17 @@ int ext2_mount(uint8_t drive, uint32_t part_lba) {
      * A corrupt or hostile image is not an exotic input for a filesystem driver —
      * it is the normal one. Validate once here, so nothing downstream has to. */
     if (ext2_fs.sb.log_block_size > 2) return -1;          /* 1024 / 2048 / 4096 */
-    ext2_fs.block_size = 1024 << ext2_fs.sb.log_block_size;
+    uint32_t block_size = 1024 << ext2_fs.sb.log_block_size;
     ext2_fs.inodes_per_group = ext2_fs.sb.inodes_per_group;
     ext2_fs.blocks_per_group = ext2_fs.sb.blocks_per_group;
     ext2_fs.inode_size = ext2_fs.sb.inode_size ? ext2_fs.sb.inode_size : 128;
 
     if (ext2_fs.inodes_per_group == 0 || ext2_fs.blocks_per_group == 0) return -1;
     if (ext2_fs.inode_size < sizeof(ext2_inode_t) ||
-        ext2_fs.inode_size > ext2_fs.block_size) return -1;
-    if (ext2_fs.blocks_per_group > ext2_fs.block_size * 8) return -1;
-    if (ext2_fs.inodes_per_group > ext2_fs.block_size * 8) return -1;
+        ext2_fs.inode_size > block_size) return -1;
+    if (ext2_fs.blocks_per_group > block_size * 8) return -1;
+    if (ext2_fs.inodes_per_group > block_size * 8) return -1;
+    ext2_fs.block_size = block_size;
 
     if (ext2_fs.block_size == 1024)
         ext2_fs.bgd_block = 2;
@@ -227,7 +244,7 @@ int ext2_mount(uint8_t drive, uint32_t part_lba) {
 }
 
 int ext2_read_inode(uint32_t ino, ext2_inode_t* inode) {
-    if (ino == 0) return -1;
+    if (!ext2_fs.block_size || !inode || ino == 0) return -1;
     uint32_t group = (ino - 1) / ext2_fs.inodes_per_group;
     uint32_t index = (ino - 1) % ext2_fs.inodes_per_group;
 
@@ -243,7 +260,7 @@ int ext2_read_inode(uint32_t ino, ext2_inode_t* inode) {
     uint8_t* buf = get_meta_buf();
     if (!buf) return -1;
 
-    ext2_read_block(block, buf);
+    if (ext2_read_block(block, buf) < 0) return -1;
     __builtin_memcpy(inode, buf + offset_in_block, sizeof(ext2_inode_t));
     return 0;
 }
@@ -255,11 +272,11 @@ int ext2_read_block(uint32_t block, void* buf) {
     // huge value and read an arbitrary (wrapped) disk sector. A valid FS only references
     // blocks in [0, total_blocks) — block 0 is the boot block, and callers check a
     // pointer for 0 before calling here, so a valid read never hits this bound.
-    if (block >= ext2_fs.sb.total_blocks) return -1;
+    if (!ext2_fs.block_size || !buf || block >= ext2_fs.sb.total_blocks) return -1;
     uint32_t lba = block_to_lba(block);
     uint32_t sectors = ext2_fs.block_size / 512;
     for (uint32_t i = 0; i < sectors; i++)
-        read_sectors(lba + i, 1, (uint8_t*)buf + i * 512);
+        if (read_sectors(lba + i, 1, (uint8_t*)buf + i * 512) < 0) return -1;
     return 0;
 }
 
@@ -272,6 +289,7 @@ int ext2_read_block(uint32_t block, void* buf) {
 // loader rejected a segment past the truncation). -1 is reserved for a genuine
 // read failure (ext2_read_block on an out-of-range/corrupt pointer).
 int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
+    if (!ext2_fs.block_size || !inode || !buf) return -1;
     uint32_t ptrs_per_block = ext2_fs.block_size / 4;
 
     if (iblock < 12) {
@@ -334,8 +352,8 @@ static uint32_t ext2_dirblock_lookup(const uint8_t* block, uint32_t block_size,
     return 0;
 }
 
-static uint32_t resolve_path(const char* path) {
-    if (!path || path[0] != '/') return 0;
+static int64_t resolve_path(const char* path) {
+    if (!ext2_fs.block_size || !path || path[0] != '/') return -1;
     if (path[1] == '\0') return EXT2_ROOT_INO;
 
     uint32_t cur_ino = EXT2_ROOT_INO;
@@ -349,7 +367,7 @@ static uint32_t resolve_path(const char* path) {
          * smash reachable from any unprivileged process that could name a file. */
         int ci = 0;
         while (*p && *p != '/') {
-            if (ci >= (int)sizeof(component) - 1) return 0;   /* name cannot exist */
+            if (ci >= (int)sizeof(component) - 1) return -1;
             component[ci++] = *p++;
         }
         component[ci] = '\0';
@@ -358,7 +376,7 @@ static uint32_t resolve_path(const char* path) {
         if (ci == 0) continue;
 
         ext2_inode_t dir_inode;
-        if (ext2_read_inode(cur_ino, &dir_inode) < 0) return 0;
+        if (ext2_read_inode(cur_ino, &dir_inode) < 0) return -1;
 
         int found = 0;
         uint32_t bytes_left = dir_inode.size;
@@ -366,7 +384,7 @@ static uint32_t resolve_path(const char* path) {
 
         while (bytes_left > 0 && !found) {
             uint8_t* block_buf_local = get_block_buf();
-            if (ext2_read_inode_block(&dir_inode, iblock, block_buf_local) < 0) break;
+            if (!block_buf_local || ext2_read_inode_block(&dir_inode, iblock, block_buf_local) < 0) return -1;
             uint32_t hit = ext2_dirblock_lookup(block_buf_local, ext2_fs.block_size, bytes_left, component);
             if (hit) { cur_ino = hit; found = 1; break; }
             // Directory sizes are whole blocks; guard the subtraction anyway so a
@@ -437,21 +455,21 @@ int ext2_dir_selftest(void) {
 
 // ========== VFS driver functions ==========
 
-uint32_t ext2_resolve(const char* path) {
+int64_t ext2_resolve(const char* path) {
     return resolve_path(path);
 }
 
-uint32_t ext2_get_size(const char* path) {
-    uint32_t ino = resolve_path(path);
-    if (!ino) return 0;
+int64_t ext2_get_size(const char* path) {
+    int64_t ino = resolve_path(path);
+    if (ino <= 0) return -1;
     ext2_inode_t inode;
-    if (ext2_read_inode(ino, &inode) < 0) return 0;
+    if (ext2_read_inode((uint32_t)ino, &inode) < 0) return -1;
     return inode.size;
 }
 
 int ext2_read_file(const char* path, void* buf, uint32_t maxlen) {
-    uint32_t ino = resolve_path(path);
-    if (!ino) return -1;
+    int64_t ino = resolve_path(path);
+    if (ino <= 0) return -1;
 
     ext2_inode_t inode;
     if (ext2_read_inode(ino, &inode) < 0) return -1;
@@ -465,7 +483,7 @@ int ext2_read_file(const char* path, void* buf, uint32_t maxlen) {
 
     while (remaining > 0) {
         uint8_t* block_buf_local = get_block_buf();
-        if (ext2_read_inode_block(&inode, iblock, block_buf_local) < 0) break;
+        if (!block_buf_local || ext2_read_inode_block(&inode, iblock, block_buf_local) < 0) return -1;
         uint32_t chunk = (remaining < ext2_fs.block_size) ? remaining : ext2_fs.block_size;
         __builtin_memcpy((uint8_t*)buf + total, block_buf_local, chunk);
         total += chunk;
@@ -478,20 +496,23 @@ int ext2_read_file(const char* path, void* buf, uint32_t maxlen) {
 
 // ========== EXT2 Write Operations ==========
 
-static void write_sectors(uint32_t lba, uint8_t count, const void* buf) {
-    for (uint8_t i = 0; i < count; i++) sc_write1(lba + i, (const uint8_t*)buf + (uint32_t)i * 512);
+static int write_sectors(uint32_t lba, uint8_t count, const void* buf) {
+    for (uint8_t i = 0; i < count; i++)
+        if (sc_write1(lba + i, (const uint8_t*)buf + (uint32_t)i * 512) < 0) return -1;
+    return 0;
 }
 
 int ext2_write_block(uint32_t block, const void* buf) {
+    if (!ext2_fs.block_size || !buf || block >= ext2_fs.sb.total_blocks) return -1;
     uint32_t lba = block_to_lba(block);
     uint32_t sectors = ext2_fs.block_size / 512;
     for (uint32_t i = 0; i < sectors; i++)
-        write_sectors(lba + i, 1, (const uint8_t*)buf + i * 512);
+        if (write_sectors(lba + i, 1, (const uint8_t*)buf + i * 512) < 0) return -1;
     return 0;
 }
 
 int ext2_write_inode(uint32_t ino, const ext2_inode_t* inode) {
-    if (ino == 0) return -1;
+    if (!ext2_fs.block_size || !inode || ino == 0) return -1;
     uint32_t group = (ino - 1) / ext2_fs.inodes_per_group;
     uint32_t index = (ino - 1) % ext2_fs.inodes_per_group;
 
@@ -507,22 +528,21 @@ int ext2_write_inode(uint32_t ino, const ext2_inode_t* inode) {
     uint8_t* buf = get_block_buf();
     if (!buf) return -1;
 
-    ext2_read_block(block, buf);
+    if (ext2_read_block(block, buf) < 0) return -1;
     __builtin_memcpy(buf + offset_in_block, inode, sizeof(ext2_inode_t));
-    ext2_write_block(block, buf);
-    return 0;
+    return ext2_write_block(block, buf);
 }
 
-static void write_bgd(uint32_t group, const ext2_bgd_t* bgd) {
+static int write_bgd(uint32_t group, const ext2_bgd_t* bgd) {
+    if (group >= ext2_fs.block_groups) return -1;
     uint32_t bgd_per_block = ext2_fs.block_size / sizeof(ext2_bgd_t);
     uint32_t bgd_block_offset = group / bgd_per_block;
     uint32_t bgd_in_block = group % bgd_per_block;
     uint32_t block = ext2_fs.bgd_block + bgd_block_offset;
     uint8_t* buf = get_meta_buf();   /* reached from the free path — never buffer 0 */
-    if (!buf) return;
-    ext2_read_block(block, buf);
+    if (!buf || ext2_read_block(block, buf) < 0) return -1;
     __builtin_memcpy(buf + bgd_in_block * sizeof(ext2_bgd_t), bgd, sizeof(ext2_bgd_t));
-    ext2_write_block(block, buf);
+    return ext2_write_block(block, buf);
 }
 
 /* The block group descriptor tracks how many DIRECTORIES live in the group, and
@@ -530,27 +550,27 @@ static void write_bgd(uint32_t group, const ext2_bgd_t* bgd) {
  * wrong for group #0" as soon as NyxOS created its second directory. It is
  * advisory (allocators use it to spread directories out) but it is part of the
  * format, and a filesystem is only consistent if the summaries agree. */
-static void bgd_adjust_dir_count(int delta) {
+static int bgd_adjust_dir_count(int delta) {
     ext2_bgd_t bgd;
-    if (read_block_group_bgd(0, &bgd) < 0) return;
+    if (read_block_group_bgd(0, &bgd) < 0) return -1;
     if (delta > 0) bgd.used_dirs_count++;
     else if (bgd.used_dirs_count > 0) bgd.used_dirs_count--;
-    write_bgd(0, &bgd);
+    return write_bgd(0, &bgd);
 }
 
 int ext2_sync_bgd(uint32_t group) {
     ext2_bgd_t bgd;
     if (read_block_group_bgd(group, &bgd) < 0) return -1;
-    write_bgd(group, &bgd);
-    return 0;
+    return write_bgd(group, &bgd);
 }
 
 int ext2_sync_superblock(void) {
+    if (!ext2_fs.block_size || ext2_io_failed) return -1;
     uint8_t sb_buf[1024];
     __builtin_memset(sb_buf, 0, 1024);
     __builtin_memcpy(sb_buf, &ext2_fs.sb, sizeof(ext2_superblock_t));
-    write_sectors(2, 2, sb_buf);
-    blk_flush(ext2_fs.drive);   // commit point: force this op's batched writes to the medium (ATA + NVMe)
+    if (write_sectors(2, 2, sb_buf) < 0) return -1;
+    if (blk_flush(ext2_fs.drive) < 0) return ext2_io_error();
     return 0;
 }
 
@@ -591,7 +611,7 @@ uint32_t ext2_alloc_block(void) {
     uint8_t* buf = get_bitmap_buf();
     if (!buf) return 0;
 
-    ext2_read_block(bgd.block_bitmap, buf);
+    if (ext2_read_block(bgd.block_bitmap, buf) < 0) return 0;
 
     /* The bitmap is ONE block: it can only describe block_size*8 blocks, however
      * many blocks_per_group claims. ext2_mount rejects an image where those
@@ -607,18 +627,18 @@ uint32_t ext2_alloc_block(void) {
 
     // Mark bit as used
     buf[bit / 8] |= (1 << (bit % 8));
-    ext2_write_block(bgd.block_bitmap, buf);
+    if (ext2_write_block(bgd.block_bitmap, buf) < 0) return 0;
 
     // Update BGD
     if (bgd.free_blocks_count > 0) bgd.free_blocks_count--;
-    write_bgd(0, &bgd);
+    if (write_bgd(0, &bgd) < 0) return 0;
 
     // Update superblock
     if (ext2_fs.sb.free_blocks > 0) ext2_fs.sb.free_blocks--;
 
     // Zero out the block before returning
     __builtin_memset(buf, 0, ext2_fs.block_size);
-    ext2_write_block(block_num, buf);
+    if (ext2_write_block(block_num, buf) < 0) return 0;
 
     return block_num;
 }
@@ -630,7 +650,7 @@ uint32_t ext2_alloc_inode(void) {
     uint8_t* buf = get_block_buf();
     if (!buf) return 0;
 
-    ext2_read_block(bgd.inode_bitmap, buf);
+    if (ext2_read_block(bgd.inode_bitmap, buf) < 0) return 0;
 
     /* Same one-block ceiling as the block bitmap. Inode numbering needs no
      * first_data_block adjustment: inodes are 1-based, so bit i IS inode i+1. */
@@ -643,11 +663,11 @@ uint32_t ext2_alloc_inode(void) {
 
     // Mark bit as used
     buf[bit / 8] |= (1 << (bit % 8));
-    ext2_write_block(bgd.inode_bitmap, buf);
+    if (ext2_write_block(bgd.inode_bitmap, buf) < 0) return 0;
 
     // Update BGD
     if (bgd.free_inodes_count > 0) bgd.free_inodes_count--;
-    write_bgd(0, &bgd);
+    if (write_bgd(0, &bgd) < 0) return 0;
 
     // Update superblock
     if (ext2_fs.sb.free_inodes > 0) ext2_fs.sb.free_inodes--;
@@ -656,11 +676,13 @@ uint32_t ext2_alloc_inode(void) {
 }
 
 int ext2_write_file(const char* path, const void* buf, uint32_t len) {
-    uint32_t ino = ext2_resolve(path);
+    if (ext2_io_failed || (!buf && len)) return -1;
+    int64_t ino = ext2_resolve(path);
+    if (ino < 0) return -1;
     if (!ino) {
         if (ext2_create_file(path) < 0) return -1;
         ino = ext2_resolve(path);
-        if (!ino) return -1;
+        if (ino <= 0) return -1;
     }
 
     ext2_inode_t inode;
@@ -702,7 +724,7 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
             } else {                                         // reuse the indirect block; count only its holes
                 uint8_t* pib = get_aux_buf();
                 if (!pib) return -1;
-                ext2_read_block(inode.block[12], pib);
+                if (ext2_read_block(inode.block[12], pib) < 0) return -1;
                 uint32_t* pind = (uint32_t*)pib;
                 // The single-indirect block holds only block_size/4 pointers. `nind` is the
                 // whole tail past the 12 direct blocks, so for a file that reaches into the
@@ -763,12 +785,12 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
                      * buffer: ext2_alloc_block already zeroes what it hands back. */
                 }
                 uint8_t* ibuf = get_aux_buf();   /* buf still holds dindirect[] */
-                ext2_read_block(inode.block[12], ibuf);
+                if (!ibuf || ext2_read_block(inode.block[12], ibuf) < 0) return -1;
                 uint32_t* indirect = (uint32_t*)ibuf;
                 if (indirect[sind_iblock] == 0) {
                     indirect[sind_iblock] = ext2_alloc_block();
                     if (indirect[sind_iblock] == 0) return -1;
-                    ext2_write_block(inode.block[12], ibuf);
+                    if (ext2_write_block(inode.block[12], ibuf) < 0) return -1;
                 }
                 block_num = indirect[sind_iblock];
             } else {
@@ -784,28 +806,28 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
                     if (inode.block[13] == 0) return -1;
                 }
                 uint8_t* dbuf = get_aux_buf();                           // L1 table
-                ext2_read_block(inode.block[13], dbuf);
+                if (!dbuf || ext2_read_block(inode.block[13], dbuf) < 0) return -1;
                 uint32_t* dtab = (uint32_t*)dbuf;
                 uint32_t outer = dind / ptrs_per_block;
                 uint32_t inner = dind % ptrs_per_block;
                 if (dtab[outer] == 0) {
                     dtab[outer] = ext2_alloc_block();
                     if (dtab[outer] == 0) return -1;
-                    ext2_write_block(inode.block[13], dbuf);
+                    if (ext2_write_block(inode.block[13], dbuf) < 0) return -1;
                 }
                 uint8_t* ibuf2 = get_aux2_buf();                         // L2 indirect
-                ext2_read_block(dtab[outer], ibuf2);
+                if (!ibuf2 || ext2_read_block(dtab[outer], ibuf2) < 0) return -1;
                 uint32_t* indirect2 = (uint32_t*)ibuf2;
                 if (indirect2[inner] == 0) {
                     indirect2[inner] = ext2_alloc_block();
                     if (indirect2[inner] == 0) return -1;
-                    ext2_write_block(dtab[outer], ibuf2);
+                    if (ext2_write_block(dtab[outer], ibuf2) < 0) return -1;
                 }
                 block_num = indirect2[inner];
             }
         }
 
-        ext2_write_block(block_num, block_buf);
+        if (ext2_write_block(block_num, block_buf) < 0) return -1;
         data += chunk;
         remaining -= chunk;
         iblock++;
@@ -834,20 +856,20 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
     inode.mtime = inode.ctime = ext2_now();
 
     // Write inode back
-    ext2_write_inode(ino, &inode);
+    if (ext2_write_inode(ino, &inode) < 0) return -1;
     /* The in-memory superblock's free counters were decremented by every
      * ext2_alloc_block above and then never written anywhere — ext2_sync_
      * superblock existed but had no callers, so the on-disk totals drifted
      * further from the truth with every write and e2fsck reported them wrong
      * from the first file onward. */
-    ext2_sync_superblock();
+    if (ext2_sync_superblock() < 0) return -1;
 
     return len;
 }
 
 static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
                                 uint32_t new_ino, uint8_t file_type);
-static void ext2_free_inode(uint32_t ino);
+static int ext2_free_inode(uint32_t ino);
 
 /* Split "/a/b/c" into parent "/a/b" and child "c".
  *
@@ -880,15 +902,15 @@ static int split_parent_child(const char* path, char* parent, uint32_t parent_sz
 
 int ext2_create_file(const char* path) {
     if (!path || path[0] != '/') return -1;
-    if (ext2_resolve(path)) return -1;                 // already exists
+    if (ext2_resolve(path)) return -1;                 // exists or lookup failed
 
     char parent_path[MAX_PATH];
     char filename[MAX_FILENAME];
     if (split_parent_child(path, parent_path, sizeof(parent_path),
                                  filename,    sizeof(filename)) < 0) return -1;
 
-    uint32_t parent_ino = ext2_resolve(parent_path);
-    if (!parent_ino) return -1;
+    int64_t parent_ino = ext2_resolve(parent_path);
+    if (parent_ino <= 0) return -1;
 
     uint32_t new_ino = ext2_alloc_inode();
     if (!new_ino) return -1;
@@ -916,13 +938,12 @@ int ext2_create_file(const char* path) {
         ext2_free_inode(new_ino);
         return -1;
     }
-    ext2_sync_superblock();      // free_inodes changed; push the count to disk
-    return 0;
+    return ext2_sync_superblock();
 }
 
 int ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries) {
-    uint32_t ino = resolve_path(path);
-    if (!ino) return -1;
+    int64_t ino = resolve_path(path);
+    if (ino <= 0) return -1;
 
     ext2_inode_t inode;
     if (ext2_read_inode(ino, &inode) < 0) return -1;
@@ -935,7 +956,7 @@ int ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries) {
 
     while (bytes_left > 0 && count < (int)max_entries) {
         uint8_t* block_buf_local = get_block_buf();
-        if (ext2_read_inode_block(&inode, iblock, block_buf_local) < 0) break;
+        if (!block_buf_local || ext2_read_inode_block(&inode, iblock, block_buf_local) < 0) return -1;
         uint32_t off = 0;
         while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < bytes_left &&
                count < (int)max_entries) {
@@ -975,48 +996,51 @@ int ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries) {
 
 // ========== Block and inode freeing ==========
 
-static void ext2_free_block(uint32_t block_num) {
+static int ext2_free_block(uint32_t block_num) {
     /* Mirror of bit_to_block in the allocator — see the note there. A block below
      * first_data_block is not describable by this bitmap at all (it is the boot
      * block); freeing it would underflow into a wild byte index. */
-    if (block_num < ext2_fs.sb.first_data_block) return;
+    if (block_num < ext2_fs.sb.first_data_block) return -1;
     uint32_t bit = block_to_bit(block_num);
-    if (bit >= ext2_fs.block_size * 8) return;      /* outside group 0's bitmap */
+    if (bit >= ext2_fs.block_size * 8) return -1;      /* outside group 0's bitmap */
 
     ext2_bgd_t bgd;
-    if (read_block_group_bgd(0, &bgd) < 0) return;
+    if (read_block_group_bgd(0, &bgd) < 0) return -1;
     uint8_t* buf = get_bitmap_buf();   /* NOT the shared staging buffer */
-    if (!buf) return;
-    ext2_read_block(bgd.block_bitmap, buf);
+    if (!buf || ext2_read_block(bgd.block_bitmap, buf) < 0) return -1;
     if (buf[bit / 8] & (1 << (bit % 8))) {
         buf[bit / 8] &= ~(1 << (bit % 8));
-        ext2_write_block(bgd.block_bitmap, buf);
+        if (ext2_write_block(bgd.block_bitmap, buf) < 0) return -1;
         bgd.free_blocks_count++;
-        write_bgd(0, &bgd);
+        if (write_bgd(0, &bgd) < 0) return -1;
         ext2_fs.sb.free_blocks++;
     }
+    return 0;
 }
 
-static void free_inode_blocks(ext2_inode_t* inode) {
+static int free_inode_blocks(ext2_inode_t* inode) {
     uint32_t ptrs_per_block = ext2_fs.block_size / 4;
     // Free direct blocks
     for (int i = 0; i < 12; i++) {
-        if (inode->block[i]) { ext2_free_block(inode->block[i]); inode->block[i] = 0; }
+        if (inode->block[i]) {
+            if (ext2_free_block(inode->block[i]) < 0) return -1;
+            inode->block[i] = 0;
+        }
     }
     // Free singly-indirect block
     if (inode->block[12]) {
         uint8_t* buf = get_block_buf();
-        ext2_read_block(inode->block[12], buf);
+        if (!buf || ext2_read_block(inode->block[12], buf) < 0) return -1;
         uint32_t* indirect = (uint32_t*)buf;
         for (uint32_t i = 0; i < ptrs_per_block; i++)
-            if (indirect[i]) ext2_free_block(indirect[i]);
-        ext2_free_block(inode->block[12]);
+            if (indirect[i] && ext2_free_block(indirect[i]) < 0) return -1;
+        if (ext2_free_block(inode->block[12]) < 0) return -1;
         inode->block[12] = 0;
     }
     // Free doubly-indirect block
     if (inode->block[13]) {
         uint8_t* buf = get_block_buf();
-        ext2_read_block(inode->block[13], buf);
+        if (!buf || ext2_read_block(inode->block[13], buf) < 0) return -1;
         uint32_t* dindirect = (uint32_t*)buf;
         for (uint32_t i = 0; i < ptrs_per_block; i++) {
             if (dindirect[i]) {
@@ -1027,34 +1051,35 @@ static void free_inode_blocks(ext2_inode_t* inode) {
                  * Precisely the aliasing this file's five-buffer split exists to
                  * prevent; the split just never reached this line. */
                 uint8_t* ibuf = get_aux_buf();
-                ext2_read_block(dindirect[i], ibuf);
+                if (!ibuf || ext2_read_block(dindirect[i], ibuf) < 0) return -1;
                 uint32_t* indirect = (uint32_t*)ibuf;
                 for (uint32_t j = 0; j < ptrs_per_block; j++)
-                    if (indirect[j]) ext2_free_block(indirect[j]);
-                ext2_free_block(dindirect[i]);
+                    if (indirect[j] && ext2_free_block(indirect[j]) < 0) return -1;
+                if (ext2_free_block(dindirect[i]) < 0) return -1;
             }
         }
-        ext2_free_block(inode->block[13]);
+        if (ext2_free_block(inode->block[13]) < 0) return -1;
         inode->block[13] = 0;
     }
+    return 0;
 }
 
-static void ext2_free_inode(uint32_t ino) {
-    if (ino < EXT2_ROOT_INO) return;
+static int ext2_free_inode(uint32_t ino) {
+    if (ino < EXT2_ROOT_INO) return -1;
     uint32_t group = (ino - 1) / ext2_fs.inodes_per_group;
     uint32_t index = (ino - 1) % ext2_fs.inodes_per_group;
     ext2_bgd_t bgd;
-    if (read_block_group_bgd(group, &bgd) < 0) return;
+    if (read_block_group_bgd(group, &bgd) < 0) return -1;
     uint8_t* buf = get_block_buf();
-    if (!buf) return;
-    ext2_read_block(bgd.inode_bitmap, buf);
+    if (!buf || ext2_read_block(bgd.inode_bitmap, buf) < 0) return -1;
     if (buf[index / 8] & (1 << (index % 8))) {
         buf[index / 8] &= ~(1 << (index % 8));
-        ext2_write_block(bgd.inode_bitmap, buf);
+        if (ext2_write_block(bgd.inode_bitmap, buf) < 0) return -1;
         bgd.free_inodes_count++;
-        write_bgd(0, &bgd);
+        if (write_bgd(0, &bgd) < 0) return -1;
         ext2_fs.sb.free_inodes++;
     }
+    return 0;
 }
 
 // ========== Directory helpers ==========
@@ -1095,7 +1120,7 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
 
     while (iblock < 12 && iblock * ext2_fs.block_size < parent_inode.size) {
         if (parent_inode.block[iblock] == 0) break;
-        ext2_read_block(parent_inode.block[iblock], buf);
+        if (ext2_read_block(parent_inode.block[iblock], buf) < 0) return -1;
         uint32_t off = 0;
         while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size) {
             ext2_dirent_t* de = (ext2_dirent_t*)(buf + off);
@@ -1114,7 +1139,7 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
                     de->file_type = file_type;
                     __builtin_memset(de->name, 0, de->rec_len - EXT2_DIRENT_HDR);
                     __builtin_memcpy(de->name, name, name_len);
-                    ext2_write_block(parent_inode.block[iblock], buf);
+                    if (ext2_write_block(parent_inode.block[iblock], buf) < 0) return -1;
                     found_space = 1;
                     break;
                 }
@@ -1131,7 +1156,7 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
                     new_de->file_type = file_type;
                     __builtin_memset(new_de->name, 0, remaining - EXT2_DIRENT_HDR);
                     __builtin_memcpy(new_de->name, name, name_len);
-                    ext2_write_block(parent_inode.block[iblock], buf);
+                    if (ext2_write_block(parent_inode.block[iblock], buf) < 0) return -1;
                     found_space = 1;
                     break;
                 }
@@ -1156,13 +1181,12 @@ static int add_dirent_to_parent(uint32_t parent_ino, const char* name,
         de->name_len = (uint8_t)name_len;
         de->file_type = file_type;
         __builtin_memcpy(de->name, name, name_len);
-        ext2_write_block(new_block, buf);
+        if (ext2_write_block(new_block, buf) < 0) return -1;
         parent_inode.block[iblock] = new_block;
         parent_inode.size += ext2_fs.block_size;
     }
 
-    ext2_write_inode(parent_ino, &parent_inode);
-    return 0;
+    return ext2_write_inode(parent_ino, &parent_inode);
 }
 
 int ext2_mkdir(const char* path) {
@@ -1174,8 +1198,8 @@ int ext2_mkdir(const char* path) {
     if (split_parent_child(path, parent_path, sizeof(parent_path),
                                  dirname,     sizeof(dirname)) < 0) return -1;
 
-    uint32_t parent_ino = ext2_resolve(parent_path);
-    if (!parent_ino) return -1;
+    int64_t parent_ino = ext2_resolve(parent_path);
+    if (parent_ino <= 0) return -1;
 
     uint32_t new_ino = ext2_alloc_inode();
     if (!new_ino) return -1;
@@ -1215,7 +1239,7 @@ int ext2_mkdir(const char* path) {
     de2->file_type = EXT2_FT_DIR;
     de2->name[0] = '.'; de2->name[1] = '.';
 
-    ext2_write_block(first_block, buf);
+    if (ext2_write_block(first_block, buf) < 0) return -1;
 
     if (ext2_write_inode(new_ino, &new_inode) < 0) {
         ext2_free_block(first_block);
@@ -1232,20 +1256,17 @@ int ext2_mkdir(const char* path) {
 
     // Increment parent's link count for ".."
     ext2_inode_t pinode;
-    if (ext2_read_inode(parent_ino, &pinode) == 0) {
-        pinode.links_count++;
-        ext2_write_inode(parent_ino, &pinode);
-    }
-
-    bgd_adjust_dir_count(+1);
-    ext2_sync_superblock();
-    return 0;
+    if (ext2_read_inode(parent_ino, &pinode) < 0) return -1;
+    pinode.links_count++;
+    if (ext2_write_inode(parent_ino, &pinode) < 0) return -1;
+    if (bgd_adjust_dir_count(+1) < 0) return -1;
+    return ext2_sync_superblock();
 }
 
 int ext2_unlink(const char* path) {
     if (!path || path[0] != '/') return -1;
-    uint32_t ino = ext2_resolve(path);
-    if (!ino || ino < EXT2_ROOT_INO) return -1;
+    int64_t ino = ext2_resolve(path);
+    if (ino < EXT2_ROOT_INO) return -1;
 
     ext2_inode_t inode;
     if (ext2_read_inode(ino, &inode) < 0) return -1;
@@ -1258,7 +1279,7 @@ int ext2_unlink(const char* path) {
         uint32_t iblock = 0;
         while (bytes_left > 0 && count == 0) {
             uint8_t* dbuf = get_block_buf();
-            if (ext2_read_inode_block(&dir_inode, iblock, dbuf) < 0) break;
+            if (!dbuf || ext2_read_inode_block(&dir_inode, iblock, dbuf) < 0) return -1;
             uint32_t off = 0;
             while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < bytes_left) {
                 ext2_dirent_t* de = (ext2_dirent_t*)(dbuf + off);
@@ -1291,8 +1312,8 @@ int ext2_unlink(const char* path) {
     if (split_parent_child(path, parent_path, sizeof(parent_path),
                                  child_name,  sizeof(child_name)) < 0) return -1;
 
-    uint32_t parent_ino = ext2_resolve(parent_path);
-    if (!parent_ino) return -1;
+    int64_t parent_ino = ext2_resolve(parent_path);
+    if (parent_ino <= 0) return -1;
 
     // Remove directory entry from parent
     ext2_inode_t parent_inode;
@@ -1312,7 +1333,7 @@ int ext2_unlink(const char* path) {
     while (pbytes_left > 0 && !removed && piblock < 12) {
         if (parent_inode.block[piblock] == 0) break;
         uint8_t* pbuf = get_block_buf();
-        if (ext2_read_inode_block(&parent_inode, piblock, pbuf) < 0) break;
+        if (!pbuf || ext2_read_inode_block(&parent_inode, piblock, pbuf) < 0) return -1;
         uint32_t off = 0;
         while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < pbytes_left) {
             ext2_dirent_t* de = (ext2_dirent_t*)(pbuf + off);
@@ -1328,7 +1349,7 @@ int ext2_unlink(const char* path) {
                 dname[de_name_len] = '\0';
                 if (strcmp(dname, child_name) == 0) {
                     de->inode = 0;
-                    ext2_write_block(parent_inode.block[piblock], pbuf);
+                    if (ext2_write_block(parent_inode.block[piblock], pbuf) < 0) return -1;
                     removed = 1;
                     break;
                 }
@@ -1352,23 +1373,21 @@ int ext2_unlink(const char* path) {
         inode.links_count--;
         if (inode.links_count == 0) {
             // Free all blocks and inode
-            free_inode_blocks(&inode);
+            if (free_inode_blocks(&inode) < 0) return -1;
             /* ext2 marks an inode dead by its dtime, not by its link count
              * alone. Leaving it zero is what made e2fsck say "deleted inode has
              * zero dtime" for every file NyxOS had ever removed. */
             inode.dtime = ext2_now();
             inode.size = 0;
-            ext2_write_inode(ino, &inode);
-            ext2_free_inode(ino);
+            if (ext2_write_inode(ino, &inode) < 0 || ext2_free_inode(ino) < 0) return -1;
         } else {
-            ext2_write_inode(ino, &inode);
+            if (ext2_write_inode(ino, &inode) < 0) return -1;
         }
     }
 
-    ext2_write_inode(parent_ino, &parent_inode);
-    if (inode.mode & EXT2_S_IFDIR) bgd_adjust_dir_count(-1);
-    ext2_sync_superblock();
-    return 0;
+    if (ext2_write_inode(parent_ino, &parent_inode) < 0) return -1;
+    if ((inode.mode & EXT2_S_IFDIR) && bgd_adjust_dir_count(-1) < 0) return -1;
+    return ext2_sync_superblock();
 }
 
 // ===========================================================================

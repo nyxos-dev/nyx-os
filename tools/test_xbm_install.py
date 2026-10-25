@@ -43,10 +43,10 @@ static Node* node(const char* path) {
     for (int i = 0; i < 128; i++) if (nodes[i].exists && !strcmp(nodes[i].path, path)) return &nodes[i];
     return NULL;
 }
-typedef struct { const char* mount_point; uint32_t (*resolve)(const char*); uint32_t (*get_size)(const char*); } mount_entry_t;
+typedef struct { const char* mount_point; int64_t (*resolve)(const char*); int64_t (*get_size)(const char*); } mount_entry_t;
 static Node* mounted_node(const char* sub) { char path[192]; snprintf(path, sizeof(path), "/mnt%s", sub); return node(path); }
-static uint32_t mounted_resolve(const char* sub) { return mounted_node(sub) ? 1 : 0; }
-static uint32_t mounted_size(const char* sub) { Node* n = mounted_node(sub); return n ? n->size : 0; }
+static int64_t mounted_resolve(const char* sub) { return mounted_node(sub) ? 1 : 0; }
+static int64_t mounted_size(const char* sub) { Node* n = mounted_node(sub); return n ? n->size : 0; }
 static mount_entry_t test_mount = {"/mnt", mounted_resolve, mounted_size};
 static mount_entry_t* vfs_find_mount(const char* path) { return !strncmp(path, "/mnt/", 5) ? &test_mount : NULL; }
 static Node* put(const char* path, const void* data, uint32_t size) {

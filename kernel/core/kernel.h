@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.254"
+#define KERNEL_VERSION "6.5.255"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1081,8 +1081,8 @@ int  ata_identify(uint8_t drive, uint16_t* buf);
 int  ata_flush(void);   // flush the drive write cache once per operation
 uint32_t crc32_calc(const uint8_t* data, uint32_t len);   // reflected IEEE CRC-32 (PNG/GPT)
 int  ext2_mount(uint8_t drive, uint32_t part_lba);
-uint32_t ext2_resolve(const char* path);
-uint32_t ext2_get_size(const char* path);
+int64_t ext2_resolve(const char* path);
+int64_t ext2_get_size(const char* path);
 int  ext2_read_file(const char* path, void* buf, uint32_t maxlen);
 int  ext2_write_file(const char* path, const void* buf, uint32_t len);
 int  ext2_create_file(const char* path);
@@ -1103,8 +1103,8 @@ typedef struct {
     int type;
     char mount_point[MAX_PATH];
     void* fs_data;
-    uint32_t (*resolve)(const char* path);
-    uint32_t (*get_size)(const char* path);
+    int64_t (*resolve)(const char* path);   // inode > 0, absent = 0, error = -1
+    int64_t (*get_size)(const char* path);  // bytes >= 0, error = -1
     int (*read_file)(const char* path, void* buf, uint32_t maxlen);
     int (*write_file)(const char* path, const void* buf, uint32_t len);
     int (*readdir)(const char* path, dirent_t* entries, uint32_t max_entries);

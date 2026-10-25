@@ -44,7 +44,7 @@ static void* kmalloc(size_t n) {
 }
 static uint32_t ksize(void* p) { return p ? (uint32_t)((size_t*)p)[-1] : 0; }
 static void kfree(void* p) { if (p) { live--; frees++; free((size_t*)p - 1); } }
-static void flush_mount_node(vfs_node_t* n) { (void)n; flushes++; }
+static int flush_mount_node(vfs_node_t* n) { (void)n; flushes++; return 0; }
 @FUNCTIONS@
 #define CHECK(expr) do { checks++; if (!(expr)) { failures++; fprintf(stderr, "line %d: %s\n", __LINE__, #expr); } } while (0)
 static void reset(void) {

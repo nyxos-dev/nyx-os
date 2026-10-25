@@ -71,8 +71,9 @@ int vfs_readlink(const char* path, char* target, int cap) {
     return 0;
 }
 @PATH_FUNCTIONS@
-static uint32_t backing_resolve(const char* path) { (void)path; return no_resolve ? 0 : 1; }
-static uint32_t backing_size(const char* path) {
+static int64_t backing_resolve(const char* path) { (void)path; return no_resolve == 2 ? -1 : no_resolve ? 0 : 1; }
+static int64_t backing_size(const char* path) {
+    if (size_changed == 2) return -1;
     (void)path; size_calls++;
     return input_size + (size_changed && size_calls > 1 ? 1 : 0);
 }
@@ -170,6 +171,8 @@ int main(int argc, char** argv) {
     if (!strcmp(mode, "open-oom")) { image_size = 0; no_data = 1; rejected = 1; }
     if (!strcmp(mode, "metadata-change")) { size_changed = 1; rejected = 1; }
     if (!strcmp(mode, "no-resolve")) { no_resolve = 1; rejected = 1; }
+    if (!strcmp(mode, "resolve-error")) { no_resolve = 2; rejected = 1; }
+    if (!strcmp(mode, "size-error")) { size_changed = 2; rejected = 1; }
     if (!strcmp(mode, "no-resolve-callback")) { mount.resolve = NULL; rejected = 1; }
     if (!strcmp(mode, "no-size-callback")) { mount.get_size = NULL; rejected = 1; }
     if (!strcmp(mode, "empty-null")) no_data = 1;
@@ -351,7 +354,7 @@ def main():
         if expected is None:
             expected = b"previous\r\nke!ep" if mode in {
                 "reject", "missing", "directory", "fstat-error", "null-data", "prefix", "read-error",
-                "open-oom", "metadata-change", "no-resolve", "no-resolve-callback", "no-size-callback",
+                "open-oom", "metadata-change", "no-resolve", "resolve-error", "size-error", "no-resolve-callback", "no-size-callback",
                 "path-64", "raw-path-limit", "cwd-path-limit", "proc", "dev", "empty-path", "ram-oversize",
                 "symlink-file", "symlink-parent", "symlink-proc", "symlink-dev"
             } else data
@@ -379,7 +382,7 @@ def main():
         add(name, data, "reject")
     base = b"first\r\nsecond\r\n"
     for mode in ("missing", "directory", "fstat-error", "null-data", "prefix", "read-error", "open-oom",
-                 "metadata-change", "no-resolve", "no-resolve-callback", "no-size-callback", "path-63",
+                 "metadata-change", "no-resolve", "resolve-error", "size-error", "no-resolve-callback", "no-size-callback", "path-63",
                  "path-64", "raw-path-limit", "cwd-path-limit", "relative", "proc", "dev", "empty-path", "ram",
                  "symlink-file", "symlink-parent", "symlink-proc", "symlink-dev"):
         add(mode, base, mode)

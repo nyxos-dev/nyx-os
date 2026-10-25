@@ -114,10 +114,42 @@ at boot (`mount_table` holds up to `MAX_MOUNT_POINTS = 8` mounts). The driver
 - **RTC timestamps** on inodes (`ext2_now`), so `mtime`/`dtime` are real and
   `e2fsck` doesn't flag "deleted inode has zero dtime".
 
-**Write batching (v6.4.10).** A mounted file's writes only mark its mirror node
+**Write batching (v6.4.10).** Offset writes through `vfs_pwrite` (including
+userspace `write`) mark a mounted file's mirror node
 `dirty`; the whole file is flushed to disk once, at the **last close**. The
 earlier flush-on-every-`write()` re-wrote the entire file per 4 KiB chunk — O(n²)
 I/O that made the ~496 KiB in-OS `tcc` object take minutes. Now it is linear.
+The kernel's whole-file `vfs_write` and `vfs_write_file` paths persist immediately.
+
+### I/O failures (6.5.255)
+
+ATA checks both command-error and device-fault status after write/flush completion.
+EXT2 installs sector-cache lines only after successful transfers. A failed read,
+write or device flush invalidates the cache and blocks further writes through that
+EXT2 mount. Reads remain available when the device can satisfy them. A fresh mount
+resets this guard; it does not repair the filesystem. Recover the underlying device
+and check the filesystem offline before resuming writes.
+
+Errors propagate through data blocks, inode tables, allocation bitmaps, group
+descriptors, directories and the superblock. `ext2_resolve` and mount `resolve`
+return a positive inode, zero for absence, or `-1` for an error. `get_size` returns
+the byte count, including zero for an empty file, or `-1`. Mounted open and copy
+require a complete readable image; a failed read cannot become an empty file.
+Account lookup errors do not select fallback credentials, and failed account
+reads do not replace the existing account file during user creation.
+
+A successful userspace `write` can still mean only that bytes reached the VFS
+buffer. Applications must check the **last `close`**: it returns `-1` if the
+filesystem write or flush fails. Close consumes that descriptor and releases its
+buffer even on error; retrying the closed descriptor is invalid. A failed immediate
+`vfs_write` returns `-1` and keeps its open node dirty. The kernel `echo` and `write`
+commands report write failures. Mnemosyne keeps its document marked as modified
+when a save fails, allowing the user to copy or save the text elsewhere.
+
+This is error reporting and containment, not atomic replacement or journalling.
+Some sectors or allocation metadata may already have changed before an error;
+partial files, leaks and a required filesystem repair remain possible. A successful
+same-session readback is not proof of power-loss durability. RAM rescue is temporary.
 
 ---
 

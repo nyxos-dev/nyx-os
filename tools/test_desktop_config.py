@@ -57,8 +57,8 @@ int vfs_close(int fd) { (void)fd; closes++; return 0; }
 static char* mounted(const char* sub) {
     char path[128]; snprintf(path, sizeof path, "/mnt%s", sub); return lookup(path);
 }
-static uint32_t resolve(const char* sub) { char* data = mounted(sub); return fault != 10 && data && data[0]; }
-static uint32_t disk_size(const char* sub) { return fault == 7 ? 4096 : (uint32_t)strlen(mounted(sub)) + (fault == 9); }
+static int64_t resolve(const char* sub) { char* data = mounted(sub); return fault == 11 ? -1 : fault != 10 && data && data[0]; }
+static int64_t disk_size(const char* sub) { return fault == 12 ? -1 : fault == 7 ? 4096 : (int64_t)strlen(mounted(sub)) + (fault == 9); }
 static int disk_readdir(const char* sub, dirent_t* entries, uint32_t max) {
     (void)sub; (void)entries; (void)max; return fault == 8 ? 0 : -1;
 }
@@ -261,7 +261,7 @@ int main(void) {
     CHECK(!strcmp(terminal_palette_name(), "classic"));
     CHECK(strstr(alice, "terminal_palette = classic\n"));
     CHECK(!strcmp(desktop_decoration_name(), "classic") && strstr(alice, "decoration = classic\n"));
-    for (int i = 1; i <= 10; i++) {
+    for (int i = 1; i <= 12; i++) {
         fault = i; clear_message(); save_nyx_config();
         CHECK(strstr(message(), "failed") != NULL);
         CHECK(strlen(message()) <= 30);
@@ -290,6 +290,9 @@ int main(void) {
         CHECK(g_panel_tint == 0 && g_clock_12h == 0);
     }
     fault = 0; char image[2048];
+    fault = 11; CHECK(read_nyx_config("/mnt/home/alice/nyx.conf", image, sizeof image) == -2);
+    fault = 12; CHECK(read_nyx_config("/mnt/home/alice/nyx.conf", image, sizeof image) == -2);
+    fault = 0;
     for (int i = 0; i < 2047; i++) alice[i] = ' ';
     alice[2047] = 0;
     CHECK(read_nyx_config("/mnt/home/alice/nyx.conf", image, sizeof image) == 2047);

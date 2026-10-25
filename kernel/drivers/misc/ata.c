@@ -24,7 +24,7 @@ static int ata_drq_wait(uint16_t data_port) {
     int timeout = 30000;
     while (timeout--) {
         uint8_t st = inb(data_port + ATA_PRIMARY_CMD - ATA_PRIMARY_DATA);
-        if (st & ATA_STATUS_ERR) return -1;
+        if (st & (ATA_STATUS_ERR | ATA_STATUS_DF)) return -1;
         if (st & ATA_STATUS_DRQ) return 0;
         if (!(st & ATA_STATUS_BSY)) return -1;
     }
@@ -92,6 +92,8 @@ int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* bu
     // Wait for command completion
     if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0)
         return -1;
+    if (inb(ATA_PRIMARY_CMD) & (ATA_STATUS_ERR | ATA_STATUS_DF))
+        return -1;
 
     return count;
 }
@@ -104,6 +106,7 @@ int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* bu
 int ata_flush(void) {
     outb(ATA_PRIMARY_CMD, ATA_CMD_CACHE_FLUSH);
     if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0) return -1;
+    if (inb(ATA_PRIMARY_CMD) & (ATA_STATUS_ERR | ATA_STATUS_DF)) return -1;
     return 0;
 }
 
