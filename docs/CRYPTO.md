@@ -104,10 +104,20 @@ Two more leaf checks complete the picture:
 - **`x509_check_validity(cert, len)`** — the cert must be within its notBefore/notAfter
   window per the RTC.
 
-**Strict mode.** `tls_set_strict(1)` refuses the handshake unless the chain anchors to a
-pinned root, the hostname matches, and the cert is in date. It is **off by default** (so
-the browser can reach sites whose roots aren't bundled), and turning it on is the
-enforce-everything switch.
+**Strict mode is on by default since 6.5.251.** A handshake is refused unless the
+supported checks establish a pinned chain, matching hostname, valid leaf dates
+and a verified key-exchange signature. `tlsstrict` reports the current setting.
+`tlsstrict off` is an explicit, session-only development override; `tlsstrict on`
+restores enforcement. It also affects Selene's HTTPS client. A missing or empty
+Certificate message, a detected forged chain or an invalid key-exchange signature
+is rejected in either mode.
+
+The bundled keys are a small test-oriented trust set, not a general CA store.
+Strict mode can refuse sites with otherwise valid certificates whose roots or
+signature algorithms are unsupported. These checks do not implement complete
+PKIX validation: intermediate validity dates and revocation are not checked.
+The leaf-date check depends on the RTC. An encrypted response in development
+override mode does not establish an authenticated server identity.
 
 ---
 

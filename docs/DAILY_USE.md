@@ -776,6 +776,30 @@ The immediate data and desktop priorities are:
     boot allocation; it does not implement service supervision or move the GUI
     into userspace. Exact-source remote CI is recorded separately.
 
+56. Development version 6.5.251 enables the supported TLS authentication
+    checks by default. An unanchored chain, unmatched hostname or invalid leaf
+    dates now require the explicit session development override `tlsstrict off`;
+    missing or empty Certificate messages are rejected in either mode. Diagnostics
+    distinguish an encrypted connection from authenticated server identity.
+    [CRYPTO.md](CRYPTO.md) records the small trust set and incomplete PKIX scope.
+    Host tests run the real refusal blocks with mocked certificate verdicts and
+    transport: 249 checks pass; the previous source fails 13. These tests establish
+    policy and cleanup, not cryptographic verification. The warning-free build
+    passes 230 kernel tests and a four-CPU login smoke boot.
+    In a four-CPU, 5 GiB QEMU GUI session, a controlled self-signed server is refused
+    by default, then returns the exact HTTP response only after the explicit
+    override; the real RSA-PSS key-exchange signature and Finished are verified.
+    A peer omitting Certificate is refused in both modes. Enforcement is restored;
+    loopback ping, tcploop, DHCP and a later terminal command work. Two persistent
+    fixtures remain byte-exact. A public-site probe fails to obtain a usable TLS
+    exchange; the host probe also resets, so external-site compatibility is not
+    established by this run. Exact-source CI is recorded separately.
+    This check also reproduces an existing cold-neighbour TCP hang before TLS:
+    ARP resolution re-enters network polling while the TCP lock is held. The TLS
+    policy tests explicitly warm the neighbour cache to isolate authentication.
+    That preparation is not a fix; nonblocking neighbour transmission remains a
+    priority follow-up, as do full chain validation and broader negative inputs.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
@@ -918,9 +942,11 @@ driver contract. Expanding the device list must not weaken the VM regression gat
   the byte-oriented 8×16 font renderer and Spanish keymap do not establish Unicode
   support. [EDITOR.md](EDITOR.md) documents row/path limits, unsupported formats,
   failed-open preservation and the remaining non-atomic save limitation.
-- TLS certificate verification currently defaults to non-strict mode. Loading an
-  HTTPS page therefore does not establish authenticated transport under a daily-use
-  trust policy; stricter behavior needs compatibility and negative-certificate tests.
+- TLS enforces its supported certificate checks by default since 6.5.251, but the
+  small pinned trust set and incomplete PKIX validation limit compatibility and
+  assurance. `tlsstrict off` explicitly disables that enforcement for the session;
+  an encrypted response in that mode does not establish server identity. See
+  [CRYPTO.md](CRYPTO.md) for the exact checks and remaining limits.
 - Development 6.5.208 rejects invalid Oneiros inference scores and normalization
   totals explicitly. This is not a proof that every finite checkpoint is numerically
   stable, nor that generated text is correct code; see the bounded checks above.

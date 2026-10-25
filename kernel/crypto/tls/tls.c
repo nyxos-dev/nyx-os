@@ -1,12 +1,5 @@
-// ============================================================
-// tls.c - TLS handshake start (v5.9.48), step 1 of the https arc
-// ============================================================
-// Sends a real TLS 1.2 ClientHello over TCP:443 and parses the server's ServerHello /
-// Certificate / ServerKeyExchange / ServerHelloDone. This establishes the TLS wire
-// format (record layer + handshake framing) and proves NyxOS can talk to a real https
-// server. There is NO cryptography here yet: the ephemeral-key exchange (X25519/ECDHE),
-// the TLS PRF key schedule, AES-GCM and record decryption — the parts that let us
-// actually read an https page — are later increments. Wired to the `tls` command.
+// TLS 1.2 client: bounded handshake parsing, certificate and ECDHE signature
+// verification, Finished exchange and AES-GCM application records.
 #include "../../core/kernel.h"
 #include "../../net/tcp.h"
 #include "../../net/dns.h"
@@ -38,11 +31,10 @@ static uint8_t tls_ts[20480];           // handshake transcript (hashed for the 
 static uint8_t tls_ske_params[160];     // ServerECDHParams — the data the SKE signature covers
 static uint8_t tls_ske_sig[512];        // the SKE signature (ECDSA DER-Sig-Value, or an RSA sig up to 4096-bit)
 
-// Strict mode (v5.9.72): when on, refuse a connection unless the certificate chain anchors to a
-// pinned root AND the hostname matches AND the cert is in date. Off by default — with a single
-// pinned trust anchor most of the web would otherwise be unreachable. Set via the `tlsstrict`
-// command. (A forged chain / invalid ServerKeyExchange signature is always refused regardless.)
-static int tls_strict = 0;
+// Require the supported chain, hostname, leaf-date and key-exchange checks by
+// default. `tlsstrict off` is an explicit session-only development override.
+// Forged chains and invalid key-exchange signatures are rejected in either mode.
+static int tls_strict = 1;
 void tls_set_strict(int on) { tls_strict = on ? 1 : 0; }
 int  tls_get_strict(void)   { return tls_strict; }
 
@@ -485,13 +477,15 @@ int tls_https_request(const char* host, const char* path, const char* method,
     if (got_ske)  TLSP("TLS: ServerKeyExchange present (ephemeral ECDHE key, curve 0x%x)\n", ske_curve);
     if (got_shd)  TLSP("TLS: ServerHelloDone — handshake start complete.\n");
 
-    // ---- Verify the certificate chain to a pinned trust anchor (v5.9.65) ----
+    // ---- Verify the certificate chain to a pinned trust anchor ----
     // Each certificate is verified under the next one's public key (ECDSA-P256/P384 or RSA, by its
     // signatureAlgorithm), and the topmost must carry NyxOS's pinned root key. A broken link means
-    // tampering/MITM and aborts the handshake; a chain that merely fails to reach a pinned root is
-    // reported but allowed to proceed (NyxOS ships a single trust anchor for now, so most sites
-    // won't chain to it — the point is that a *tampered* chain is caught, and example.com's is
-    // fully anchored).
+    // tampering/MITM and aborts the handshake. An unanchored chain is refused by
+    // default; only the explicit session development override permits it.
+    if (!got_cert || chain_n == 0) {
+        TLSP("TLS: missing or empty Certificate — refusing the handshake\n");
+        tcp_close(conn); return -1;
+    }
     if (got_cert && chain_n > 0) {
         char cmsg[96];
         int trust = x509_verify_chain(chain_ptr, chain_len, chain_n, cmsg, sizeof(cmsg));
@@ -502,7 +496,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
             TLSP("TLS: certificate chain INVALID — %s — aborting (possible MITM)\n", cmsg);
             tcp_close(conn); return -1;
         } else {
-            TLSP("TLS: certificate chain: %s — proceeding without a pinned anchor\n", cmsg);
+            TLSP("TLS: certificate chain is not anchored: %s\n", cmsg);
         }
 
         // Leaf hostname (subjectAltName) + validity window (v5.9.66).
@@ -517,11 +511,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
         else if (vd == 2) TLSP("TLS: leaf certificate has EXPIRED (past notAfter)\n");
         else              TLSP("TLS: leaf certificate validity dates could not be parsed\n");
 
-        // Enforcement (v5.9.72). By default these three checks are REPORTED, not enforced: with a
-        // single pinned root, refusing everything that doesn't chain to it would make most of the
-        // web unreachable. In strict mode (`tlsstrict on`) NyxOS acts like a real browser and
-        // refuses the connection unless ALL of: chain anchored to a pinned root, hostname covered,
-        // certificate in date. (A forged chain / bad SKE signature already aborted, above.)
+        // Authentication failures require an explicit development override.
         if (tls_strict && (trust != X509_OK || hm != 0 || vd != 0)) {
             TLSP("TLS: STRICT MODE — refusing %s (%s%s%suntrusted certificate)\n", host,
                  (trust != X509_OK) ? "not anchored to a trusted root; " : "",
@@ -725,7 +715,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
             TLSP("TLS: handshake did not complete — no verified server Finished received\n");
             tcp_close(conn); return -1;
         }
-        TLSP("TLS: *** HANDSHAKE COMPLETE — server Finished verified; secure channel established with %s ***\n", host);
+        TLSP("TLS: *** HANDSHAKE COMPLETE — server Finished verified; encrypted channel established with %s ***\n", host);
 
         // ---- Encrypted https GET over the established channel ---------------------------
         // Our client Finished was record seq 0, so this GET is client seq 1; the server's
@@ -798,7 +788,9 @@ int tls_https_request(const char* host, const char* path, const char* method,
             tls_print_text(out, pn, 480);
             printf("------------------------------------------------------------\n");
             TLSP("TLS: *** https fetch over TLS succeeded for %s ***\n", host);
-            TLSP("TLS: [note] the ephemeral key now uses a CSPRNG; the server certificate is not verified yet.\n");
+            TLSP("TLS: %s\n", tls_strict
+                 ? "Supported server authentication checks enforced."
+                 : "Development override active: server identity is not assured.");
         }
         return (int)pn;
     } else if (got_ske) {
