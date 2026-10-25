@@ -990,6 +990,11 @@ The immediate data and desktop priorities are:
     bytes. See [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md) for failed lookup,
     boundary, sorting and formatting evidence and the remaining metadata limits.
 
+70. Development version 6.5.265 corrects PIT channel 0 to its documented
+    rate-generator mode while retaining the 1000 Hz request and divisor. See
+    [TIMER_TIMING.md](TIMER_TIMING.md) for the programming check, controlled
+    timer/CPU comparison and remaining emulator and hardware limits.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

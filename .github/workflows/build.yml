@@ -198,6 +198,9 @@ jobs:
       - name: Test RTC sampling and ELF stack metadata
         run: python3 tools/test_build_contract.py
 
+      - name: Test PIT boot programming
+        run: python3 tools/test_pit_programming.py
+
       - name: Require a warning-free build
         run: |
           warns=$(grep -E '(^|[[:space:]])warning:' build.log || true)

@@ -14,12 +14,10 @@ extern void ap_timer_stub(void);
 extern void ap_spurious_stub(void);
 extern void tlb_ipi_stub(void);
 
-// LAPIC timer reload value. Deliberately UNCALIBRATED: the exact rate is
-// irrelevant while all an AP does is count, and calibrating needs a reference
-// clock the APs don't have — the PIT belongs to the BSP and isn't even
-// programmed until after smp_init. Measured against that PIT, divide-by-16 with
-// 62500 counts gives ~500 Hz per AP under QEMU. Real hardware has a different
-// APIC bus frequency, so the AP tick rate will differ there.
+// AP-local periodic scheduler tick. This reload is uncalibrated: divide-by-16
+// with 62500 counts measures about 1000 Hz in the QEMU 10.2.1 TCG test VM.
+// The BSP's PIT is initialized after smp_init and is not a calibration source
+// here. Hardware LAPIC frequencies can differ; calibration remains open.
 #define AP_TIMER_INITCNT 62500
 
 // The AP real-mode trampoline is copied to this physical page; a Startup-IPI's

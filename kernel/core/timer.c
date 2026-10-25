@@ -3,6 +3,8 @@
 // ============================================================
 #include "kernel.h"
 
+#define PIT_CHANNEL0_RATE_GENERATOR 0x34
+
 static uint32_t timer_ticks = 0;
 static uint32_t timer_frequency = 1000;
 static uint32_t pit_divisor = 0;
@@ -78,8 +80,8 @@ void init_timer(uint32_t frequency) {
     timer_ticks = 0;
     pit_divisor = 1193180 / frequency;
 
-    // Configurar PIT en modo 2 (rate generator, IRQ on terminal count)
-    outb(0x43, 0x36);
+    // Channel 0, low/high divisor bytes, mode 2, binary counter.
+    outb(0x43, PIT_CHANNEL0_RATE_GENERATOR);
     outb(0x40, (uint8_t)(pit_divisor & 0xFF));
     outb(0x40, (uint8_t)((pit_divisor >> 8) & 0xFF));
 
