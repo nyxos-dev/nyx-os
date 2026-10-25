@@ -848,6 +848,30 @@ The immediate data and desktop priorities are:
     does not qualify other renderer costs, long sessions or physical hardware,
     and does not make foreground jobs asynchronous.
 
+59. Development version 6.5.254 gives socket descriptors counted ownership.
+    Closing a duplicated descriptor preserves the remaining alias; replacing a
+    descriptor releases its old socket, and socket `dup2` keeps the source open.
+    Accepted connections acquire an owner, or close when no socket slot is free.
+    The preceding version reproduces three target failures: an alias becomes
+    invalid, a stale alias closes a reused slot, and replacement exhausts the
+    socket pool after 31 iterations. The corrected image passes that reproducer.
+    Actual socket/syscall bodies pass 363 ASan/UBSan host checks with mocked
+    allocation, locks and transport. The baseline reaches 265 checks before its
+    failed loops stop, reporting 23 failures. Return-context, IPv4 transmission,
+    syscall-path and pipe/signal/sleep/futex regressions pass separately.
+    The warning-free build passes 230 kernel tests and four-CPU login. Two full
+    `sockdemo --fd-lifetime` runs each complete 40 TCP and 40 UDP replacements,
+    exact loopback transfers through duplicated/replaced sockets and an accepted
+    alias. Existing delayed reads, timeout, EOF, four-child netstorm, poll,
+    deliberate TCP retransmission, ping and DHCP pass. Scheduler heartbeats,
+    window movement and a later terminal command work in the GUI.
+    A separate target run exits four children with three aliases each still
+    open; the parent's available descriptor capacity remains 29 before and after.
+    Both VM disks preserve their 10-byte and 24-byte control files exactly.
+    This is descriptor ownership, not general lifetime cancellation: shared
+    thread-group FD-table races, final close during a blocking operation and
+    socket inheritance through fork remain open. See [NETWORK.md](NETWORK.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

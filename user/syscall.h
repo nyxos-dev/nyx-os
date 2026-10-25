@@ -557,7 +557,7 @@ static inline long setfg(long pid) {
 
 /* Duplicate oldfd onto newfd (closing newfd first if open) — the redirection
  * primitive: dup2(pipefd[1], 1) makes a process's stdout flow into the pipe.
- * Pipe fds only for now (their ends are reference-counted). Returns newfd or -1. */
+ * Pipe and socket fds duplicate ownership; VFS fds currently move. Returns newfd or -1. */
 static inline long dup2(int oldfd, int newfd) {
     return syscall2(SYS_DUP2, oldfd, newfd);
 }

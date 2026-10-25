@@ -26,6 +26,7 @@ typedef struct {
 
 typedef struct {
     int in_use;
+    uint32_t refs;       // descriptor owners; final close tears down the socket
     int type;            // SOCK_STREAM (TCP) or SOCK_DGRAM (UDP)
     int tcp_conn;        // TCP: connected/accepted conn id, LISTEN conn id, or -1
     uint16_t local_port; // bind()'s port (or an ephemeral auto-bind on first sendto)
@@ -136,6 +137,7 @@ int nsock_create(int domain, int type, int protocol) {
                 nsocks[i].dq = (dgram_t*)kmalloc(sizeof(dgram_t) * UDP_QUEUE);
                 if (!nsocks[i].dq) { spin_unlock_irqrestore(&net_lock, fl); return -1; }  // slot left free
             }
+            nsocks[i].refs = 1;
             nsocks[i].in_use = 1;                 // last, so a kmalloc fail leaves it free
             spin_unlock_irqrestore(&net_lock, fl);
             return i;
@@ -209,6 +211,7 @@ int nsock_accept(int s) {
             result = -1;                          // table full unless a slot is found
             for (int j = 0; j < MAX_SOCKETS; j++) {
                 if (!nsocks[j].in_use) {
+                    nsocks[j].refs = 1;
                     nsocks[j].in_use = 1;
                     nsocks[j].type = SOCK_STREAM;
                     nsocks[j].tcp_conn = child;
@@ -218,6 +221,7 @@ int nsock_accept(int s) {
                     break;
                 }
             }
+            if (result < 0) tcp_close(child);    // accepted child has no descriptor owner
         }
         spin_unlock_irqrestore(&net_lock, fl);
         if (result != -2) return result;          // got a child (slot j, or -1 full)
@@ -340,12 +344,30 @@ int nsock_readable(int s) {
     return r;
 }
 
+int nsock_retain(int s) {
+    uint64_t fl = spin_lock_irqsave(&net_lock);
+    if (!nsock_valid(s) || nsocks[s].refs == 0xFFFFFFFFu) {
+        spin_unlock_irqrestore(&net_lock, fl);
+        return -1;
+    }
+    nsocks[s].refs++;
+    spin_unlock_irqrestore(&net_lock, fl);
+    return 0;
+}
+
 int nsock_close(int s) {
-    if (!nsock_valid(s)) return -1;
     // Whole teardown under net_lock: tcp_close mutates the conn table, and clearing
     // dq / in_use must be atomic against a concurrent poll (nsock_udp_deliver) or
     // recvfrom that would otherwise read a freed dq or a stale in_use.
     uint64_t fl = spin_lock_irqsave(&net_lock);
+    if (!nsock_valid(s)) {
+        spin_unlock_irqrestore(&net_lock, fl);
+        return -1;
+    }
+    if (--nsocks[s].refs) {
+        spin_unlock_irqrestore(&net_lock, fl);
+        return 0;
+    }
     if (nsocks[s].tcp_conn >= 0) tcp_close(nsocks[s].tcp_conn);
     if (nsocks[s].dq) { kfree(nsocks[s].dq); nsocks[s].dq = NULL; }   // UDP receive ring
     nsocks[s].in_use = 0;

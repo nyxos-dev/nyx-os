@@ -133,11 +133,34 @@ A socket is a thin handle over `tcp.c`/`udp.c`. The process fd table stores a ta
 | `nsock_bind` / `nsock_listen` / `nsock_accept` | passive open; `accept` blocks for a child | bind records the port |
 | `nsock_send` / `nsock_recv` | `tcp_send` / blocking `tcp_recv` | — |
 | `nsock_sendto` / `nsock_recvfrom` | — | `udp_send` / dequeue from the ring |
-| `nsock_close` | `tcp_close` + free the slot | free the ring + slot |
+| `nsock_retain` | add a descriptor owner | add a descriptor owner |
+| `nsock_close` | final owner: `tcp_close` + free the slot | final owner: free the ring + slot |
 
 Inbound datagrams are delivered by `nsock_udp_deliver` (called from `udp_handle_packet`
 during a poll) into a small per-socket ring; `recvfrom` dequeues. If no socket owns the
 port, the datagram falls through to a kernel listener (DHCP/DNS/echo).
+
+### Descriptor ownership (6.5.254)
+
+Each newly created or accepted socket starts with one descriptor reference.
+`dup` and socket `dup2` add a reference; closing one alias leaves the others
+usable. `dup2` retains the source before closing the destination, including
+when both descriptors already name the same socket. Replacing a socket with
+a file or pipe also releases the old socket through its own close operation.
+Reference changes and final teardown share `net_lock`. An accepted TCP child
+is closed if the socket table has no free slot to own it.
+
+This closes sequential alias/reuse and replacement leaks. It does not serialize
+the shared thread-group FD table or pin an in-flight read/connect across a
+concurrent final close. Socket inheritance through `fork` remains unimplemented;
+the child currently inherits pipe descriptors only. VFS `dup2` retains its
+existing move behavior. These limits must not be inferred closed from reference
+counting or the passing network workloads.
+
+`tools/test_socket_lifetime.py` exercises the actual socket and syscall bodies
+with mocked allocation, locks and transport. `exec /sockdemo.elf --fd-lifetime`
+checks TCP/UDP aliases, repeated replacement, real loopback transfers and an
+accepted connection with a separately created child socket.
 
 ---
 

@@ -1146,9 +1146,9 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
         case SYS_DUP2: {
             // dup2(oldfd, newfd): make newfd refer to oldfd's stream, closing whatever
             // newfd held. The redirection primitive — dup2(pipefd[1], 1) wires a pipe,
-            // dup2(file_fd, 1) redirects stdout to a file. PIPE ends are reference-
-            // counted, so they DUPLICATE (oldfd stays valid). VFS file handles aren't
-            // refcounted, so they MOVE (oldfd is cleared) — that way the shell's
+            // dup2(file_fd, 1) redirects stdout to a file. Pipe ends and sockets
+            // DUPLICATE ownership (oldfd stays valid). VFS handles retain their
+            // existing MOVE behavior (oldfd is cleared) — that way the shell's
             // `dup2(fd,1); close(fd)` leaves exactly one owner and never double-closes.
             int oldfd = (int)a1, newfd = (int)a2;
             process_t* p = fd_owner();          /* the thread group's shared fd table */
@@ -1156,14 +1156,22 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (!p || ufd_lookup(oldfd, &internal) != 0) return -1;
             if (newfd < 0 || newfd >= PROC_MAX_FDS) return -1;
             if (newfd == oldfd) return newfd;
+            // Retain before replacing the destination: it may alias this socket.
+            if ((internal & UFD_SOCK_FLAG) && nsock_retain(UFD_SOCK_ID(internal)) < 0)
+                return -1;
             if (p->ufd_inuse[newfd]) {                        /* implicitly close newfd */
                 int old = p->ufd_handle[newfd];
                 if (old & UFD_PIPE_FLAG) pipe_close_end(UFD_PIPE_ID(old), UFD_PIPE_IS_WRITE(old));
+                else if (old & UFD_SOCK_FLAG) nsock_close(UFD_SOCK_ID(old));
                 else                     vfs_close(old);
                 p->ufd_inuse[newfd] = 0;
             }
             if (internal & UFD_PIPE_FLAG) {                   /* pipe end -> duplicate (incref) */
                 pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
+                p->ufd_inuse[newfd]  = 1;
+                p->ufd_handle[newfd] = internal;
+                p->ufd_offset[newfd] = 0;
+            } else if (internal & UFD_SOCK_FLAG) {            /* already retained above */
                 p->ufd_inuse[newfd]  = 1;
                 p->ufd_handle[newfd] = internal;
                 p->ufd_offset[newfd] = 0;
@@ -1178,9 +1186,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
         case SYS_DUP: {
             // dup(oldfd): return the lowest-available fd that refers to the same
             // stream as oldfd — both stay open (unlike dup2's move for VFS files).
-            // Pipe ends are refcounted so we incref; VFS/socket handles aren't, so
-            // the new fd just aliases the same handle (vfs_close is a no-op for the
-            // ramdisk nodes ring 3 opens, so closing either fd later is safe).
+            // Each shared resource keeps its additional descriptor owner alive.
             int oldfd = (int)a1;
             process_t* p = fd_owner();          /* the thread group's shared fd table */
             int internal;
@@ -1189,7 +1195,12 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (newfd < 0) return -1;                  /* fd table full */
             if (internal & UFD_PIPE_FLAG)
                 pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
-            else if (!(internal & UFD_SOCK_FLAG))
+            else if (internal & UFD_SOCK_FLAG) {
+                if (nsock_retain(UFD_SOCK_ID(internal)) < 0) {
+                    ufd_release(newfd);
+                    return -1;
+                }
+            } else
                 vfs_dup(internal);   /* mount-backed mirrors need the alias counted */
             p->ufd_offset[newfd] = p->ufd_offset[oldfd];   /* start at the same offset */
             return newfd;

@@ -29,7 +29,8 @@ int nsock_recv(int s, void* buf, int len);              // blocks until data or 
 int nsock_sendto(int s, const void* buf, int len, uint32_t ip, uint16_t port);     // UDP
 int nsock_recvfrom(int s, void* buf, int len, uint32_t* src_ip, uint16_t* src_port); // UDP, blocks
 int nsock_udp_deliver(uint16_t dst_port, uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port);
-int nsock_close(int s);
+int nsock_retain(int s);    // add a descriptor owner, or -1 if invalid/overflow
+int nsock_close(int s);     // drop an owner; only the final close tears down
 int nsock_readable(int s);   // poll(): 1 if the socket has data/EOF ready to read
 void tcp_echo_init(void);   // start the loopback TCP echo service (port 7)
 void tcp_echo_poll(void);   // drive it from the net poll loop

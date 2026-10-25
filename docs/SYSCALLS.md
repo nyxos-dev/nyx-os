@@ -89,7 +89,7 @@ These are bounded host and VM checks; no physical hardware trial is claimed.
 | 45 | `SYS_FSTAT` | `fstat(fd, *st)` | as `stat` on an open fd |
 | 46 | `SYS_LSEEK` | `lseek(fd, off, whence)` | `SEEK_SET`/`CUR`/`END` |
 | 48 | `SYS_DUP` | `dup(oldfd)` | lowest free fd aliasing `oldfd` |
-| 14 | `SYS_DUP2` | `dup2(oldfd, newfd)` | alias onto a chosen fd (pipe/redirect plumbing) |
+| 14 | `SYS_DUP2` | `dup2(oldfd, newfd)` | duplicate pipe/socket ownership onto a chosen fd; VFS handles currently move |
 | 12 | `SYS_PIPE` | `pipe(fds[2])` | a 4 KB blocking byte pipe |
 | 15 | `SYS_GETDENTS` | `getdents(fd, buf, n)` | read directory entries |
 | 21 | `SYS_CHDIR` | `chdir(path)` | set the per-process cwd |
