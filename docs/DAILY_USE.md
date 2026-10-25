@@ -800,6 +800,30 @@ The immediate data and desktop priorities are:
     That preparation is not a fix; nonblocking neighbour transmission remains a
     priority follow-up, as do full chain validation and broader negative inputs.
 
+57. Development version 6.5.252 removes recursive network polling from ARP
+    resolution during transmission. A cold neighbour now retains a bounded copy
+    of the IPv4 packet for the normal poll loop, instead of re-entering TCP or
+    socket locks. The queue holds 16 packets of at most 2048 bytes, expires them
+    after three seconds or interface configuration changes, and retries ARP once
+    per second. Queue acceptance is not a delivery guarantee; TCP retains its
+    existing retransmission behaviour. See [NETWORK.md](NETWORK.md).
+    Host tests execute the actual transmission and lookup paths with mocked
+    Ethernet, clocks and locks: 143 checks pass, including copy ownership, capacity,
+    expiry, clock wrap, route changes and transient transmit failure. The previous
+    source fails two baseline checks and recursively polls 120 times. These host
+    tests do not establish hardware timing or concurrent execution correctness.
+    The final warning-free link passes 230 kernel tests and a four-CPU smoke boot.
+    In QEMU with four CPUs, 5 GiB and an RTL8139, real userspace shell pipelines
+    exchange exact UDP and TCP messages with previously unknown neighbours.
+    Cold kernel TLS reaches the controlled server without warming ARP, refuses
+    its unknown root by default and returns the exact response after the explicit
+    development override. Missing Certificate remains refused in both modes.
+    An unreachable neighbour returns failure and the terminal accepts a later
+    command. Deliberate TCP retransmission, four-child netstorm, loopback ping,
+    tcploop and DHCP pass; two persistent fixtures remain byte-exact. The desktop
+    is inspected after recovery. General Internet compatibility, broader routing,
+    fragmentation and socket lifetime/cancellation remain separate work.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

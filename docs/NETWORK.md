@@ -86,6 +86,7 @@ clients) invoke in a bounded busy-loop:
 ```c
 ip_loopback_poll();        // deliver self-addressed (127.0.0.1) packets
 for each non-lo iface: eth_poll(i);   // drain the NIC RX ring, dispatch inbound
+ip_pending_poll();        // send queued packets once a neighbour is known
 tcp_tick();                // drive TCP retransmit timers
 tcp_echo_poll();           // service the built-in echo server (port 7)
 ```
@@ -160,8 +161,34 @@ issue-batch fixes and is locked by tests:
   wires a kernel handler for a port; `udp_handle_packet` delivers to a socket first,
   then to a registered listener.
 - **ICMP** (`icmp.c`): `icmp_ping` sends an echo request and matches the reply.
-- **ARP** (`arp.c`): `arp_resolve` maps an IP to a MAC (request/reply + cache) so the
-  Ethernet layer can address a frame.
+- **ARP** (`arp.c`): `arp_resolve` returns a cached MAC or sends a request and
+  returns immediately. It does not enter receive polling from the transmit path.
+
+### Unresolved neighbours (6.5.252)
+
+`ip_send` can run with the socket and TCP locks already held. Polling the receive
+stack there used to re-enter those locks through ARP resolution and hang a first
+connection. IPv4 now retains a bounded copy of an unresolved packet; the normal
+network poll loop learns the ARP reply and flushes pending transmissions.
+
+| Bound | Value |
+|---|---|
+| Pending packets | 16 shared slots |
+| Maximum queued IPv4 packet | 2048 bytes, including the IPv4 header |
+| Queue lifetime | 3000 timer ticks (3 seconds with the current timer) |
+| ARP retry interval | 1000 ticks per pending entry |
+
+A full queue or oversized pending packet returns an error. A queued datagram is
+accepted for transmission, not guaranteed to arrive. Pending entries expire;
+changing the interface address, mask or gateway discards its old entries. A
+temporary transmitter error retains the copy until a later poll or expiry.
+TCP keeps its existing retransmission queue. Broadcasts, known neighbours and
+loopback follow their existing immediate paths. This is not IP fragmentation,
+multi-interface routing qualification or a redesign of socket lifetime.
+
+`tools/test_ip_pending.py` compiles the actual IPv4 transmit and ARP lookup paths
+with mocked Ethernet, clock and locks. Its bounds and retry checks complement
+target tests; they do not establish real NIC or concurrent lock correctness.
 
 ---
 
@@ -175,9 +202,11 @@ issue-batch fixes and is locked by tests:
   hostile packets and is locked by the `dns` KAT (v6.4.109).
 - **HTTP** (`http.c`): `http_get` / `http_request` over TCP; `http_parse_response`
   parses status + headers + (chunked) body and is adversarially tested by `httpparse`.
-- **TLS 1.2** (`kernel/crypto/tls/tls.c`): `tls_https_fetch` does a full handshake with
-  X.509 certificate-chain validation against a built-in root store; `tls_set_strict`
-  toggles strict verification. The crypto underneath (SHA-256/512, AES-GCM, RSA, P-256/
+- **TLS 1.2** (`kernel/crypto/tls/tls.c`): `tls_https_fetch` performs a handshake with
+  supported X.509 checks against a small pinned trust set, enforced by default
+  since 6.5.251. `tls_set_strict` selects the explicit development override; see
+  [CRYPTO.md](CRYPTO.md) for validation and compatibility limits.
+  The crypto underneath (SHA-256/512, AES-GCM, RSA, P-256/
   P-384, X25519) all has its own KATs.
 - **Echo** (`net.c`, port 7, RFC 862): an always-on TCP+UDP loopback echo server so a
   userspace socket program has a peer with no external host required.
@@ -189,7 +218,8 @@ issue-batch fixes and is locked by tests:
 Untrusted network input is treated as hostile and the risky parsers are pinned by the
 CI self-test battery (see `docs/ARCHITECTURE.md`): `tcpcksum` (TCP checksum), `dns`
 (DNS response parser), `httpparse` (HTTP response parser). DNS uses random transaction
-IDs; TLS validates the full certificate chain. Adding a new parser on the receive path
+IDs; TLS enforces its supported authentication checks, with incomplete PKIX coverage.
+Adding a new parser on the receive path
 should come with an adversarial KAT in the same family.
 
 ---

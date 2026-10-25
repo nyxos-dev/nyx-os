@@ -146,6 +146,9 @@ jobs:
       - name: Test timeout duration bounds and tick wrap
         run: python3 tools/test_timeout.py
 
+      - name: Test bounded IPv4 neighbour transmission
+        run: python3 tools/test_ip_pending.py
+
       - name: Test TLS authentication policy and refusal cleanup
         run: python3 tools/test_tls_policy.py
 

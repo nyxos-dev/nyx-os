@@ -1,4 +1,5 @@
 #include "../core/kernel.h"
+#include "../core/spinlock.h"
 
 #define IP_PROTO_ICMP 1
 #define IP_PROTO_UDP  17
@@ -18,6 +19,8 @@ typedef struct __attribute__((packed)) {
 } ip_header_t;
 
 extern int eth_send(const uint8_t* dst_mac, uint16_t type, const uint8_t* data, uint32_t len, int iface_idx);
+extern int arp_cache_lookup(uint32_t ip, uint8_t* mac);
+extern void arp_send_request(uint32_t ip, int iface_idx);
 extern int arp_resolve(uint32_t ip, uint8_t* mac, int iface_idx);
 extern void udp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip);
 extern void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip);
@@ -88,8 +91,73 @@ void ip_loopback_poll(void) {
     }
 }
 
+// A cold neighbour must not poll the stack while a TCP/socket lock is held.
+// Keep a bounded copy until the normal poll loop learns its MAC. TCP still owns
+// retransmission; datagrams are accepted when queued, not when delivered.
+#define IP_PENDING_COUNT 16
+#define IP_PENDING_BYTES 2048
+#define IP_PENDING_TTL   3000u
+#define IP_PENDING_RETRY 1000u
+typedef struct {
+    uint8_t data[IP_PENDING_BYTES];
+    uint32_t len, next_hop, queued, requested;
+    uint32_t source, netmask, gateway;
+    int iface;
+} ip_pending_t;
+static ip_pending_t ip_pending[IP_PENDING_COUNT];
+static spinlock_t ip_pending_lock = SPINLOCK_INIT;
+
+static int ip_pending_enqueue(const uint8_t* packet, uint32_t len,
+                              uint32_t next_hop, int iface) {
+    if (len > IP_PENDING_BYTES) return -1;
+    uint64_t fl = spin_lock_irqsave(&ip_pending_lock);
+    int result = -1;
+    for (int i = 0; i < IP_PENDING_COUNT; i++) {
+        ip_pending_t* p = &ip_pending[i];
+        if (p->len) continue;
+        memcpy(p->data, packet, len);
+        p->len = len; p->next_hop = next_hop; p->iface = iface;
+        p->queued = p->requested = get_ticks();
+        p->source = net_interfaces[iface].ip;
+        p->netmask = net_interfaces[iface].netmask;
+        p->gateway = net_interfaces[iface].gateway;
+        result = (int)len;
+        break;
+    }
+    spin_unlock_irqrestore(&ip_pending_lock, fl);
+    return result;
+}
+
+void ip_pending_poll(void) {
+    uint64_t fl = spin_lock_irqsave(&ip_pending_lock);
+    uint32_t now = get_ticks();
+    for (int i = 0; i < IP_PENDING_COUNT; i++) {
+        ip_pending_t* p = &ip_pending[i];
+        if (!p->len) continue;
+        net_iface_t* iface = &net_interfaces[p->iface];
+        if (!iface->name[0] || iface->ip != p->source ||
+            iface->netmask != p->netmask || iface->gateway != p->gateway ||
+            (uint32_t)(now - p->queued) >= IP_PENDING_TTL) {
+            p->len = 0;
+            continue;
+        }
+        uint8_t mac[6];
+        if (arp_cache_lookup(p->next_hop, mac)) {
+            if (eth_send(mac, 0x0800, p->data, p->len, p->iface) >= 0)
+                p->len = 0;
+        } else if ((uint32_t)(now - p->requested) >= IP_PENDING_RETRY) {
+            arp_send_request(p->next_hop, p->iface);
+            p->requested = now;
+        }
+    }
+    spin_unlock_irqrestore(&ip_pending_lock, fl);
+}
+
 int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len, int iface_idx) {
+    if (len > 65535u - sizeof(ip_header_t) || (len && !data)) return -1;
     int is_loopback = is_local_ip(dst_ip);
+    int pending = 0;
+    uint32_t next_hop = dst_ip;
 
     uint8_t mac[6];
     if (is_loopback) {
@@ -109,6 +177,8 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len
             if (iface_idx < 0) return -1;
         }
 
+        if (iface_idx >= 8 || !net_interfaces[iface_idx].name[0]) return -1;
+
         // Broadcast destinations (limited 255.255.255.255 or the subnet directed
         // broadcast) go to the broadcast MAC directly — ARP-resolving them never
         // gets a reply and would hang the send (this broke DHCP DISCOVER).
@@ -121,10 +191,9 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len
             // Off-subnet destinations are reached via the default gateway: ARP-resolve
             // the gateway's MAC, not the (remote) destination's. Without this, every
             // internet destination failed ARP and no packet was sent.
-            uint32_t next_hop = dst_ip;
             if (nm && (dst_ip & nm) != (my_ip & nm) && net_interfaces[iface_idx].gateway)
                 next_hop = net_interfaces[iface_idx].gateway;
-            if (!arp_resolve(next_hop, mac, iface_idx)) return -1;
+            pending = !arp_resolve(next_hop, mac, iface_idx);
         }
     }
 
@@ -158,7 +227,8 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len
         return (int)packet_len;
     }
 
-    int result = eth_send(mac, 0x0800, packet, packet_len, iface_idx);
+    int result = pending ? ip_pending_enqueue(packet, packet_len, next_hop, iface_idx)
+                         : eth_send(mac, 0x0800, packet, packet_len, iface_idx);
     kfree(packet);
     return result;
 }

@@ -85,6 +85,7 @@ void init_net(void) {
 void kernel_poll_net(void) {
     extern void eth_poll(int iface_idx);
     extern void ip_loopback_poll(void);
+    extern void ip_pending_poll(void);
     extern void tcp_tick(void);
     // Serialized (v5.8.78; SMP net_lock v5.9.24): the loopback ring drain and the TCP
     // state machine are NOT reentrant, and syscalls run preemptibly, so two processes
@@ -101,6 +102,7 @@ void kernel_poll_net(void) {
             eth_poll(i);
         }
     }
+    ip_pending_poll();    // send queued packets after learning neighbour MACs
     tcp_tick();           // drive TCP retransmit timers
     tcp_echo_poll();      // service the built-in loopback echo (port 7)
     spin_unlock_irqrestore(&net_lock, fl);

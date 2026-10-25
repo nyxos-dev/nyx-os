@@ -38,7 +38,7 @@ void arp_init(void) {
     memset_asm(arp_cache, 0, sizeof(arp_cache));
 }
 
-static int arp_cache_lookup(uint32_t ip, uint8_t* mac) {
+int arp_cache_lookup(uint32_t ip, uint8_t* mac) {
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].valid && arp_cache[i].ip == ip) {
             memcpy(mac, arp_cache[i].mac, 6);
@@ -138,25 +138,11 @@ void arp_handle_packet(uint8_t* packet, uint32_t len) {
     }
 }
 
+// Nonblocking neighbour lookup: never enter the receive path from TX.
+// ip_send retains a bounded packet copy; the normal poll loop learns the reply.
 int arp_resolve(uint32_t ip, uint8_t* mac, int iface_idx) {
     if (arp_cache_lookup(ip, mac)) return 1;
     arp_send_request(ip, iface_idx);
-    printf("[ARP] Resolving %d.%d.%d.%d...\n", IP4_OCTETS(ip));
-    // sleep() busy-waits on tick_count, which never advances (the PIT timer
-    // doesn't fire — see kernel.c), so it would hang forever. Poll with a
-    // port-I/O busy-wait between iterations instead.
-    for (int retry = 0; retry < 120; retry++) {
-        kernel_poll_net();
-        for (int d = 0; d < 1500; d++) inb(0x80);
-        if (arp_cache_lookup(ip, mac)) {
-            printf("[ARP] Resolved\n");
-            return 1;
-        }
-        if (retry == 10 || retry == 50) {
-            arp_send_request(ip, iface_idx);
-        }
-    }
-    printf("[ARP] Failed to resolve\n");
     return 0;
 }
 
