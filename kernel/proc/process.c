@@ -1181,7 +1181,7 @@ void irq_scheduler_tick(void) {
     // Round-robin to the next runnable thread. We schedule kernel threads and
     // spawned (sched_managed) user processes; we skip idle unless nothing else
     // runs, NULL-stack placeholders (e.g. `init` — switching to it would iretq off
-    // a null RSP), unmanaged user procs (init.elf, the blocking-exec target), and
+    // a null RSP), unmanaged user procs (an image still being prepared), and
     // non-RUN states (parked/zombie).
     for (int i = 1; i <= process_count; i++) {
         int idx = (current_idx + i) % process_count;

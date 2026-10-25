@@ -67,9 +67,10 @@ are skipped, and `ZOMBIE` tasks are dead but not yet freed.
 
 The single distinction that matters for safety is **`page_directory`**:
 
-- **Kernel threads** (`page_directory == NULL`) — `init`, `idle`, the per-core
-  `apworker` tasks, and the `compositor` run in **ring 0** on the shared kernel
-  address space. They have no user stack to free.
+- **Kernel tasks** (`page_directory == NULL`) — the PID 1 bootstrap record,
+  `idle`, the per-core `apworker` tasks, and the `compositor` use the shared
+  kernel address space. The PID 1 record named `init` has no runnable stack;
+  the actual kernel threads execute in **ring 0**. They have no user stack to free.
 - **User processes** (`page_directory != NULL`) run in **ring 3** with their own
   PML4. A fault in ring 3 kills only that process; the kernel keeps running.
 
@@ -81,6 +82,37 @@ system. Both commands share that exact guard, so neither can take down `init`,
 ---
 
 ## 4. Lifecycle: create → run → exit → reap
+
+### Boot ownership and the current `init` limit
+
+The present startup sequence is:
+
+```text
+Firmware → GRUB → assembly bootstrap → kernel_main
+  → memory, paging, interrupts, devices and process manager
+  → initramfs and shared libc
+  → persistent filesystem mount
+  → account setup and login → compositor desktop
+```
+
+`kernel_main` performs these steps. With no framebuffer, it enters the kernel
+shell instead of the graphical login. PID 1 is a kernel bootstrap record named
+`init`; it is not a userspace service supervisor. Background cleanup is performed
+by the existing kernel `reap_zombies` callback, while live user parents collect
+their children through `waitpid`.
+
+`user/init.c`, packaged as `/init.elf`, is a manual demonstration of libc,
+fork/wait, pipes, signals and other system calls. Run it using `exec /init.elf`.
+It prints its results and exits; it does not launch login or the desktop. Before
+development version 6.5.250, boot loaded a separate copy but never marked it
+scheduler-managed. That process retained its address space and stack without
+running. Boot now leaves the demonstration on disk until explicitly launched.
+
+A real userspace init remains planned work: define service configuration and
+startup order, adopt and reap orphans, bound restart attempts, expose failures,
+and coordinate shutdown with filesystem flushing. Moving login or the compositor
+under that supervisor requires an explicit handoff and failure recovery; the
+current demonstration is not that handoff.
 
 ```
  spawn /prog.elf ──► elf_validate ──► elf_load_args ──► PROC_RUN ──► exit()

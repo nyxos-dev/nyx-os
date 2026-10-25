@@ -11727,40 +11727,9 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
 
         printf("[INIT] initramfs ready. Use 'exec <file>' to run an ELF binary.\n");
 
-        // Try to auto-exec /init.elf from initramfs
-        printf("[INIT] Looking for /init.elf...\n");
-        int init_fd = vfs_open("/init.elf", 0, 0);
-        if (init_fd >= 0) {
-            uint32_t init_size = vfs_fsize(init_fd);
-            uint8_t* init_data = vfs_fdata(init_fd);
-            if (init_data && init_size > 0) {
-                uint8_t* copy = (uint8_t*)kmalloc(init_size);
-                if (copy) {
-                    memcpy_asm(copy, init_data, init_size);
-                    vfs_close(init_fd);
-                    printf("[INIT] Loading /init.elf (%u bytes)...\n", init_size);
-                    if (elf_validate(copy, init_size)) {
-                        process_t* init_proc = NULL;
-                        if (elf_load(copy, init_size, &init_proc) == 0) {
-                            proc_set_comm(init_proc, "/init.elf");   // "init" not "elf"
-                            init_proc->cmdline[0] = '\0';
-                            strncpy(init_proc->cmdline, "/init.elf", sizeof(init_proc->cmdline) - 1);
-                            printf("[INIT] Registered init PID=%u (scheduler will start it)\n", init_proc->pid);
-                        } else {
-                            printf("[INIT] ELF load failed\n");
-                        }
-                    } else {
-                        printf("[INIT] Not a valid ELF\n");
-                    }
-                    kfree(copy);
-                }
-            } else {
-                vfs_close(init_fd);
-                printf("[INIT] /init is empty\n");
-            }
-        } else {
-                printf("[INIT] /init.elf not found\n");
-        }
+        // /init.elf is the manual userspace demonstration, not a boot service.
+        // elf_load alone leaves sched_managed=0 and retains an unstarted process.
+        printf("[INIT] Userspace demo available via 'exec /init.elf'.\n");
     }
 
     // Auto-mount EXT2 if available

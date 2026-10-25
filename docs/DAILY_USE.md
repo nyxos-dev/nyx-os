@@ -757,6 +757,25 @@ The immediate data and desktop priorities are:
     not full 5 GiB allocation, swap, physical-hardware or long-session validation.
     See [MEMORY.md](MEMORY.md) for the current layout and test contracts.
 
+55. Development version 6.5.250 stops loading the manual `/init.elf`
+    demonstration as an unmanaged boot process. It previously retained an address
+    space and stack while the scheduler skipped it. The kernel still owns device
+    initialization, mounting, account/login setup and desktop startup; PID 1 is
+    a bootstrap record, not a userspace service supervisor. The demonstration
+    remains available through `exec /init.elf`; [PROCESS.md](PROCESS.md) describes
+    startup ownership and the planned supervisor responsibilities.
+    Paired four-CPU, 5 GiB QEMU boots show the unmanaged user `init` disappearing,
+    one fewer process and 20 additional free pages (80 KiB) at the same terminal
+    checkpoint. Five manual demonstration runs exit successfully and leave no
+    user processes behind. The first two runs retain three and one slab-cache
+    pages respectively, identified by walking the real cache lists; the final
+    three runs have exact page recovery, and all five preserve heap usage.
+    mtdemo, dragging and a subsequent terminal command remain usable; the two
+    persistent fixtures are byte-exact. The build has no warnings, 230 kernel
+    tests pass, and the four-CPU smoke boot reaches login. This fixes an unstarted
+    boot allocation; it does not implement service supervision or move the GUI
+    into userspace. Exact-source remote CI is recorded separately.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits
