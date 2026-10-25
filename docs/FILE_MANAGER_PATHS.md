@@ -147,3 +147,54 @@ four-CPU login. These GUI and offline checks are separate from host fault tests.
 Backend callbacks that return success with a misleading size cannot be detected
 by this UI. Directory-read errors that look like end-of-list, concurrent changes,
 whole-folder accounting and hardware qualification remain separate work.
+
+## Properties input isolation (6.5.270)
+
+Properties consumes client keyboard input while open. Clipboard shortcuts,
+search, navigation and pending filename edits cannot operate on the listing
+behind it. Esc and Enter close the dialog without forwarding the key to an
+underlying edit or file activation. A client click also closes it without
+activating the covered toolbar or list item. Global window-management shortcuts
+retain their existing behaviour.
+
+Opening Properties cancels a pending file drag. Pointer callbacks cannot start
+or finish a file move while it is open. A mouse press used to dismiss it stays
+consumed until the buttons are released, so holding and moving that same press
+cannot start a hidden drag. `props_wait_release` records that gesture boundary;
+it does not poll, add a timer or allocate memory. Normal clipboard and pointer
+operations resume after dismissal and release.
+
+Hemera 3.35 delivers stationary button edges to File Manager's pointer callback
+so a release is observed even without pointer movement. Other applications
+retain their existing movement-only callback dispatch. The actual compositor
+branch passes host checks for press, release, unchanged held state, ordinary
+movement and clients without a callback. Idle/damage regressions also pass;
+this is not a measured CPU optimization.
+
+The preceding implementation allows captured Ctrl-V to move a cut file behind
+the open dialog and allows a pending drag release to move it too. Controlled
+host calls reproduce both using the actual action bodies and simulated VFS
+operations. The expanded `tools/test_move_callers.py` passes 992 ASan/UBSan
+checks, including preserved clipboard, search and filename-edit state, four
+modifier combinations, both keyboard dismissals and pointer release recovery.
+The click test observes the actual modal dispatch prefix; the remaining click
+workflow is qualified separately in QEMU. Existing metadata and queued-modifier
+tests also pass. This correction does not fix long property text overflowing
+the fixed panel, add Unicode, make file moves atomic or provide async terminal
+execution.
+
+A four-CPU, 5 GiB QEMU/TCG run uses real PS/2 input to cut a file, enter a
+destination directory and open Properties on another file. Clipboard, search
+and navigation attempts leave the dialog, listing and pending cut unchanged.
+Esc closes it; a subsequent paste moves the file and clears the cut. Enter
+closes without activating a file, a click over Delete only dismisses, and a
+held dismissing press cannot start a drag. Releasing the button with a stationary
+pointer clears the gesture gate. Offline inspection verifies nine expected file
+contents, including the moved six-byte file, and absence of its original source.
+Installed `libctest`, `stackcheck`, a later terminal command and window drag pass.
+The disposable VM closes. The build is warning-free, with 230 kernel tests and
+four-CPU startup passing.
+
+An initial candidate fails the stationary-release check because the compositor
+only dispatches movement; the corrected pointer branch passes a complete fresh
+VM run. This target check is distinct from the host model of hidden VFS actions.

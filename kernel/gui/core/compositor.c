@@ -4694,9 +4694,12 @@ void compositor_run(void) {
         // into the back buffer without setting `redraw`, so the finished frame must be
         // published in full — the cursor-only fast present below would miss it.
         int mm_dispatched = 0;
-        if (mx != mouse_x || my != mouse_y) {
+        if (mx != mouse_x || my != mouse_y || btns != prev_btns) {
             window_t* fwin = focused_window();
-            if (fwin && fwin->on_mousemove) {
+            // File drags and modal dismissal need stationary button edges too.
+            if (fwin && fwin->on_mousemove &&
+                (mx != mouse_x || my != mouse_y ||
+                 fwin->on_mousemove == fileman_win_mousemove)) {
                 fwin->on_mousemove(fwin, mx, my, btns);
                 mm_dispatched = 1;
             }

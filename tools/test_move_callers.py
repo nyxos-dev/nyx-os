@@ -13,6 +13,7 @@ HARNESS = r'''
 #include "kernel/drivers/video/font.h"
 @GEOMETRY@
 static int drop_target, physical_ctrl;
+static int click_fallthrough;
 static unsigned captured_modifiers;
 int is_ctrl_pressed(void) { return physical_ctrl; }
 unsigned window_key_modifiers(void) { return captured_modifiers; }
@@ -52,6 +53,8 @@ static int copy_path_from_user(char* o, int n, uint64_t p) { (void)n; if(path_er
 @CUT@
 @DELETE@
 @PASTE@
+@PROPERTIES@
+@CLICK@
 @MOUSE@
 @KEY@
 static uint64_t rename_syscall(uint64_t a1, uint64_t a2) @SYSCALL@
@@ -59,6 +62,11 @@ static int command_rename(const char* s, const char* d) { return vfs_rename(s,d)
 @COMMAND@
 static int checks;
 #define CHECK(x) do { checks++; if(!(x)) { printf("line %d: %s\n",__LINE__,#x); return 1; } } while(0)
+static int same_context(const fileman_win_t* a, const fileman_win_t* b) {
+    for(size_t i=0;i<sizeof(*a);i++)
+        if(((const uint8_t*)a)[i]!=((const uint8_t*)b)[i])return 0;
+    return 1;
+}
 int main(void) {
     static fileman_win_t fm;
     for(int fail=0;fail<2;fail++) {
@@ -185,6 +193,53 @@ int main(void) {
         captured_modifiers=0;fileman_win_key(&win,'x');CHECK(!strcmp(fm.input_buf,"draftx"));
         captured_modifiers=KEY_MOD_CTRL;
     }
+    static fileman_win_t before;
+    const int blocked_keys[]={1,3,6,22,24,'a','c','f','v','x','A','C','F','V','X',
+        KEY_UP,KEY_DOWN,KEY_PGUP,KEY_PGDN,KEY_HOME,KEY_END,'q','\b'};
+    for(int mode=0;mode<=3;mode++) {
+        memset_asm(&fm,0,sizeof fm);strcpy(fm.cwd,"/mnt");
+        fm.entry_count=2;fm.sel_index=0;strcpy(fm.entries[0],"note");strcpy(fm.entries[1],"folder");
+        fm.entry_types[1]=1;fm.input_mode=mode;strcpy(fm.input_buf,"draft");fm.input_pos=5;
+        strcpy(fm.clipboard_path,"/source/note");fm.clipboard_mode=2;
+        fm.mouse_down=fm.drag_active=1;fm.drag_file_idx=0;
+        fileman_show_properties(&fm);
+        CHECK(fm.props_open && !fm.mouse_down && !fm.drag_active && fm.drag_file_idx==-1);
+        before=fm;calls=copy_calls=refreshes=0;
+        for(int mods=0;mods<4;mods++) {
+            captured_modifiers=mods;
+            for(unsigned k=0;k<sizeof blocked_keys/sizeof blocked_keys[0];k++) {
+                fileman_win_key(&win,blocked_keys[k]);CHECK(same_context(&fm,&before));
+            }
+        }
+        CHECK(!calls && !copy_calls && !refreshes);
+        for(int close=0;close<2;close++) {
+            fm=before;fileman_win_key(&win,close?'\n':0x1B);
+            CHECK(!fm.props_open);fm.props_open=1;CHECK(same_context(&fm,&before));
+        }
+    }
+    fm=before;fm.input_mode=0;fm.search_active=1;strcpy(fm.search_pattern,"no");
+    before=fm;captured_modifiers=0;fileman_win_key(&win,'x');fileman_win_key(&win,'\b');
+    captured_modifiers=KEY_MOD_CTRL;fileman_win_key(&win,6);CHECK(same_context(&fm,&before));
+    fm=before;fm.search_active=0;fm.input_mode=0;
+    click_fallthrough=0;fileman_win_click(&win,200,120,1);
+    CHECK(!fm.props_open && fm.props_wait_release && !click_fallthrough);
+    fileman_win_click(&win,200,120,2);CHECK(!click_fallthrough);
+    fileman_win_mousemove(&win,200,120,1);fileman_win_mousemove(&win,300,140,1);
+    CHECK(fm.props_wait_release && !fm.mouse_down && !fm.drag_active);
+    fileman_win_mousemove(&win,300,140,0);CHECK(!fm.props_wait_release);
+    fileman_win_click(&win,200,120,1);CHECK(click_fallthrough==1);
+    fm.props_open=1;
+    fm.mouse_down=fm.drag_active=1;fm.drag_file_idx=0;fm.drag_mode=1;drop_target=1;
+    calls=copy_calls=refreshes=0;
+    fileman_win_mousemove(&win,0,0,0);
+    CHECK(fm.props_open && !calls && !copy_calls && !refreshes);
+    CHECK(!fm.mouse_down && !fm.drag_active && fm.drag_file_idx==-1);
+    fileman_win_mousemove(&win,80,100,1);fileman_win_mousemove(&win,200,100,1);
+    CHECK(!fm.mouse_down && !fm.drag_active && !calls && !copy_calls);
+    fileman_win_key(&win,0x1B);fileman_win_mousemove(&win,200,100,0);
+    CHECK(!fm.props_open && !calls && !copy_calls);
+    captured_modifiers=KEY_MOD_CTRL;rc=0;fileman_win_key(&win,22);
+    CHECK(calls==1 && !fm.clipboard_mode && !strcmp(destination,"/mnt/note"));
     printf("Move callers: %d checks, 0 failures\n",checks); return 0;
 }
 '''
@@ -212,6 +267,10 @@ def main():
         if marker=='PATH':body+='\n'+function(fm,'static int fileman_get_path(')
         code=code.replace('@'+marker+'@',body)
     code=code.replace('@PASTE@',function(fm,'static void ctx_paste('))
+    code=code.replace('@PROPERTIES@',function(fm,'static void fileman_show_properties('))
+    # Observe whether the real modal dispatch prefix consumes a client click.
+    click=function(fm,'void fileman_win_click(').split('    int cx =',1)[0]
+    code=code.replace('@CLICK@',click+'    (void)mx; (void)my; (void)btn; click_fallthrough++;\n}')
     code=code.replace('@SYSCALL@',function(syscall,'case SYS_RENAME:').split(':',1)[1].strip())
     code=code.replace('@COMMAND@',command)
     with tempfile.TemporaryDirectory(prefix='nyx-move-callers-') as tmp:

@@ -1017,6 +1017,12 @@ The immediate data and desktop priorities are:
     stack PID values before reporting. Allocation failure reports that the
     scan was not performed. See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md).
 
+75. Development version 6.5.270 makes File Manager Properties consume client
+    keyboard input and cancel pending file drags. Esc, Enter or a client click
+    dismisses the dialog; a dismissing press must be released before starting
+    another file gesture. Clipboard operations resume after closing. See
+    [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

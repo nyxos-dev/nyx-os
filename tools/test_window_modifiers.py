@@ -28,6 +28,17 @@ static void mousekey(int k,unsigned key_modifiers) {
 }
 static int checks;
 #define CHECK(x) do { checks++;if(!(x)){printf("FAIL line %d: %s\n",__LINE__,#x);return 1;} } while(0)
+static int pointer_calls, pointer_buttons;
+void fileman_win_mousemove(window_t* w,int x,int y,int btns) {
+    (void)w;(void)x;(void)y;pointer_calls++;pointer_buttons=btns;
+}
+static void other_pointer(window_t* w,int x,int y,int btns) {
+    (void)w;(void)x;(void)y;pointer_calls++;pointer_buttons=btns;
+}
+static int pointer_event(int mx,int my,int btns,int prev_btns) {
+    @POINTER@
+    return mm_dispatched;
+}
 typedef struct {int active,ntabs;} test_tabs_t;
 static void browser_shortcut(window_t* win,int key) {
     test_tabs_t* T=win->reserved;
@@ -57,6 +68,16 @@ int main(void) {
         window_dispatch_key(&app,KEY_PGDN,KEY_MOD_CTRL);CHECK(tabs.active==before);
     }
     CHECK(window_key_modifiers()==0);
+    current_workspace=0;w[0].on_mousemove=fileman_win_mousemove;window_focus(1);
+    mouse_x=mouse_y=100;pointer_calls=0;
+    CHECK(pointer_event(100,100,1,0)==1 && pointer_calls==1 && pointer_buttons==1);
+    CHECK(pointer_event(100,100,0,1)==1 && pointer_calls==2 && pointer_buttons==0);
+    CHECK(pointer_event(100,100,0,0)==0 && pointer_calls==2);
+    CHECK(pointer_event(101,100,0,0)==1 && pointer_calls==3);
+    w[0].on_mousemove=other_pointer;
+    CHECK(pointer_event(100,100,1,0)==0 && pointer_calls==3);
+    CHECK(pointer_event(101,100,1,0)==1 && pointer_calls==4 && pointer_buttons==1);
+    w[0].on_mousemove=NULL;CHECK(pointer_event(101,100,0,1)==0 && pointer_calls==4);
     printf("PASS %d delayed compositor/MouseKeys/browser shortcut checks\n",checks);
     return 0;
 }
@@ -75,12 +96,13 @@ def main():
     close = between('            if (', '\n                    if (k == KEY_UP)',
                     '// Window-management chords.') + '\n                }\n            }\n'
     mousekey = between('        if (k &&', '\n\n', '// MouseKeys')
+    pointer = between('        int mm_dispatched =', '\n\n', '// Dispatch mouse-move to focused window')
     selene = (ROOT / 'kernel/gui/apps/selene_win.c').read_text(encoding='utf-8')
     selene = '\n'.join(line for line in selene.splitlines() if 'window_key_modifiers()' in line)
     assert len(selene.splitlines()) == 3
     text = HARNESS
     for key, value in dict(COMPOSITOR=str(compositor), WORKSPACE=workspace,
-                           CLOSE=close, MOUSEKEY=mousekey, SELENE=selene).items():
+                           CLOSE=close, MOUSEKEY=mousekey, SELENE=selene, POINTER=pointer).items():
         text = text.replace('@' + key + '@', value)
     with tempfile.TemporaryDirectory(prefix='nyx-window-modifiers-') as temp:
         work = Path(temp)

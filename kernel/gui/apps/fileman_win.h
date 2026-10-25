@@ -46,8 +46,9 @@ typedef struct {
     // Double-click detection (open a file in the Text Editor)
     uint32_t last_click_tick;
     int last_click_idx;
-    // Properties modal (shown by the context-menu "Properties" item; any click closes it)
+    // Properties consumes client input; a dismissing press cannot start a drag.
     int props_open;
+    int props_wait_release;
     char props_name[64];
     char props_path[320];
     uint32_t props_size;

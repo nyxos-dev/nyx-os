@@ -450,6 +450,10 @@ static void fileman_show_properties(fileman_win_t* fm) {
     fm->props_size = fm->entry_sizes[i];
     fm->props_size_known = fm->entry_size_known[i];
     if (fileman_get_path(fm, fm->entries[i], fm->props_path, sizeof(fm->props_path)) < 0) return;
+    fm->mouse_down = 0;
+    fm->drag_active = 0;
+    fm->drag_file_idx = -1;
+    fm->props_wait_release = 1;
     fm->props_open = 1;
 }
 
@@ -784,14 +788,19 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
         snprintf(line, sizeof(line), "Path: %s", fm->props_path);
         font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55));
-        font_draw_string(px + 10, py + ph - char_h - 6, "(click to close)", fb_rgb(150, 150, 160), fb_rgb(45, 45, 55));
+        font_draw_string(px + 10, py + ph - char_h - 6, "(click, Esc or Enter to close)", fb_rgb(150, 150, 160), fb_rgb(45, 45, 55));
     }
 }
 
 void fileman_win_click(window_t* win, int mx, int my, int btn) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
-    if (fm->props_open) { fm->props_open = 0; return; }   // any click dismisses the Properties panel
+    if (fm->props_open) {
+        fm->props_open = 0;
+        fm->props_wait_release = 1;
+        return;
+    }
+    if (fm->props_wait_release) return;
     int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
     uint32_t cw = win->w, ch = win->h;
     uint32_t char_h = FONT_HEIGHT;
@@ -982,6 +991,13 @@ static int fileman_row_at(fileman_win_t* fm, window_t* win, int my) {
 void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
+    if (fm->props_open || fm->props_wait_release) {
+        fm->mouse_down = 0;
+        fm->drag_active = 0;
+        fm->drag_file_idx = -1;
+        fm->props_wait_release = btns != 0;
+        return;
+    }
 
     int search_bar_h = fm->search_active ? HEADER_H : 0;
     int disp_count = fm->search_active ? fm->search_count : fm->entry_count;
@@ -1094,6 +1110,10 @@ drop_done:
 void fileman_win_key(window_t* win, int key) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
+    if (fm->props_open) {
+        if (key == 0x1B || key == '\n') fm->props_open = 0;
+        return;
+    }
 
     if (!fm->input_mode &&
         (window_key_modifiers() & (KEY_MOD_CTRL | KEY_MOD_ALT)) == KEY_MOD_CTRL) {
