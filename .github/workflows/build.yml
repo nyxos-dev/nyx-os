@@ -130,6 +130,7 @@ jobs:
         run: |
           python3 tools/test_vfs_moves.py
           python3 tools/test_move_callers.py
+          python3 tools/test_fileman_metadata.py
 
       - name: Test VFS write bounds and sparse growth
         run: python3 tools/test_vfs_growth.py

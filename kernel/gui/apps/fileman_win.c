@@ -131,6 +131,8 @@ static int fm_entry_less(fileman_win_t* fm, int a, int b) {
     if (da != db) return da < db;
     int cmp;
     if (fm->sort_key == FM_SORT_SIZE && !fm->entry_types[a]) {
+        if (fm->entry_size_known[a] != fm->entry_size_known[b])
+            return fm->entry_size_known[a] > fm->entry_size_known[b];
         // Size is only meaningful for files (dirs carry 0); tie-break by name.
         if (fm->entry_sizes[a] != fm->entry_sizes[b])
             cmp = (fm->entry_sizes[a] < fm->entry_sizes[b]) ? -1 : 1;
@@ -157,13 +159,29 @@ static void fileman_sort(fileman_win_t* fm) {
             strncpy(fm->entries[m], tn, 64); fm->entries[m][63] = '\0';
             int tt = fm->entry_types[i]; fm->entry_types[i] = fm->entry_types[m]; fm->entry_types[m] = tt;
             uint32_t ts = fm->entry_sizes[i]; fm->entry_sizes[i] = fm->entry_sizes[m]; fm->entry_sizes[m] = ts;
+            uint8_t known = fm->entry_size_known[i]; fm->entry_size_known[i] = fm->entry_size_known[m]; fm->entry_size_known[m] = known;
         }
     }
+}
+
+static int fileman_join_path(fileman_win_t* fm, const char* dir, const char* name,
+                             char* path, int maxlen) {
+    size_t prefix = strcmp(dir, "/") == 0 ? 0 : strlen(dir);
+    if (maxlen < 2 || prefix + 1 + strlen(name) >= (size_t)maxlen) {
+        snprintf(fm->status, sizeof(fm->status), "Path too long");
+        return -1;
+    }
+    if (!prefix) snprintf(path, maxlen, "/%s", name);
+    else snprintf(path, maxlen, "%s/%s", dir, name);
+    return 0;
 }
 
 void fileman_refresh(fileman_win_t* fm) {
     fm->entry_count = 0;
     fm->scroll_offset = 0;
+    fm->sel_index = -1;
+    fm->summ_dirs = 0; fm->summ_files = 0;
+    fm->summ_bytes = 0; fm->summ_unknown = 0;
     int fd = vfs_open(fm->cwd, 0, 0);
     if (fd < 0) {
         snprintf(fm->status, sizeof(fm->status), "Cannot open: %s", fm->cwd);
@@ -182,12 +200,15 @@ void fileman_refresh(fileman_win_t* fm) {
         fm->entry_types[fm->entry_count] = de->type;
         // Stat files for the Size column; directories carry no byte size (drawn "<DIR>").
         fm->entry_sizes[fm->entry_count] = 0;
+        fm->entry_size_known[fm->entry_count] = 0;
         if (!de->type) {
-            char epath[320];
-            if (strcmp(fm->cwd, "/") == 0) snprintf(epath, sizeof(epath), "/%s", de->name);
-            else                            snprintf(epath, sizeof(epath), "%s/%s", fm->cwd, de->name);
+            char epath[256];
             uint32_t esz = 0; int eisd = 0;
-            if (vfs_stat(epath, &esz, &eisd) == 0) fm->entry_sizes[fm->entry_count] = esz;
+            if (fileman_join_path(fm, fm->cwd, de->name, epath, sizeof(epath)) == 0 &&
+                vfs_stat(epath, &esz, &eisd) == 0 && !eisd) {
+                fm->entry_sizes[fm->entry_count] = esz;
+                fm->entry_size_known[fm->entry_count] = 1;
+            }
         }
         fm->entry_count++;
         de = vfs_readdir(fd);
@@ -203,7 +224,11 @@ void fileman_refresh(fileman_win_t* fm) {
         if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
             continue;                                   // skip "." and ".."
         if (fm->entry_types[i]) fm->summ_dirs++;
-        else { fm->summ_files++; fm->summ_bytes += fm->entry_sizes[i]; }
+        else {
+            fm->summ_files++;
+            if (fm->entry_size_known[i]) fm->summ_bytes += fm->entry_sizes[i];
+            else fm->summ_unknown++;
+        }
     }
     snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
     fileman_apply_search(fm);
@@ -219,22 +244,33 @@ static void fileman_refresh_status(fileman_win_t* fm) {
 
 // Format a byte count as a compact human-readable string (B / KB / MB) for the
 // Size column. Integer math only (the kernel printf has no %f).
-static void fileman_fmt_size(uint32_t b, char* out, int n) {
-    if (b < 1024u)               snprintf(out, n, "%u B",  b);
-    else if (b < 1024u * 1024u)  snprintf(out, n, "%u KB", (b + 512u) / 1024u);
-    else                         snprintf(out, n, "%u MB", (b + 512u * 1024u) / (1024u * 1024u));
+static void fileman_fmt_size(uint64_t b, char* out, int n) {
+    if (b < 1024u)               snprintf(out, n, "%llu B", (unsigned long long)b);
+    else if (b < 1024u * 1024u)  snprintf(out, n, "%llu KB", (unsigned long long)((b + 512u) / 1024u));
+    else                         snprintf(out, n, "%llu MB", (unsigned long long)((b + 512u * 1024u) / (1024u * 1024u)));
 }
 
-static int fileman_join_path(fileman_win_t* fm, const char* dir, const char* name,
-                             char* path, int maxlen) {
-    size_t prefix = strcmp(dir, "/") == 0 ? 0 : strlen(dir);
-    if (maxlen < 2 || prefix + 1 + strlen(name) >= (size_t)maxlen) {
-        snprintf(fm->status, sizeof(fm->status), "Path too long");
-        return -1;
+static void fileman_size_label(fileman_win_t* fm, int index, char* out, int n) {
+    if (fm->entry_types[index]) snprintf(out, n, "<DIR>");
+    else if (!fm->entry_size_known[index]) snprintf(out, n, "Unknown");
+    else fileman_fmt_size(fm->entry_sizes[index], out, n);
+}
+
+static void fileman_summary(fileman_win_t* fm, char* out, int n) {
+    char size[24];
+    fileman_fmt_size(fm->summ_bytes, size, sizeof(size));
+    snprintf(out, n, "%d dirs, %d files, %s%s", fm->summ_dirs, fm->summ_files,
+             size, fm->summ_unknown ? " known" : "");
+}
+
+static void fileman_property_size(fileman_win_t* fm, char* out, int n) {
+    if (fm->props_is_dir) snprintf(out, n, "Size: --");
+    else if (!fm->props_size_known) snprintf(out, n, "Size: Unknown");
+    else {
+        char size[24];
+        fileman_fmt_size(fm->props_size, size, sizeof(size));
+        snprintf(out, n, "Size: %s (%u bytes)", size, fm->props_size);
     }
-    if (!prefix) snprintf(path, maxlen, "/%s", name);
-    else snprintf(path, maxlen, "%s/%s", dir, name);
-    return 0;
 }
 
 static int fileman_get_path(fileman_win_t* fm, const char* name, char* path, int maxlen) {
@@ -412,6 +448,7 @@ static void fileman_show_properties(fileman_win_t* fm) {
     fm->props_name[sizeof(fm->props_name) - 1] = '\0';
     fm->props_is_dir = fm->entry_types[i];
     fm->props_size = fm->entry_sizes[i];
+    fm->props_size_known = fm->entry_size_known[i];
     if (fileman_get_path(fm, fm->entries[i], fm->props_path, sizeof(fm->props_path)) < 0) return;
     fm->props_open = 1;
 }
@@ -633,8 +670,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                              fb_rgb(150,155,170), bg);
         // Right-aligned Size column: byte count for files, "<DIR>" for folders.
         char szbuf[16];
-        if (fm->entry_types[ei]) snprintf(szbuf, sizeof(szbuf), "<DIR>");
-        else                     fileman_fmt_size(fm->entry_sizes[ei], szbuf, sizeof(szbuf));
+        fileman_size_label(fm, ei, szbuf, sizeof(szbuf));
         int szx = cx + list_w - 8 - (int)strlen(szbuf) * FONT_WIDTH;
         font_draw_string(szx, ey, szbuf, fm->entry_types[ei] ? fb_rgb(120,150,180) : fb_rgb(170,170,180), bg);
     }
@@ -669,9 +705,8 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         // Right-aligned directory totals (a modern file-manager status bar): dir/file
         // counts and the summed file size, drawn only when there is room so it never
         // collides with a long left-hand status/preview message.
-        char summ[48], szbuf[16];
-        fileman_fmt_size(fm->summ_bytes, szbuf, sizeof(szbuf));
-        snprintf(summ, sizeof(summ), "%d dirs, %d files, %s", fm->summ_dirs, fm->summ_files, szbuf);
+        char summ[64];
+        fileman_summary(fm, summ, sizeof(summ));
         int sx = cx + (int)cw - 6 - (int)strlen(summ) * FONT_WIDTH;
         int left_end = cx + 4 + (int)strlen(fm->status) * FONT_WIDTH + 10;
         if (sx > left_end)
@@ -745,12 +780,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
         snprintf(line, sizeof(line), "Type: %s", fm->props_is_dir ? "Directory" : "File");
         font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
-        if (fm->props_is_dir) {
-            snprintf(line, sizeof(line), "Size: --");
-        } else {
-            char sb[16]; fileman_fmt_size(fm->props_size, sb, sizeof(sb));
-            snprintf(line, sizeof(line), "Size: %s (%u bytes)", sb, fm->props_size);
-        }
+        fileman_property_size(fm, line, sizeof(line));
         font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
         snprintf(line, sizeof(line), "Path: %s", fm->props_path);
         font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55));

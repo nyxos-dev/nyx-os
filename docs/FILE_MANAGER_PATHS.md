@@ -106,3 +106,44 @@ The kernel still owns a global foreground-job signal route. This increment does
 not add per-window job ownership, multi-selection, Unicode input or long-session
 qualification. Serial bytes carry no captured Ctrl modifier and do not trigger
 these File Manager shortcuts.
+
+## Unavailable sizes and directory summaries (6.5.264)
+
+A file size is known only after a successful `vfs_stat` for a complete bounded
+path that still identifies a file. An explicit lookup failure, a path that does
+not fit or a changed directory type leaves the size unknown. The list and
+Properties show `Unknown`; a successfully measured empty file still shows `0 B`.
+Properties retain the metadata snapshot from the listing, rather than claiming
+live refresh while another process changes the file.
+
+Size sorting places unknown files after known files in either direction, with
+name ordering for ties. Name sorting and directories-first ordering remain.
+Parallel name, type, size and validity fields move together during sorting.
+Directory summaries use 64-bit accumulation over the listed entries, and mark
+the byte total `known` when some listed file sizes are unavailable. Opening a
+folder unsuccessfully clears its old selection and totals. Excluded long names,
+entries beyond the list capacity and directory descendants are not in that sum.
+
+Formatting uses widened arithmetic so a size near the 32-bit file-size limit
+does not wrap while rounding. The actual 6.5.263 formatter reports `0 MB` for
+4,294,967,295 bytes; the corrected formatter reports `4096 MB`. This is a display
+repair, not support for larger files. The underlying file-size API stays 32-bit.
+
+`tools/test_fileman_metadata.py` executes the actual refresh, sort, properties and
+label helpers with the kernel's formatter under ASan/UBSan. Its 539 checks cover
+zero/error/type-change metadata, both sort directions, all directory lengths
+from 1 to 255, failed-refresh cleanup and the sum of 512 maximum-size files.
+The 589 move/copy/shortcut caller checks also pass with the expanded state.
+
+A four-CPU, 5 GiB QEMU/TCG session distinguishes a real empty file from an
+unavailable deep-path size in both the list and Properties. It preserves a known
+5-byte neighbour, labels the partial total `5 B known`, and keeps the unknown
+entry last when sorting by size in either direction. Nine disk fixtures remain
+byte-identical after closing the VM. The complete 6.5.263 shortcut workflow also
+passes again on this image, including eleven offline file checks and source
+absence after movement. The warning-free build passes 230 kernel tests and
+four-CPU login. These GUI and offline checks are separate from host fault tests.
+
+Backend callbacks that return success with a misleading size cannot be detected
+by this UI. Directory-read errors that look like end-of-list, concurrent changes,
+whole-folder accounting and hardware qualification remain separate work.

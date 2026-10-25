@@ -984,6 +984,12 @@ The immediate data and desktop priorities are:
     keep file actions inactive. See [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md)
     for the input contract, verification and remaining selection/job-routing limits.
 
+69. Development version 6.5.264 displays unavailable File Manager sizes as
+    unknown, keeps size-sort validity aligned, and uses widened arithmetic for
+    file labels and listed-entry totals. An incomplete total is marked as known
+    bytes. See [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md) for failed lookup,
+    boundary, sorting and formatting evidence and the remaining metadata limits.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

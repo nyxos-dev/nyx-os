@@ -14,7 +14,8 @@ typedef struct {
     char cwd[256];
     char entries[FILEMAN_MAX_ENTRIES][64];
     int entry_types[FILEMAN_MAX_ENTRIES];
-    uint32_t entry_sizes[FILEMAN_MAX_ENTRIES];   // byte size per file (0 for dirs), for the Size column
+    uint32_t entry_sizes[FILEMAN_MAX_ENTRIES];   // Valid only when entry_size_known is set.
+    uint8_t entry_size_known[FILEMAN_MAX_ENTRIES];
     int entry_count;
     int scroll_offset;
     char status[128];
@@ -50,12 +51,14 @@ typedef struct {
     char props_name[64];
     char props_path[320];
     uint32_t props_size;
+    int props_size_known;
     int props_is_dir;
     // Directory summary (computed on refresh) for the status-bar totals — dir/file
     // counts and the summed byte size of the files in the current directory.
     int summ_dirs;
     int summ_files;
-    uint32_t summ_bytes;
+    uint64_t summ_bytes;
+    int summ_unknown;
     // Column sort: click a header to sort by it, click the active header again to
     // flip direction. Directories always group first; the key/direction order the
     // files within. sort_key: FM_SORT_NAME / FM_SORT_SIZE. sort_desc: 0=ascending.

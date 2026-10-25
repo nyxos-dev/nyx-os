@@ -46,8 +46,8 @@ void fileman_refresh(fileman_win_t* fm) { refreshes++; strcpy(fm->status,"entrie
 static int user_str_ok(uint64_t p) { return p!=0; }
 static int copy_path_from_user(char* o, int n, uint64_t p) { (void)n; if(path_error)return -1; strcpy(o,(const char*)(uintptr_t)p); return 0; }
 @REFRESH@
-@ACTUAL_REFRESH@
 @PATH@
+@ACTUAL_REFRESH@
 @COPY@
 @CUT@
 @DELETE@
