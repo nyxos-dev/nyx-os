@@ -99,6 +99,9 @@ jobs:
       - name: Test workspace focus and input isolation
         run: python3 tools/test_window_workspace.py
 
+      - name: Test hidden-window tick damage
+        run: python3 tools/test_window_tick.py
+
       - name: Test desktop config persistence and session isolation
         run: |
           python3 tools/test_desktop_config.py

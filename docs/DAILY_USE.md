@@ -941,6 +941,17 @@ The immediate data and desktop priorities are:
     long sessions and hardware remain outside this qualification. See
     [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md).
 
+64. Development version 6.5.259 prevents hidden/minimized animation ticks from
+    forcing an active-workspace repaint while retaining background callbacks.
+    Callback-driven visibility changes trigger full damage. The host regression
+    fails on the previous source; 120 tick/damage checks, existing desktop
+    regressions, 230 KATs and four-CPU login pass. Sequential VM controls measure
+    hidden Matrix at 66.1%, then 37.3% on the new image, then 59.8% on the old
+    image again, as percentages of one host core. Background animation advances
+    and the workspace GUI regressions pass. Visible rendering and expensive
+    background computation remain separate performance costs. See
+    [DESKTOP_CONFIG.md](DESKTOP_CONFIG.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

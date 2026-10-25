@@ -139,6 +139,51 @@ These checks do not qualify fast modifier delivery, long sessions, physical
 hardware or desktop performance. No new CPU reduction is claimed. Workspace
 arrangements remain session state; this change does not persist open windows.
 
+## Hidden animation damage (6.5.259)
+
+The compositor's regular tick loop continues callbacks for minimized windows
+and windows on other workspaces. Those callbacks may drain terminal output,
+advance an animation or finish background work. Their changed-content result
+now requests a repaint only if the window was or is visible on the active
+workspace. A window that hides, moves away, appears or removes itself during
+its callback forces a full repaint to clear or draw its previous/new footprint.
+Unchanged windows retain the existing partial-redraw path and 33 ms tick gate.
+
+Previously an animated window on another workspace triggered full redraws of
+an otherwise quiet desktop. This change suppresses that paint request; it does
+not suspend the background computation or change the CPU indicator formula.
+Expensive background callbacks and visible animations can still consume CPU.
+
+`python3 tools/test_window_tick.py` runs 120 ASan/UBSan host checks over active,
+other-workspace, minimized and invisible windows, preserved prior damage,
+callback-driven visibility changes/removal, mixed sets through 32 windows and
+timer wrap. The preceding source fails the hidden-damage regression. The 309
+workspace, 577 minimize, 72 idle and 87 geometry-damage checks pass. The kernel
+builds without warnings, passes 230 KATs and reaches four-CPU login.
+
+Three sequential QEMU/TCG sessions used the same four-CPU, 5 GiB, 1024x768
+configuration: preceding 6.5.258, new 6.5.259, then 6.5.258 again as a control.
+Each phase has three eight-second samples after settling. The table reports
+median QEMU process CPU time as a percentage of one host core, not guest CPU.
+
+| Phase | 6.5.258 before | 6.5.259 | 6.5.258 repeat |
+|---|---:|---:|---:|
+| Quiet terminal | 42.3% | 38.7% | 36.7% |
+| Matrix visible | 90.8% | 81.8% | 81.1% |
+| Matrix on another workspace | 66.1% | 37.3% | 59.8% |
+| Terminal after closing Matrix | 43.5% | 37.5% | 36.2% |
+
+Host variation is visible in the idle and visible phases; those differences
+are not claimed as improvements. The hidden-animation excess returns on the
+old-image repeat and disappears on the new image. Guest BSP samples for hidden
+Matrix are 23–44% before, 0–1% after and 22–29% in the repeated control. Matrix's
+column positions still advance while hidden, and returning displays the live
+animation. The new image also passes the separate 21-checkpoint workspace GUI
+trial: independent terminal text, hidden input/close protection, minimize and
+taskbar recovery, snap/restore, drag and commands. Disk fixtures are unchanged
+and all test VMs close. This is bounded VM evidence, not a long-session,
+hardware, power-consumption or general graphics-performance guarantee.
+
 ## Verification and limits
 
 Development version 6.5.207 adds 234 host configuration checks covering the

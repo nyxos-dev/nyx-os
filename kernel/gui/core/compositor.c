@@ -5324,8 +5324,15 @@ done_click:
             game_tick_ms = now;
             for (int gi = 0; gi < MAX_WINDOWS; gi++)
                 if (windows[gi] && windows[gi]->on_tick && windows[gi]->visible) {
-                    if (windows[gi]->on_tick(windows[gi])) {
+                    int was_visible = window_accepts_input(windows[gi]);
+                    int changed = windows[gi]->on_tick(windows[gi]);
+                    int is_visible = window_accepts_input(windows[gi]);
+                    // Keep background callbacks running, but only their on-screen
+                    // changes damage this workspace. Include a window that hides
+                    // itself during the callback so its old pixels are erased.
+                    if (changed && (was_visible || is_visible)) {
                         redraw = 1;
+                        if (was_visible != is_visible) redraw_pre_tick = 1;
                         if (tick_changed < TICK_MAX_RECTS) tick_idx[tick_changed] = gi;
                         tick_changed++;   // total; only the first TICK_MAX_RECTS are recorded
                     }
