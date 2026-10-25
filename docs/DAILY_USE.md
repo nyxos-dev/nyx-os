@@ -565,6 +565,30 @@ The immediate data and desktop priorities are:
     The ancillary QMP reader reports a reset during intentional shutdown;
     the main runner exits 0 after fixture verification.
 
+47. Development version 6.5.242 keeps futex wait return context atomic.
+    The changed-value path and the wake path now keep interrupts masked through
+    cleanup and restoration of per-CPU user CR3/RSP. Resumption after the wait
+    masks interrupts before changing the blocked flags. This closes the same
+    return-boundary hazard corrected for sleep in 241.
+    Eight actual-function ASan/UBSan cases cover changed values, real and
+    spurious wakes, rejected input, wake-one limits and key isolation. Baseline
+    241 fails the four return-boundary cases; the validation/wake controls pass.
+    Interrupts, address translation and scheduling are simulated in those host
+    tests. The previous 30 pipe/signal and six sleep host cases also pass.
+    The local warning-free image passes 230 kernel tests and four-CPU login.
+    Five executions of the existing threads program each report 8000 increments,
+    intact separate heap blocks and shared descriptors. This does not measure
+    futex contention or establish cross-core user scheduling. The first GUI
+    attempt stopped because a successful kernel exit message split a counter
+    line; the rerun normalizes only that known message and keeps the raw log.
+    The final GUI run repeats the prior 21 signal/pipe checks, shell job lifecycle,
+    substitution/redirection, four-stage terminal input/EOF, six scheduler
+    heartbeats, terminal drag and next command. Screenshots are inspected,
+    both disk fixtures remain exact, and the owned VM closes.
+    These are local results: 241 CI separately exposed an unsupported SHLX
+    instruction in its compiler-produced boot image. Publication of this change
+    requires a verified build-baseline correction in a separate increment.
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

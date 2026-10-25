@@ -318,6 +318,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compare-ref')
     parser.add_argument('--compare-sleep-ref')
+    parser.add_argument('--compare-futex-ref')
     args = parser.parse_args()
 
     def read(path, ref):
@@ -432,6 +433,83 @@ int main(int argc,char **argv) {
             failed=sleep_suite(args.compare_sleep_ref)
             assert failed==list(range(6)), failed
             print('PASS sleep baseline fails all 6 atomic-return scenarios')
+
+        def futex_suite(ref=None):
+            body = function(read('kernel/proc/process.c', ref), 'do_futex')
+            body = body.replace('__asm__ volatile("cli")', '(host_if = 0)')
+            body = body.replace('__asm__ volatile("sti")', '(host_if = 1)')
+            body = body.replace('__asm__ volatile("sti; hlt")', 'host_yield()')
+            code = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#define PROC_RUN 1
+#define PROC_BLOCKED 3
+#define FUTEX_WAIT 0
+#define FUTEX_WAKE 1
+typedef struct { int state, blocked_in_kernel; uint64_t page_directory, futex_key; } process_t;
+static process_t proc={PROC_RUN,0,1,0}, other={PROC_BLOCKED,1,1,0}, third={PROC_BLOCKED,1,1,0};
+static process_t *process_table[]={&proc,&other,&third};
+static int process_count=3;
+static process_t *get_current_process(void) { return &proc; }
+static uint32_t word=1, alien;
+static uint64_t user_cr3=123,user_rsp=456;
+static int host_if, mode, yielded;
+static uint64_t user_v2p(uint64_t addr) { return addr==4 ? (uintptr_t)&word : 0; }
+static void host_yield(void) {
+    host_if=1;
+    assert(proc.state==PROC_BLOCKED && proc.blocked_in_kernel);
+    assert(proc.futex_key==(uintptr_t)&word && ++yielded<=2);
+    user_cr3=777; user_rsp=888;
+    if(mode==2) word=2; /* spurious resume, then changed comparison */
+    else if(mode!=3 || yielded==2) { proc.futex_key=0; proc.state=PROC_RUN; }
+}
+''' + body + r'''
+int main(int argc,char **argv) {
+    assert(argc==2); mode=atoi(argv[1]);
+    if(mode<4) {
+        if(mode==0) word=2;
+        assert(do_futex(4,FUTEX_WAIT,1)==0);
+        assert(!host_if && user_cr3==123 && user_rsp==456);
+        assert(!proc.blocked_in_kernel && !proc.futex_key && proc.state==PROC_RUN);
+        assert(yielded==(mode==0?0:mode==3?2:1));
+    } else if(mode==4) {
+        assert(do_futex(5,FUTEX_WAIT,1)==-1);
+        assert(do_futex(8,FUTEX_WAIT,1)==-1);
+        assert(do_futex(4,99,1)==-1);
+        assert(!host_if && !yielded);
+    } else if(mode==5) {
+        other.futex_key=(uintptr_t)&word;
+        third.futex_key=(uintptr_t)&word;
+        assert(do_futex(4,FUTEX_WAKE,1)==1);
+        assert(!other.futex_key && other.state==PROC_RUN && proc.state==PROC_RUN);
+        assert(third.futex_key && third.state==PROC_BLOCKED && !host_if);
+    } else if(mode==6) {
+        other.futex_key=(uintptr_t)&alien;
+        assert(do_futex(4,FUTEX_WAKE,2)==0 && other.state==PROC_BLOCKED && !host_if);
+    } else {
+        proc.page_directory=0;
+        assert(do_futex(4,FUTEX_WAIT,1)==-1 && !host_if && !yielded);
+    }
+    return 0;
+}
+'''
+            path, exe = work/'futex.c', work/'futex'
+            path.write_text(code,encoding='utf-8')
+            subprocess.run(['gcc','-std=c11','-O1','-Wall','-Wextra','-Werror',
+                            '-fsanitize=address,undefined','-fno-pie','-no-pie',
+                            str(path),'-o',str(exe)],check=True)
+            failed=[]
+            for n in range(8):
+                result=subprocess.run([str(exe),str(n)],capture_output=True,text=True,timeout=10)
+                if result.returncode: failed.append(n)
+            return failed
+        assert not futex_suite(), 'futex return contract failed'
+        print('PASS 8 futex return/wake scenarios under ASan/UBSan; interrupts and scheduler simulated')
+        if args.compare_futex_ref:
+            failed=futex_suite(args.compare_futex_ref)
+            assert failed==[0,1,2,3],failed
+            print('PASS futex baseline fails 4 atomic-return scenarios; validation/wake controls pass')
 
 
 if __name__ == '__main__':

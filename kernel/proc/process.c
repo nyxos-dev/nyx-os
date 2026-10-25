@@ -595,16 +595,18 @@ int do_futex(uint64_t uaddr, int op, uint32_t val) {
     uint64_t saved_cr3 = user_cr3, s_ursp = user_rsp;   /* s_ursp: saved_rsp is now a per-CPU accessor */
     for (;;) {
         __asm__ volatile("cli");
-        if (*(volatile uint32_t*)key != val) { __asm__ volatile("sti"); break; }  // changed
+        if (*(volatile uint32_t*)key != val) break;  // changed; return with interrupts masked
         self->blocked_in_kernel = 1;                // resume us on the KERNEL CR3
         self->state     = PROC_BLOCKED;
         self->futex_key = key;
         __asm__ volatile("sti; hlt");
+        __asm__ volatile("cli");
         self->blocked_in_kernel = 0;
         if (self->futex_key == 0) break;            // a real FUTEX_WAKE released us
     }
     self->futex_key = 0;
     self->state     = PROC_RUN;
+    // Keep per-CPU return context intact until the syscall assembly consumes it.
     user_cr3 = saved_cr3;
     user_rsp = s_ursp;
     return 0;
