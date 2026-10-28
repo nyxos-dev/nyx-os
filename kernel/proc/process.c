@@ -983,21 +983,35 @@ void reap_user_process(process_t* proc) {
     if (claimed) reap_claimed_process(proc);
 }
 
-void destroy_process(uint64_t pid) {
+static int terminate_process(uint64_t pid, int user_only) {
     uint64_t flags = spin_lock_irqsave(&sched_lock);
     process_t* proc = find_process(pid);
-    int claimed = 0;
+    int claimed = 0, result = -1;
     if (proc && !proc->reap_claimed) {
-        if (proc->state != PROC_ZOMBIE) {
-            proc->exit_code = -1;
-            proc->state = PROC_ZOMBIE;
+        if (user_only && !proc->page_directory) {
+            result = -2;
+        } else {
+            result = 0;
+            if (proc->state != PROC_ZOMBIE) {
+                proc->exit_code = -1;
+                proc->state = PROC_ZOMBIE;
+            }
+            wake_waiters_locked(proc);
+            // Managed children keep their status for waitpid/background collection.
+            if (!proc->sched_managed) claimed = reap_claim_locked(proc);
         }
-        wake_waiters_locked(proc);
-        // Managed children keep their status for waitpid/background collection.
-        if (!proc->sched_managed) claimed = reap_claim_locked(proc);
     }
     spin_unlock_irqrestore(&sched_lock, flags);
     if (claimed) reap_claimed_process(proc);
+    return result;
+}
+
+void destroy_process(uint64_t pid) {
+    (void)terminate_process(pid, 0);
+}
+
+int process_terminate_user(uint64_t pid) {
+    return terminate_process(pid, 1);
 }
 
 process_t* find_process(uint64_t pid) {

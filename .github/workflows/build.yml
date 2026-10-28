@@ -178,6 +178,9 @@ jobs:
       - name: Test PID signal posting against process collection
         run: python3 tools/test_signal_lifetime.py
 
+      - name: Test protected process termination and name selection
+        run: python3 tools/test_process_control.py
+
       - name: Test owned process monitor and kernel ps rows
         run: python3 tools/test_process_monitor.py
 

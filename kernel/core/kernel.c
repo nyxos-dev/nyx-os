@@ -10412,16 +10412,13 @@ static void cmd_kill(int argc, char** argv) {
     (void)argc; (void)argv;
     if (argc < 2) { printf("Usage: kill <pid>\n"); return; }
     uint32_t pid = (uint32_t)atoi(argv[1]);
-    process_t* p = find_process(pid);
-    if (!p) { printf("kill: process %d not found\n", pid); return; }
-    if (p->page_directory == NULL) {
-        // init/idle/compositor/mtdemo are kernel threads; freeing their stacks out
-        // from under the scheduler would crash the system.
-        printf("kill: %d is a kernel thread — refusing\n", pid);
+    int result = process_terminate_user(pid);
+    if (result == -1) { printf("kill: process %u not found\n", pid); return; }
+    if (result == -2) {
+        printf("kill: %u is a kernel thread — refusing\n", pid);
         return;
     }
-    destroy_process(pid);
-    printf("kill: process %d terminated\n", pid);
+    printf("kill: process %u terminated\n", pid);
 }
 
 // pgrep [-l] <pattern> — print the PIDs of processes whose name contains <pattern>
@@ -10449,28 +10446,28 @@ static void cmd_pgrep(int argc, char** argv) {
 
 // pkill <pattern> — terminate every process whose name contains <pattern>. Kernel
 // threads (init/idle/compositor/mtdemo — no address space of their own) are
-// protected and refused, exactly like kill; freeing their stacks under the
-// scheduler would crash the system. destroy_process frees the process_t, so
-// capture pid+name BEFORE the call and never touch p afterwards.
+// protected and refused, exactly like kill. Select owned records, then revalidate
+// each PID and its protection while holding the scheduler lock.
 static void cmd_pkill(int argc, char** argv) {
     if (argc < 2) { printf("Usage: pkill <pattern>\n"); return; }
     const char* pat = argv[1];
-    int killed = 0, refused = 0;
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* p = process_table[i];
-        if (!p) continue;
+    process_info_t* records = (process_info_t*)kmalloc(MAX_PROCESSES * sizeof(*records));
+    if (!records) { printf("pkill: out of memory\n"); return; }
+    int count = process_snapshot(records, MAX_PROCESSES);
+    int killed = 0, refused = 0, gone = 0;
+    for (int i = 0; i < count; i++) {
+        const process_info_t* p = &records[i];
         if (!strstr(p->comm, pat)) continue;
-        if (p->page_directory == NULL) { refused++; continue; }  // kernel thread — never kill
-        uint32_t pid = p->pid;
-        char nm[32];
-        strncpy(nm, p->comm, sizeof(nm) - 1);
-        nm[sizeof(nm) - 1] = '\0';
-        destroy_process(pid);   // frees p; must not dereference it after this
-        printf("pkill: killed %d (%s)\n", pid, nm);
+        int result = process_terminate_user(p->pid);
+        if (result == -2) { refused++; continue; }
+        if (result == -1) { gone++; continue; }
+        printf("pkill: killed %u (%s)\n", p->pid, p->comm);
         killed++;
     }
+    kfree(records);
     if (!killed) {
         if (refused) printf("pkill: '%s' matches only protected kernel threads\n", pat);
+        else if (gone) printf("pkill: matching processes already exited\n");
         else         printf("pkill: no process matches '%s'\n", pat);
     } else {
         printf("pkill: signalled %d process(es)\n", killed);

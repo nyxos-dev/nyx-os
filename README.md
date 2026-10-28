@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/nyxos-dev/nyx-os/releases/tag/v6.5.0-LTS"><img src="https://img.shields.io/badge/release-v6.5.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.5.276-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.5.277-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -74,7 +74,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.5.276 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.5.277 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768

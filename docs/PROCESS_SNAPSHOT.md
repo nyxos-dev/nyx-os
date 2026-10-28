@@ -139,3 +139,18 @@ names. Both commands keep their buffers per invocation, report allocation failur
 and free the buffers after output. A row describes the snapshot time; a process
 may exit before another command acts on the displayed PID. Process-control
 commands require their own validated PID operations.
+
+## Process termination
+
+Kernel-shell `kill` validates the PID, rejects protected kernel threads and marks
+an eligible process as exited while holding the scheduler lock. It does not keep
+a borrowed process pointer between checking protection and changing state.
+Managed children retain their exit status for collection or `waitpid`; resource
+cleanup continues to wait until no CPU is using the process stack/address space.
+
+`pkill` selects names from an owned snapshot and revalidates each selected PID
+with the same protected termination operation. Process-table compaction cannot
+skip another selected process. If every selected process disappears before the
+operation, the command reports that outcome. Allocation failure reports an error
+without terminating any process. Matching names are those at snapshot time;
+processes created afterwards are outside that invocation's selection.

@@ -188,6 +188,27 @@ int main(void) {
     parent.state=PROC_BLOCKED;parent.waiting_for=21;destroy_process(21);
     CHECK(parent.state==PROC_RUN && !parent.waiting_for && child.exit_code==-1);unchanged();
 #endif
+#if USER_TERMINATE
+    reset();CHECK(process_terminate_user(99)==-1);unchanged();
+    reset();child.reap_claimed=1;CHECK(process_terminate_user(21)==-1);unchanged();
+    reset();child.state=PROC_RUN;child.page_directory=NULL;
+    CHECK(process_terminate_user(21)==-2 && child.state==PROC_RUN && child.exit_code==73);unchanged();
+    reset();child.state=PROC_RUN;child.sched_managed=1;
+    parent.state=PROC_BLOCKED;parent.waiting_for=21;
+    CHECK(process_terminate_user(21)==0 && child.state==PROC_ZOMBIE && child.exit_code==-1);
+    CHECK(parent.state==PROC_RUN && !parent.waiting_for);unchanged();
+    CHECK(do_waitpid(21,&status,0)==21 && status==-1 && freed==1);
+    reset();child.sched_managed=1;CHECK(process_terminate_user(21)==0);
+    CHECK(child.exit_code==73);unchanged();
+    reset();child.state=PROC_RUN;CHECK(process_terminate_user(21)==0);
+    CHECK(freed==1 && stack_freed==1 && closed==1 && directories==1 && !locked);
+    reset();child.state=PROC_RUN;child.page_directory=NULL;destroy_process(21);
+    CHECK(freed==1 && stack_freed==1 && closed==1 && !directories && !locked);
+    reset();child.state=PROC_RUN;cpu_info[3].sched_active=&child;
+    CHECK(process_terminate_user(21)==0 && child.state==PROC_ZOMBIE);unchanged();
+    cpu_info[3].sched_active=&kernel_task;
+    CHECK(do_waitpid(21,&status,0)==21 && status==-1 && freed==1);
+#endif
     reset();cpu_info[3].sched_cur=&child;
     sched_forget(NULL);CHECK(cpu_info[3].sched_cur==&child);
     sched_forget(&child);
@@ -216,8 +237,10 @@ def main():
         states += '#define HANDOFF_CLAIMS 1\n'
         for marker in ('static int reap_claim_locked(', 'static void wake_waiters_locked(',
                        'static void reap_claimed_process(', 'void reap_user_process(',
+                       'static int terminate_process(', 'int process_terminate_user(',
                        'void destroy_process(', 'void reap_zombies(', 'void wake_waiters('):
-            bodies += '\n' + function(source, marker)
+            if marker in source:bodies += '\n' + function(source, marker)
+    states += '#define USER_TERMINATE '+str(int('int process_terminate_user(' in source))+'\n'
     with tempfile.TemporaryDirectory(prefix='nyx-process-reap-') as tmp:
         cfile, binary = Path(tmp)/'test.c', Path(tmp)/'test'
         cfile.write_text(states+PREFIX+bodies+wait+TESTS)
