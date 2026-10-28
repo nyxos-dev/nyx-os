@@ -106,6 +106,74 @@ int main(void) {
 }
 '''
 
+TREE_TESTS = r'''
+#include <stdarg.h>
+#define PROC_ZOMBIE 2
+#define PSTREE_MAXD 32
+static char printed[16384];
+static int retire_before_render, nested_render, renders;
+static void cmd_pstree(int argc, char** argv);
+@RENDER@
+static void pstree_render(const int* pid, const int* ppid, const char* const* name,
+                          int n, char* out, int cap) {
+    CHECK(!locked); renders++;
+    if (retire_before_render) { retire_before_render=0; retire_table(); }
+    if (nested_render) {
+        nested_render=0; add(99,"nested",0); process_table[0]->ppid=0;
+        cmd_pstree(0,NULL); retire_table();
+    }
+    actual_pstree_render(pid,ppid,name,n,out,cap);
+}
+static int tree_printf(const char* fmt, ...) {
+    CHECK(!locked);
+    va_list ap; va_start(ap,fmt);
+    size_t offset=strlen(printed);
+    int result=vsnprintf(printed+offset,sizeof(printed)-offset,fmt,ap);
+    va_end(ap);return result;
+}
+#define printf tree_printf
+@COMMAND@
+#undef printf
+static void tree_reset(void) {
+    reset(); printed[0]=0; retire_before_render=nested_render=renders=0;
+}
+static void node(uint32_t pid,uint32_t parent,const char* name,int state,int claimed) {
+    add(pid,name,claimed);process_table[process_count-1]->ppid=parent;
+    process_table[process_count-1]->state=state;
+}
+int main(void) {
+    tree_reset();node(1,0,"init",1,0);node(2,1,"child",1,0);node(3,2,"grandchild",1,0);
+    node(4,1,"zombie",PROC_ZOMBIE,0);node(5,1,"claimed",1,1);
+    retire_before_render=1;cmd_pstree(0,NULL);
+    CHECK(!strcmp(printed,"init(1)\n  child(2)\n    grandchild(3)\n"));
+    CHECK(process_count==0 && allocs==frees && locks==1);
+    tree_reset();node(10,0,"outer",1,0);retire_before_render=nested_render=1;
+    cmd_pstree(0,NULL);CHECK(!strcmp(printed,"nested(99)\nouter(10)\n"));
+    CHECK(allocs==frees && renders==2);
+    tree_reset();node(1,0,"untouched",1,0);no_memory=1;cmd_pstree(0,NULL);
+    CHECK(!strcmp(printed,"pstree: out of memory\n") && !locks && !renders);
+    CHECK(process_count==1 && !strcmp(process_table[0]->comm,"untouched"));
+    tree_reset();cmd_pstree(0,NULL);CHECK(!printed[0] && allocs==frees);
+    tree_reset();node(1,0,"abcdefghijklmnopqrstuvwxyz012345",1,0);
+    retire_before_render=1;cmd_pstree(0,NULL);
+    CHECK(!strcmp(printed,"abcdefghijklmnopqrstuvwxyz01234(1)\n"));
+    tree_reset();node(1,999,"orphan",1,0);node(2,1,"child",1,0);cmd_pstree(0,NULL);
+    CHECK(!strcmp(printed,"orphan(1)\n  child(2)\n"));
+    tree_reset();node(1,2,"cycle1",1,0);node(2,1,"cycle2",1,0);cmd_pstree(0,NULL);
+    CHECK(!printed[0]);
+    tree_reset();
+    for(int i=1;i<=MAX_PROCESSES;i++)node(i,i-1,"deep",1,0);
+    retire_before_render=1;cmd_pstree(0,NULL);
+    CHECK(strstr(printed,"deep(33)\n") && !strstr(printed,"deep(34)\n"));
+    tree_reset();
+    for(int i=1;i<=MAX_PROCESSES;i++)node(i,0,"abcdefghijklmnopqrstuvwxyz012345",1,0);
+    retire_before_render=1;cmd_pstree(0,NULL);
+    CHECK(strlen(printed)==4095 && allocs==frees);
+    tree_reset();printf("process tree ownership: %u checks, %u failures\n",checks,failures);
+    return failures?1:0;
+}
+'''
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -132,6 +200,20 @@ def main():
                         '-ftrivial-auto-var-init=pattern','-fno-omit-frame-pointer','-no-pie',
                         str(path/'test.c'),'-o',str(path/'test')],check=True)
         subprocess.run([str(path/'test')],check=True)
+        command_source = (args.source_root/'kernel/core/kernel.c').read_text()
+        renderer = '\n'.join(function(command_source, name) for name in
+                             ['static void pstree_emit(', 'static void pstree_walk(',
+                              'static void pstree_render('])
+        renderer = renderer.replace('static void pstree_render(', 'static void actual_pstree_render(')
+        tree = PREFIX.replace('@TYPE@', record_type).replace('n<=sizeof(output)', 'n<=2*sizeof(output)')
+        tree += helper + TREE_TESTS.replace('@RENDER@', renderer).replace(
+            '@COMMAND@', function(command_source, 'static void cmd_pstree(int argc, char** argv) {'))
+        (path/'tree.c').write_text(tree)
+        subprocess.run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror',
+                        '-Wno-unused-function','-fsanitize=address,undefined',
+                        '-fno-sanitize-recover=all','-fno-omit-frame-pointer','-no-pie',
+                        str(path/'tree.c'),'-o',str(path/'tree')],check=True)
+        subprocess.run([str(path/'tree')],check=True)
 
 
 if __name__ == '__main__':

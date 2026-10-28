@@ -109,9 +109,19 @@ change makes no host-CPU performance claim.
 
 ## Remaining limits
 
-These changes cover `SYS_GETPROCS`, Nyx Monitor and the kernel `ps` command.
+These changes cover `SYS_GETPROCS`, Nyx Monitor and the kernel `ps` and `pstree` commands.
 Other kernel diagnostic table walks and raw process readers still require
 separate lifetime audits. They do not add a userspace
 init supervisor, process groups, application isolation or resource ownership
 for shared address spaces. See [PROCESS.md](PROCESS.md) and
 [DAILY_USE.md](DAILY_USE.md).
+
+## Process tree ownership
+
+`pstree` takes an owned snapshot before formatting the tree. Its names refer to
+that snapshot until output is complete; process collection cannot invalidate
+them. PID, parent, name and output arrays belong to each invocation, so another
+invocation cannot overwrite a partially rendered tree. Allocation and output
+stay outside the scheduler lock, and allocation failure reports an explicit
+error. Zombies remain excluded. The renderer retains its depth cap of 32 and
+4,096-byte output buffer, so a large tree can still be truncated.

@@ -1949,17 +1949,26 @@ int pstree_selftest(void) {
 }
 static void cmd_pstree(int argc, char** argv) {
     (void)argc; (void)argv;
-    static int pids[MAX_PROCESSES], ppids[MAX_PROCESSES];
-    static const char* names[MAX_PROCESSES];
+    struct tree_snapshot {
+        process_info_t records[MAX_PROCESSES];
+        int pids[MAX_PROCESSES], ppids[MAX_PROCESSES];
+        const char* names[MAX_PROCESSES];
+        char out[4096];
+    };
+    struct tree_snapshot* tree = (struct tree_snapshot*)kmalloc(sizeof(*tree));
+    if (!tree) { printf("pstree: out of memory\n"); return; }
+    int count = process_snapshot(tree->records, MAX_PROCESSES);
     int n = 0;
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* p = process_table[i];
-        if (!p || p->state == PROC_ZOMBIE) continue;
-        pids[n] = (int)p->pid; ppids[n] = (int)p->ppid; names[n] = p->comm; n++;
+    for (int i = 0; i < count; i++) {
+        const process_info_t* p = &tree->records[i];
+        if (p->state == PROC_ZOMBIE) continue;
+        tree->pids[n] = (int)p->pid;
+        tree->ppids[n] = (int)p->ppid;
+        tree->names[n++] = p->comm;
     }
-    static char out[4096];
-    pstree_render(pids, ppids, names, n, out, sizeof out);
-    printf("%s", out);
+    pstree_render(tree->pids, tree->ppids, tree->names, n, tree->out, sizeof tree->out);
+    printf("%s", tree->out);
+    kfree(tree);
 }
 
 static void cmd_mtdemo(int argc, char** argv) {
