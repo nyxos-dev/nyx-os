@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.275"
+#define KERNEL_VERSION "6.5.276"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -889,6 +889,7 @@ void heap_stats(size_t* used, size_t* total, size_t* hiwater, uint32_t* fails);
 
 void init_process(void);
 int process_snapshot(process_info_t* records, int max);
+int process_jobs_snapshot(process_info_t* records, int max);
 int process_monitor_snapshot(process_monitor_info_t* rows, int max, int* offset, int* total);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);

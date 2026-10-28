@@ -7731,19 +7731,19 @@ static void cmd_spawn(int argc, char** argv) {
 // List the shell's background jobs (scheduler-managed user processes).
 static void cmd_jobs(int argc, char** argv) {
     (void)argc; (void)argv;
-    extern process_t* process_table[MAX_PROCESSES];
-    int n = 0;
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* p = process_table[i];
-        if (p && p->sched_managed) {
-            const char* st = (p->state == PROC_RUN)     ? "running" :
-                             (p->state == PROC_ZOMBIE)  ? "exited"  :
-                             (p->state == PROC_BLOCKED) ? "blocked" : "?";
-            if (n++ == 0) printf("PID  PPID STATE   NAME\n");
-            printf("%-4d %-4d %-7s %s\n", p->pid, p->ppid, st, p->comm);
-        }
+    process_info_t* records = (process_info_t*)kmalloc(MAX_PROCESSES * sizeof(*records));
+    if (!records) { printf("jobs: out of memory\n"); return; }
+    int n = process_jobs_snapshot(records, MAX_PROCESSES);
+    if (n) printf("PID  PPID STATE   NAME\n");
+    for (int i = 0; i < n; i++) {
+        const process_info_t* p = &records[i];
+        const char* st = (p->state == PROC_RUN)     ? "running" :
+                         (p->state == PROC_ZOMBIE)  ? "exited"  :
+                         (p->state == PROC_BLOCKED) ? "blocked" : "?";
+        printf("%-4u %-4u %-7s %s\n", p->pid, p->ppid, st, p->comm);
     }
     if (n == 0) printf("No background jobs.\n");
+    kfree(records);
 }
 
 // Wait for a background job to finish: `wait <pid>` for one, or `wait` for all of
@@ -10432,16 +10432,19 @@ static void cmd_pgrep(int argc, char** argv) {
     if (argc > ai && strcmp(argv[ai], "-l") == 0) { list = 1; ai++; }
     if (argc <= ai) { printf("Usage: pgrep [-l] <pattern>\n"); return; }
     const char* pat = argv[ai];
+    process_info_t* records = (process_info_t*)kmalloc(MAX_PROCESSES * sizeof(*records));
+    if (!records) { printf("pgrep: out of memory\n"); return; }
+    int count = process_snapshot(records, MAX_PROCESSES);
     int found = 0;
-    for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t* p = process_table[i];
-        if (!p) continue;
+    for (int i = 0; i < count; i++) {
+        const process_info_t* p = &records[i];
         if (!strstr(p->comm, pat)) continue;
-        if (list) printf("%d %s\n", p->pid, p->comm);
-        else      printf("%d\n", p->pid);
+        if (list) printf("%u %s\n", p->pid, p->comm);
+        else      printf("%u\n", p->pid);
         found++;
     }
     if (!found) printf("pgrep: no process matches '%s'\n", pat);
+    kfree(records);
 }
 
 // pkill <pattern> — terminate every process whose name contains <pattern>. Kernel

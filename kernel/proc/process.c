@@ -48,6 +48,19 @@ int process_snapshot(process_info_t* records, int max) {
     return count;
 }
 
+int process_jobs_snapshot(process_info_t* records, int max) {
+    if (!records || max <= 0) return 0;
+    int count = 0;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    for (int i = 0; i < process_count && count < max; i++) {
+        process_t* p = process_table[i];
+        if (!p || !p->pid || p->reap_claimed || !p->sched_managed) continue;
+        process_copy_info(&records[count++], p);
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return count;
+}
+
 int process_monitor_snapshot(process_monitor_info_t* rows, int max, int* offset, int* total) {
     if (!rows || max <= 0 || !offset || !total) return 0;
     uint64_t flags = spin_lock_irqsave(&sched_lock);

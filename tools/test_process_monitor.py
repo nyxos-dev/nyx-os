@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise real monitor/ps rendering against controlled process retirement."""
+"""Exercise real monitor and process-list commands during process retirement."""
 import argparse
 from pathlib import Path
 import re
@@ -37,14 +37,14 @@ PREFIX = r'''
 #define KEY_UP 1
 #define KEY_DOWN 2
 @TYPES@
-typedef struct { uint32_t pid,ppid,state,cpu_time,reap_claimed; char comm[32]; uint64_t heap_start,program_break; } process_t;
+typedef struct { uint32_t pid,ppid,state,cpu_time,reap_claimed,sched_managed; char comm[32]; uint64_t heap_start,program_break; } process_t;
 @CONTEXT@
 typedef struct { void *reserved; } window_t;
 static process_t *process_table[MAX_PROCESSES];
 static int process_count, sched_lock, locked, locks, retire_on_row, retire_on_print, no_memory, allocations, frees;
 static uint64_t memory_total=5ULL*1024*1024*1024;
 static unsigned checks,failures;
-static char rendered[16384];
+static char rendered[65536];
 #define CHECK(x) do { checks++; if(!(x)){failures++;printf("FAIL %d: %s\n",__LINE__,#x);} } while(0)
 static void retire(void) {
     CHECK(!locked);
@@ -76,7 +76,7 @@ static void mon_draw_graph(int x,int y,int w,int h,const unsigned char *a,int n,
 static void mon_size(char *s,int n,uint64_t v){snprintf(s,(size_t)n,"%llu",(unsigned long long)v);}
 static int output(const char *fmt,...) {
     CHECK(!locked);
-    if(retire_on_print && strstr(fmt,"%-4")){retire_on_print=0;retire();}
+    if(retire_on_print && (strstr(fmt,"%-4") || strstr(fmt,"%u") || strstr(fmt,"%d"))){retire_on_print=0;retire();}
     char buf[256];va_list ap;va_start(ap,fmt);int n=vsnprintf(buf,sizeof(buf),fmt,ap);va_end(ap);capture(buf);return n;
 }
 '''
@@ -103,6 +103,52 @@ int main(void) {
     CHECK(allocations==1 && frees==1);
     reset();add(7,0);no_memory=1;cmd_ps(0,NULL);
     CHECK(strstr(rendered,"ps: out of memory") && process_count==1 && allocations==0);
+    reset();add(1,0);add(7,0)->sched_managed=1;add(8,0)->sched_managed=1;
+    retire_on_print=1;cmd_jobs(0,NULL);
+    CHECK(process_count==0 && strstr(rendered,"process-7") && strstr(rendered,"process-8"));
+    CHECK(!strstr(rendered,"process-1") && allocations==1 && frees==1);
+    reset();add(1,0);cmd_jobs(0,NULL);
+    CHECK(strstr(rendered,"No background jobs.") && !strstr(rendered,"PID  PPID"));
+    reset();add(7,0)->sched_managed=1;no_memory=1;cmd_jobs(0,NULL);
+    CHECK(strstr(rendered,"jobs: out of memory") && process_count==1 && !locks && !allocations);
+    char *listed[]={"pgrep","-l","process-"},*pids[]={"pgrep","process-"},*usage[]={"pgrep","-l"};
+    reset();add(7,0);add(8,0);retire_on_print=1;cmd_pgrep(3,listed);
+    CHECK(process_count==0 && strstr(rendered,"7 process-7") && strstr(rendered,"8 process-8"));
+    CHECK(allocations==1 && frees==1);
+    reset();add(7,0);add(8,0);retire_on_print=1;cmd_pgrep(2,pids);
+    CHECK(process_count==0 && strstr(rendered,"7\n") && strstr(rendered,"8\n") && !strstr(rendered,"process-"));
+    reset();add(7,0);no_memory=1;cmd_pgrep(3,listed);
+    CHECK(strstr(rendered,"pgrep: out of memory") && process_count==1 && !locks && !allocations);
+    reset();cmd_pgrep(1,usage);CHECK(strstr(rendered,"Usage:") && !allocations && !locks);
+    reset();cmd_pgrep(2,usage);CHECK(strstr(rendered,"Usage:") && !allocations && !locks);
+    reset();add(3,0);char *absent[]={"pgrep","missing"};cmd_pgrep(2,absent);
+    CHECK(strstr(rendered,"pgrep: no process matches 'missing'") && allocations==frees);
+    reset();add(7,0);add(8,0);char *empty[]={"pgrep","-l",""};cmd_pgrep(3,empty);
+    CHECK(strstr(rendered,"7 process-7") && strstr(rendered,"8 process-8"));
+    reset();add(7,1);add(8,0)->state=PROC_ZOMBIE;cmd_pgrep(3,listed);
+    CHECK(!strstr(rendered,"process-7") && strstr(rendered,"process-8"));
+    reset();add(UINT32_MAX,0);cmd_pgrep(2,pids);CHECK(strstr(rendered,"4294967295\n"));
+    reset();add(7,0)->sched_managed=1;process_table[0]->state=PROC_ZOMBIE;
+    add(8,0)->sched_managed=1;process_table[1]->state=PROC_BLOCKED;
+    add(9,0)->sched_managed=1;process_table[2]->state=PROC_STOPPED;
+    cmd_jobs(0,NULL);CHECK(strstr(rendered,"exited") && strstr(rendered,"blocked") && strstr(rendered,"?"));
+#if HAS_JOBS_SNAPSHOT
+    process_info_t jobs[3];
+    reset();add(0,0)->sched_managed=1;add(1,1)->sched_managed=1;add(2,0);
+    process_table[process_count++]=NULL;add(3,0)->sched_managed=1;add(4,0)->sched_managed=1;
+    memset(jobs,0xA5,sizeof jobs);
+    CHECK(process_jobs_snapshot(jobs,1)==1 && jobs[0].pid==3 && jobs[1].pid==0xA5A5A5A5u);
+    CHECK(process_jobs_snapshot(jobs,3)==2 && jobs[1].pid==4);
+    CHECK(process_jobs_snapshot(NULL,1)==0 && process_jobs_snapshot(jobs,0)==0 && process_jobs_snapshot(jobs,-1)==0);
+    memset(process_table[4]->comm,'z',32);
+    CHECK(process_jobs_snapshot(jobs,2)==2 && jobs[0].comm[30]=='z' && jobs[0].comm[31]==0);
+    reset();for(int i=1;i<=MAX_PROCESSES;i++)add((uint32_t)i,0)->sched_managed=1;
+    retire_on_print=1;cmd_jobs(0,NULL);
+    CHECK(process_count==0 && strstr(rendered,"process-512") && allocations==frees);
+    reset();for(int i=1;i<=MAX_PROCESSES;i++)add((uint32_t)i,0);
+    retire_on_print=1;cmd_pgrep(3,listed);
+    CHECK(process_count==0 && strstr(rendered,"512 process-512") && allocations==frees);
+#endif
 #if HAS_MONITOR_SNAPSHOT
     process_monitor_info_t rows[3];int offset,total;
     reset();add(0,0);add(1,1);process_table[process_count++]=NULL;
@@ -147,11 +193,14 @@ def main():
     types = '\n'.join(re.search(r'typedef struct \{[^{}]+\} '+name+r';',header)[0]
                       for name in ('process_info_t','process_monitor_info_t'))
     code = PREFIX.replace('@TYPES@',types).replace('@CONTEXT@',re.search(r'typedef struct \{[^{}]+\} taskman_win_t;',context)[0])
-    for sig in ('static void process_copy_info(', 'int process_snapshot(', 'int process_monitor_snapshot('):
+    for sig in ('static void process_copy_info(', 'int process_snapshot(', 'int process_jobs_snapshot(', 'int process_monitor_snapshot('):
         if sig in process:code += function(process,sig)
     code += '\n#define HAS_MONITOR_SNAPSHOT '+str(int('int process_monitor_snapshot(' in process))+'\n'
     code += function(gui,'static const char* state_str(')+function(gui,'void taskman_win_draw(')+function(gui,'void taskman_win_key(')
-    code += function(kernel,'static void cmd_ps(int argc, char** argv) {').replace('printf(', 'output(')+TESTS
+    code += '\n#define HAS_JOBS_SNAPSHOT '+str(int('int process_jobs_snapshot(' in process))+'\n'
+    for command in ('ps','jobs','pgrep'):
+        code += function(kernel,'static void cmd_'+command+'(int argc, char** argv) {').replace('printf(', 'output(')
+    code += TESTS
     with tempfile.TemporaryDirectory(prefix='nyx-process-monitor-') as temp:
         path=Path(temp);(path/'test.c').write_text(code)
         subprocess.run(['gcc','-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-unused-function',

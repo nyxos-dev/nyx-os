@@ -109,7 +109,8 @@ change makes no host-CPU performance claim.
 
 ## Remaining limits
 
-These changes cover `SYS_GETPROCS`, Nyx Monitor and the kernel `ps` and `pstree` commands.
+These changes cover `SYS_GETPROCS`, Nyx Monitor and the kernel `ps`, `pstree`,
+`jobs` and `pgrep` commands.
 Other kernel diagnostic table walks and raw process readers still require
 separate lifetime audits. They do not add a userspace
 init supervisor, process groups, application isolation or resource ownership
@@ -125,3 +126,16 @@ invocation cannot overwrite a partially rendered tree. Allocation and output
 stay outside the scheduler lock, and allocation failure reports an explicit
 error. Zombies remain excluded. The renderer retains its depth cap of 32 and
 4,096-byte output buffer, so a large tree can still be truncated.
+
+## Background job and name queries
+
+`jobs` copies scheduler-managed process records while holding the scheduler lock,
+then formats its output after releasing the lock. It retains running, exited and
+blocked job states and omits records already claimed for collection. The internal
+filter does not change the userspace process-info ABI.
+
+`pgrep` uses an owned process snapshot for substring matching and optional `-l`
+names. Both commands keep their buffers per invocation, report allocation failure,
+and free the buffers after output. A row describes the snapshot time; a process
+may exit before another command acts on the displayed PID. Process-control
+commands require their own validated PID operations.
