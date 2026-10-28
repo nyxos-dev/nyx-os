@@ -1014,6 +1014,53 @@ int process_terminate_user(uint64_t pid) {
     return terminate_process(pid, 1);
 }
 
+int process_set_weight(uint64_t pid, uint32_t weight) {
+    if (weight < SCHED_WEIGHT_MIN || weight > SCHED_WEIGHT_MAX) return -2;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    process_t* p = find_process(pid);
+    int result = -1;
+    if (p && !p->reap_claimed && p->state != PROC_ZOMBIE) {
+        p->sched_weight = weight;
+        result = 0;
+    }
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return result;
+}
+
+int process_set_cpu(uint64_t pid, int32_t cpu) {
+    if (cpu < 0 || (uint32_t)cpu >= cpu_count) return -3;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    process_t* p = find_process(pid);
+    int result = -1;
+    if (!p || p->reap_claimed || p->state == PROC_ZOMBIE) goto out;
+    if (!p->page_directory) { result = -2; goto out; }
+    if (p->sched_cpu == cpu) { result = 0; goto out; }
+    result = -4;
+    if (!p->sched_managed) goto out;
+    // A new pin must not expose a selected or physically outgoing context to
+    // another CPU before the old CPU has saved its stack and address space.
+    // Lazy FPU ownership can outlive both when switching to a kernel thread.
+    for (int i = 0; i < MAX_CPUS; i++) {
+        if (cpu_info[i].sched_cur == (void*)p ||
+            __atomic_load_n(&cpu_info[i].sched_active, __ATOMIC_ACQUIRE) == (void*)p ||
+            cpu_info[i].fpu_owner == (void*)p)
+            goto out;
+    }
+    // Preserve do_clone's co-location of shared address spaces, including
+    // siblings being collected; migrating a whole group is a separate operation.
+    result = -5;
+    for (int i = 0; i < process_count; i++) {
+        process_t* other = process_table[i];
+        if (other && other != p && other->page_directory == p->page_directory)
+            goto out;
+    }
+    p->sched_cpu = cpu;
+    result = 0;
+out:
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return result;
+}
+
 process_t* find_process(uint64_t pid) {
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] && process_table[i]->pid == pid)

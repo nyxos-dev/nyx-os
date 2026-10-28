@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.277"
+#define KERNEL_VERSION "6.5.278"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -447,6 +447,8 @@ typedef struct {
 // Weighted round-robin: the compositor (GUI) runs several ticks per turn so it
 // stays responsive while background jobs (weight 1) run.
 #define SCHED_WEIGHT_GUI 4
+#define SCHED_WEIGHT_MIN 1
+#define SCHED_WEIGHT_MAX 64
 
 // x86_64 TSS (102 bytes)
 // Layout per Intel Vol 3, Figure 7-9
@@ -938,6 +940,8 @@ void close_proc_fds(process_t* proc);   // close a process's fds (called at exit
 int  tg_reassign_leader(process_t* dying); // hand a dying thread's shared heap/mmap/fd table to a LIVE group member; 1 = handed off (do NOT close), 0 = last member out (caller closes fds). Run BEFORE close_proc_fds (issue #73)
 void destroy_process(uint64_t pid);
 int process_terminate_user(uint64_t pid); // 0: terminated; -1: gone/claimed; -2: kernel thread
+int process_set_weight(uint64_t pid, uint32_t weight); // 0: updated; -1: gone; -2: invalid weight
+int process_set_cpu(uint64_t pid, int32_t cpu); // 0: set; -1: gone; -2: kernel; -3: CPU; -4: busy; -5: shared VM
 process_t* find_process(uint64_t pid);
 int process_set_foreground(uint64_t pid); // validated lookup/update under sched_lock
 process_t* get_current_process(void);

@@ -153,18 +153,24 @@ the compositor's background slot (never in the IRQ path), because it calls
 
 ## 5. The scheduler
 
-NyxOS runs a **preemptive, weighted round-robin** scheduler across all available
-CPUs, enabled by `sched_enable()` once user processes exist.
+NyxOS runs a preemptive scheduler, enabled by `sched_enable()` once user
+processes exist. The BSP uses weighted round-robin; APs use round-robin.
 
 - **Weighted round-robin.** Each task gets `sched_weight` ticks per turn
-  (`sched_quantum` counts down the current turn). `nice`/`renice` set the weight
-  (clamped to 1..64; higher = more CPU). This is what the `mtdemo` self-test
+  (`sched_quantum` counts down the current turn). On the BSP, `nice`/`renice`
+  set the weight (clamped to 1..64; higher = more CPU). Changes affect the next
+  turn and leave the current quantum intact. This is what the `mtdemo` self-test
   demonstrates: a thread with 3× the weight counts ~3× faster.
 - **Per-CPU pinning (SMP).** `sched_cpu` fixes which core may run a task: `0`
   (the default) means the BSP, `N > 0` means AP #N exclusively. Because no other
-  core will even look at a pinned task, two cores can never pick the same one —
-  no "currently running" flag is needed. The `apworker1..N` kernel threads are
-  the per-AP idle/work tasks.
+  core will select a task with a different pin, changing a pin requires holding
+  the scheduler lock and excluding both selected and physically active CPU
+  contexts and lazy FPU ownership. `taskset` refuses such a change while the
+  process retains CPU state or is not yet scheduler-managed. FPU state can remain
+  on a CPU after a task blocks, until another user task runs there and saves it.
+  Kernel-thread pins are fixed. Processes sharing an address space cannot be
+  moved individually. Requesting a user process's existing pin is a no-op.
+  The `apworker1..N` kernel threads are the per-AP idle/work tasks.
 - **`sched_managed`.** Only tasks with this flag are round-robined. A blocking
   `exec` and unstarted processes leave it `0` so the scheduler skips them.
 - **Blocking.** `sleep()` sets `wake_tick`; `kwait()` sets `waiting_for` and the

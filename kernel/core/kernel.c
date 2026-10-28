@@ -7762,8 +7762,8 @@ static void cmd_wait(int argc, char** argv) {
 
 // Clamp a scheduler weight to a sane range (1..64; higher = more CPU per turn).
 static uint32_t clamp_weight(int w) {
-    if (w < 1) w = 1;
-    if (w > 64) w = 64;
+    if (w < SCHED_WEIGHT_MIN) w = SCHED_WEIGHT_MIN;
+    if (w > SCHED_WEIGHT_MAX) w = SCHED_WEIGHT_MAX;
     return (uint32_t)w;
 }
 
@@ -7774,8 +7774,10 @@ static void cmd_nice(int argc, char** argv) {
     uint32_t w = clamp_weight(atoi(argv[1]));
     int pid = spawn_user_path(argv[2]);
     if (pid < 0) { printf("nice: could not load %s (err %d)\n", argv[2], pid); return; }
-    process_t* p = find_process((uint32_t)pid);
-    if (p) p->sched_weight = w;
+    if (process_set_weight((uint32_t)pid, w) < 0) {
+        printf("nice: PID %d exited before its weight could be set\n", pid);
+        return;
+    }
     printf("[nice] %s running in background as PID %d, weight %u\n", argv[2], pid, w);
 }
 
@@ -7784,27 +7786,27 @@ static void cmd_renice(int argc, char** argv) {
     if (argc < 3) { printf("Usage: renice <pid> <weight>\n"); return; }
     uint32_t pid = (uint32_t)atoi(argv[1]);
     uint32_t w = clamp_weight(atoi(argv[2]));
-    process_t* p = find_process(pid);
-    if (!p) { printf("renice: process %d not found\n", pid); return; }
-    p->sched_weight = w;
-    printf("renice: PID %d weight set to %u\n", pid, w);
+    if (process_set_weight(pid, w) < 0) {
+        printf("renice: process %u not found or already exited\n", pid);
+        return;
+    }
+    printf("renice: PID %u weight set to %u\n", pid, w);
 }
 
 // taskset <cpu> <pid> — pin a process to one CPU (SMP affinity): 0 = the BSP, 1..N = an AP.
-// Each core only runs tasks whose sched_cpu matches its own number, so setting it migrates
-// the process to that core. Kernel threads (init/idle/compositor/apworker) have fixed pins
-// that ARE the AP mutual-exclusion invariant, so they are refused — only user processes can
-// be re-pinned (same page_directory==NULL guard kill/pkill use).
+// Validate lifetime, fixed kernel pins and physical CPU handoff under sched_lock.
 static void cmd_taskset(int argc, char** argv) {
     if (argc < 3) { printf("Usage: taskset <cpu> <pid>   (cpu 0..%u; 0 = BSP)\n", cpu_count - 1); return; }
     int cpu = atoi(argv[1]);
     uint32_t pid = (uint32_t)atoi(argv[2]);
     if (cpu < 0 || (uint32_t)cpu >= cpu_count) { printf("taskset: cpu must be 0..%u\n", cpu_count - 1); return; }
-    process_t* p = find_process(pid);
-    if (!p) { printf("taskset: process %d not found\n", pid); return; }
-    if (p->page_directory == NULL) { printf("taskset: %d is a kernel thread — its CPU pin is fixed\n", pid); return; }
-    p->sched_cpu = (int32_t)cpu;
-    printf("taskset: pinned PID %d to CPU %d\n", pid, cpu);
+    int result = process_set_cpu(pid, (int32_t)cpu);
+    if (result == -1) { printf("taskset: process %u not found or already exited\n", pid); return; }
+    if (result == -2) { printf("taskset: %u is a kernel thread — its CPU pin is fixed\n", pid); return; }
+    if (result == -3) { printf("taskset: cpu must be 0..%u\n", cpu_count - 1); return; }
+    if (result == -4) { printf("taskset: PID %u is not ready or retains CPU state; retry later\n", pid); return; }
+    if (result == -5) { printf("taskset: PID %u shares its address space; CPU pin unchanged\n", pid); return; }
+    printf("taskset: pinned PID %u to CPU %d\n", pid, cpu);
 }
 
 // Load an ELF from `path` and hand it to the preemptive scheduler as a background

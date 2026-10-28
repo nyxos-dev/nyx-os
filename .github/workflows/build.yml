@@ -181,6 +181,9 @@ jobs:
       - name: Test protected process termination and name selection
         run: python3 tools/test_process_control.py
 
+      - name: Test scheduler controls across retirement and CPU handoff
+        run: python3 tools/test_process_scheduling.py
+
       - name: Test owned process monitor and kernel ps rows
         run: python3 tools/test_process_monitor.py
 

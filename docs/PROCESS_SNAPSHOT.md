@@ -154,3 +154,23 @@ skip another selected process. If every selected process disappears before the
 operation, the command reports that outcome. Allocation failure reports an error
 without terminating any process. Matching names are those at snapshot time;
 processes created afterwards are outside that invocation's selection.
+
+## Scheduler controls
+
+`nice`, `renice` and `taskset` use PID operations that validate process lifetime
+and update scheduler fields while holding the scheduler lock. Exited processes
+and records claimed for collection cannot be changed. Formatting happens after
+the lock is released, without a retained process pointer.
+
+`nice` starts the child and then requests its weight. A short-lived child may
+exit first; the command reports that outcome rather than claiming the weight was
+applied. `renice` retains support for live kernel threads. Weights are clamped to
+1..64 and affect subsequent BSP turns; AP scheduling does not use these weights.
+
+`taskset` keeps kernel pins fixed and rejects invalid CPUs. Changing a user pin
+requires a scheduler-managed process that is neither selected nor physically
+active on any CPU, retains no CPU's lazy FPU ownership and does not share its
+address space with another table entry. FPU state left on a CPU is saved when
+another user task runs there. A refused request can be retried after these
+conditions clear; the operation does not queue a migration. A request for the
+existing user pin succeeds without changing it.
