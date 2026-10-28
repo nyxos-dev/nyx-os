@@ -131,7 +131,7 @@ ST_FUNC void test_lvalue(void)
 ST_FUNC void check_vstack(void)
 {
     if (pvtop != vtop)
-        tcc_error("internal compiler error: vstack leak (%d)", vtop - pvtop);
+        tcc_error("internal compiler error: vstack leak (%ld)", (long)(vtop - pvtop));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -6357,7 +6357,7 @@ static int decl_designator(CType *type, Section *sec, unsigned long c,
 		(*cur_field)->c = index_last;
             type = pointed_type(type);
             elem_size = type_size(type, &align);
-            c += index * elem_size;
+            c += (unsigned long)index * elem_size;
             nb_elems = index_last - index + 1;
         } else {
             next();
@@ -6388,7 +6388,7 @@ static int decl_designator(CType *type, Section *sec, unsigned long c,
 	    if (type->ref->c >= 0 && index >= type->ref->c)
 	        tcc_error("index too large");
             type = pointed_type(type);
-            c += index * type_size(type, &align);
+            c += (unsigned long)index * type_size(type, &align);
         } else {
             f = *cur_field;
 	    while (f && (f->v & SYM_FIRST_ANOM) && (f->type.t & VT_BITFIELD))
@@ -6414,13 +6414,13 @@ static int decl_designator(CType *type, Section *sec, unsigned long c,
         if (!sec) {
 	    vset(type, VT_LOCAL|VT_LVAL, c);
 	    for (i = 1; i < nb_elems; i++) {
-		vset(type, VT_LOCAL|VT_LVAL, c + elem_size * i);
+		vset(type, VT_LOCAL|VT_LVAL, c + (unsigned long)elem_size * i);
 		vswap();
 		vstore();
 	    }
 	    vpop();
         } else if (!NODATA_WANTED) {
-	    c_end = c + nb_elems * elem_size;
+	    c_end = c + (unsigned long)nb_elems * elem_size;
 	    if (c_end > sec->data_allocated)
 	        section_realloc(sec, c_end);
 	    src = sec->data + c;
@@ -6431,7 +6431,7 @@ static int decl_designator(CType *type, Section *sec, unsigned long c,
 	    }
 	}
     }
-    c += nb_elems * type_size(type, &align);
+    c += (unsigned long)nb_elems * type_size(type, &align);
     if (c - corig > al)
       al = c - corig;
     return al;
@@ -6716,7 +6716,7 @@ static void decl_initializer(CType *type, Section *sec, unsigned long c,
                             else
                                 ch = ((nwchar_t *)tokc.str.data)[i];
 			    vpushi(ch);
-                            init_putv(t1, sec, c + (len + i) * size1);
+                            init_putv(t1, sec, c + ((unsigned long)len + i) * size1);
                         }
                     }
                 }

@@ -19,6 +19,13 @@ static int move_bytes(const char* path, const char* expected) {
     return closed == 0 && n == (long)strlen(expected) && !memcmp(buf, expected, n);
 }
 
+static int move_absent(const char* path) {
+    int fd = open(path, O_RDONLY, 0);
+    if (fd < 0) return 1;
+    close(fd);
+    return 0;
+}
+
 static int test_moves(void) {
     char dir[64], a[80], b[80];
     snprintf(dir, sizeof(dir), "/mnt/libctest-move-%d", (int)getpid());
@@ -38,9 +45,8 @@ static int test_moves(void) {
                  move_bytes(a, "KEEP") && move_bytes(b, "STAY");
     if (ok) ok = unlink(b) == 0;
     for (int i = 0; ok && i < 16; i++) {
-        struct stat st;
-        ok = rename(a, b) == 0 && stat(a, &st) < 0 && move_bytes(b, "KEEP") &&
-             rename(b, a) == 0 && stat(b, &st) < 0 && move_bytes(a, "KEEP");
+        ok = rename(a, b) == 0 && move_absent(a) && move_bytes(b, "KEEP") &&
+             rename(b, a) == 0 && move_absent(b) && move_bytes(a, "KEEP");
     }
     unlink(a);
     unlink(b);
@@ -54,11 +60,14 @@ int main(int argc, char** argv) {
 
     /* realloc: grow a buffer; old contents preserved, grown region writable. */
     char* p = (char*)malloc(8);
-    for (int i = 0; i < 8; i++) p[i] = (char)('A' + i);
-    p = (char*)realloc(p, 64);
-    int r_ok = (p != 0);
-    for (int i = 0; i < 8; i++) if (p[i] != (char)('A' + i)) r_ok = 0;
-    if (p) p[63] = 'Z';
+    if (p) for (int i = 0; i < 8; i++) p[i] = (char)('A' + i);
+    char* grown = p ? (char*)realloc(p, 64) : 0;
+    int r_ok = (grown != 0);
+    if (grown) {
+        p = grown;
+        for (int i = 0; i < 8; i++) if (p[i] != (char)('A' + i)) r_ok = 0;
+        p[63] = 'Z';
+    }
     printf("LIBCTEST: realloc %s\n", r_ok ? "PASS" : "FAIL");
     if (!r_ok) ok = 0;
     free(p);
@@ -80,9 +89,7 @@ int main(int argc, char** argv) {
     printf("LIBCTEST: memmove %s\n", m_ok ? "PASS" : "FAIL");
     if (!m_ok) ok = 0;
 
-    /* File I/O wrappers (open/write/stat/lseek/read) on the persistent /mnt mount:
-     * write a file, stat it (size + regular-file mode), then reopen, seek past the
-     * first 7 bytes and read the tail back, comparing it to the original. */
+    /* Keep metadata and data checks on the same opened file description. */
     {
         const char* path = "/mnt/libctest_io.txt";
         const char* msg  = "NyxOS toolchain file I/O test\n";
@@ -90,23 +97,19 @@ int main(int argc, char** argv) {
         int io_ok = 1;
         int fd = (int)open(path, O_CREAT | O_TRUNC, 0644);   /* NyxOS: bit0=O_CREAT, no access mode */
         if (fd < 0) io_ok = 0;
-        else { if (write(fd, msg, mlen) != mlen) io_ok = 0; close(fd); }
-
-        struct stat st;
-        if (io_ok && (stat(path, &st) != 0 || st.st_size != (unsigned)mlen || !S_ISREG(st.st_mode))) io_ok = 0;
-
-        fd = (int)open(path, O_RDONLY, 0);
-        if (fd < 0) io_ok = 0;
         else {
+            if (write(fd, msg, mlen) != mlen) io_ok = 0;
+            struct stat st;
+            if (fstat(fd, &st) != 0 || st.st_size != (unsigned)mlen || !S_ISREG(st.st_mode)) io_ok = 0;
             char rb[64];
             if (lseek(fd, 7, SEEK_SET) != 7) io_ok = 0;
             long n = read(fd, rb, (long)sizeof(rb) - 1);
             if (n < 0) { io_ok = 0; n = 0; }
             rb[n] = '\0';
             if (io_ok && (n != mlen - 7 || memcmp(rb, msg + 7, (unsigned long)n) != 0)) io_ok = 0;
-            close(fd);
+            if (close(fd) < 0) io_ok = 0;
         }
-        printf("LIBCTEST: fileio(open/write/stat/lseek/read) %s\n", io_ok ? "PASS" : "FAIL");
+        printf("LIBCTEST: fileio(open/write/fstat/lseek/read) %s\n", io_ok ? "PASS" : "FAIL");
         if (!io_ok) ok = 0;
     }
 

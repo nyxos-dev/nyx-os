@@ -128,6 +128,7 @@ jobs:
 
       - name: Test VFS move failures and caller status
         run: |
+          python3 tools/test_toolchain_safety.py
           python3 tools/test_vfs_moves.py
           python3 tools/test_move_callers.py
           python3 tools/test_fileman_metadata.py

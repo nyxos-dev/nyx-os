@@ -141,7 +141,7 @@ $(USER_DIR)/libctest.o: $(USER_DIR)/libctest.c $(USER_DIR)/libc.h $(USER_DIR)/sy
 TCC_DIR    = $(USER_DIR)/tcc
 TCC_CFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -w \
              -I$(TCC_DIR)/nyxshim -I$(TCC_DIR) -I$(USER_DIR)
-$(TCC_DIR)/tcc_main.o: $(TCC_DIR)/tcc.c makefile
+$(TCC_DIR)/tcc_main.o: $(TCC_DIR)/tcc.c $(wildcard $(TCC_DIR)/*.c $(TCC_DIR)/*.h $(TCC_DIR)/nyxshim/*.h) makefile
 	$(TARGET_CC) $(TCC_CFLAGS) -c $< -o $@
 $(TCC_DIR)/nyxshim.o: $(TCC_DIR)/nyxshim/nyxshim.c makefile
 	$(TARGET_CC) $(TCC_CFLAGS) -c $< -o $@
