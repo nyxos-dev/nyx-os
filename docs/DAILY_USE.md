@@ -1031,6 +1031,11 @@ The immediate data and desktop priorities are:
     an effectively unbounded redraw after shrinking the window. See
     [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md).
 
+77. Development version 6.5.272 protects foreground PID selection against
+    concurrent process collection. Rejected targets preserve the current PID;
+    the existing keyboard tool also checks selection before and after child
+    collection. See [PROCESS_LIFETIME.md](PROCESS_LIFETIME.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

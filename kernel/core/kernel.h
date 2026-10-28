@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.271"
+#define KERNEL_VERSION "6.5.272"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -937,6 +937,7 @@ void close_proc_fds(process_t* proc);   // close a process's fds (called at exit
 int  tg_reassign_leader(process_t* dying); // hand a dying thread's shared heap/mmap/fd table to a LIVE group member; 1 = handed off (do NOT close), 0 = last member out (caller closes fds). Run BEFORE close_proc_fds (issue #73)
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);
+int process_set_foreground(uint64_t pid); // validated lookup/update under sched_lock
 process_t* get_current_process(void);
 void schedule(void);
 void switch_context(uint64_t* old_rsp_ptr, uint64_t new_rsp);

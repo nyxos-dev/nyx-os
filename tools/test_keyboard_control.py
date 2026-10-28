@@ -11,6 +11,7 @@ import platform
 import shlex
 import subprocess
 import tempfile
+from test_process_reap import function
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -218,38 +219,60 @@ SETFG_HARNESS = r"""
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-typedef struct {uint32_t pid;} process_t;
-static process_t targets[]={{42},{UINT32_MAX}};
+typedef struct {uint32_t pid,reap_claimed;} process_t;
+static process_t targets[]={{42,0},{UINT32_MAX,0}};
+static process_t *slots[]={targets,targets+1};
+static int process_count=2, sched_lock, locked, locks, retire, reads;
 uint32_t g_foreground_pid;
-static int lookups;
-static process_t* find_process(uint64_t pid) {
-    lookups++;
-    for(unsigned i=0;i<sizeof(targets)/sizeof(targets[0]);i++)
-        if(targets[i].pid==pid)return &targets[i];
-    return NULL;
+static int checks;
+#define VERIFY(x) do {checks++;if(!(x)){fprintf(stderr,"FAIL foreground: %s\n",#x);exit(1);}} while(0)
+static uint64_t __attribute__((unused)) spin_lock_irqsave(int *lock) {
+    VERIFY(lock==&sched_lock && !locked);locked=1;locks++;return 73;
 }
+static void __attribute__((unused)) spin_unlock_irqrestore(int *lock,uint64_t flags) {
+    VERIFY(lock==&sched_lock && locked && flags==73);locked=0;
+    if(retire){slots[0]=NULL;retire=0;}
+}
+static process_t **table_read(void) {
+    reads++;
+    if(retire && !locked && reads==2)slots[0]=NULL;
+    return slots;
+}
+#define process_table table_read()
+@FIND@
+@SETFG@
 static int setfg_call(uint64_t a1) {
 @BODY@
 }
-static int checks;
-#define VERIFY(x) do {checks++;if(!(x)){fprintf(stderr,"FAIL foreground: %s\n",#x);return 1;}} while(0)
 int main(void) {
     const uint32_t low[]={0,42,UINT32_MAX,99};
     const uint32_t high[]={1,2,0x7fffffff,0x80000000,0xffffffff};
     for(unsigned i=0;i<sizeof(high)/sizeof(high[0]);i++)
         for(unsigned j=0;j<sizeof(low)/sizeof(low[0]);j++) {
-            g_foreground_pid=42;lookups=0;
+            g_foreground_pid=42;locks=reads=0;
             uint64_t pid=((uint64_t)high[i]<<32)|low[j];
             VERIFY(setfg_call(pid)==-1);
             VERIFY(g_foreground_pid==42);
+            VERIFY(!locks && !reads);
         }
     for(unsigned i=0;i<sizeof(low)/sizeof(low[0]);i++) {
-        g_foreground_pid=42;lookups=0;
+        g_foreground_pid=42;locks=reads=0;
         int valid=low[i]!=99;
         VERIFY(setfg_call(low[i])==(valid?0:-1));
         VERIFY(g_foreground_pid==(valid?low[i]:42));
     }
-    printf("PASS %d foreground PID width and unchanged-target checks\n",checks);
+#if TEST_LIFETIME
+    targets[0].reap_claimed=1;g_foreground_pid=99;
+    VERIFY(setfg_call(42)==-1);VERIFY(g_foreground_pid==99 && !locked);
+    targets[0].reap_claimed=0;
+    for(int i=0;i<512;i++) {
+        slots[0]=targets;reads=locks=0;retire=1;g_foreground_pid=99;
+        VERIFY(setfg_call(42)==0);VERIFY(g_foreground_pid==42 && !locked && locks==1);
+        VERIFY(slots[0]==NULL);VERIFY(setfg_call(42)==-1);VERIFY(g_foreground_pid==42);
+        VERIFY(setfg_call(0)==0);VERIFY(g_foreground_pid==0 && !locked);
+    }
+#endif
+    printf("PASS %d foreground PID width, target and retirement checks\n",checks);
     return 0;
 }
 """
@@ -260,8 +283,13 @@ def setfg_suite(work, cc, reference=None):
     start=code.index('case SYS_SETFG: {')+len('case SYS_SETFG: {')
     end=code.index('\n        case SYS_GETTIMEOFDAY:',start)
     body=code[start:end].rsplit('}',1)[0]
+    process=(subprocess.check_output(['git','show',reference+':kernel/proc/process.c'],cwd=ROOT,text=True)
+             if reference else (ROOT/'kernel/proc/process.c').read_text(encoding='utf-8'))
+    protected='int process_set_foreground(' in process
+    helper=function(process,'int process_set_foreground(') if protected else ''
+    harness=SETFG_HARNESS.replace('@FIND@',function(process,'process_t* find_process(')).replace('@SETFG@',helper)
     src=work/('setfg-old.c' if reference else 'setfg.c')
-    src.write_text(SETFG_HARNESS.replace('@BODY@',body),encoding='utf-8')
+    src.write_text('#define TEST_LIFETIME '+str(int(protected))+'\n'+harness.replace('@BODY@',body),encoding='utf-8')
     binary=src.with_suffix('')
     subprocess.run([*cc,'-std=gnu99','-Wall','-Wextra','-Werror','-O1','-no-pie',
                     '-fsanitize=address,undefined',str(src),'-o',str(binary)],check=True)

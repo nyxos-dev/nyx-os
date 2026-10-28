@@ -170,6 +170,43 @@ offline disk controls stay byte-identical and the disposable VM closes. These
 checks use default placement and do not force the host interleavings, qualify
 all SMP workloads or establish a CPU performance improvement.
 
+## Foreground PID selection (6.5.272)
+
+`SYS_SETFG` delegates PID validation and foreground-target publication to
+`process_set_foreground()` under `sched_lock`. The lookup cannot race table
+compaction or collection, and a collector-claimed record is rejected. Zero
+clears the target; wider-than-32-bit and missing PIDs return failure without
+changing it. A present zombie that has not been claimed retains the previous
+acceptance behaviour. No process pointer escapes this operation, and it does
+not allocate memory or print while holding the lock.
+
+The existing keyboard host suite now extracts the actual lookup, protected
+operation and syscall branch. Its foreground portion passes 6,736 checks,
+including PID width, unchanged rejection targets, claimed records and 512
+modelled retirements at unlock. The signal lifetime suite separately passes
+283 checks. A controlled host reproduction of the previous unlocked lookup
+removes a table entry between its two reads and triggers a sanitizer null
+member access. This models an interleaving; it is not a reproduced guest crash.
+
+A warning-free build passes 230 kernel self-tests and four-CPU startup. In a
+fresh four-CPU, 5-GiB QEMU/TCG desktop session, the existing `keyevtest` selects
+each of 32 children before collection and rejects its PID afterwards. Real PS/2
+Ctrl+C reaches the parent's handler exactly once after a rejected target. Nine
+stdin signal/stop/continue/kill cases, the alarm demo and stack-canary checking
+pass. Both scheduler demo tasks finish, all three AP workers execute, and two
+allocator stress runs report zero integrity errors with balanced page counts on
+the second run. A later terminal command and drag succeed; two offline disk
+controls remain byte-identical after VM shutdown.
+
+A separate fresh single-CPU session passes the same 32-child foreground test,
+Ctrl+C delivery, nine stdin cases, alarm and stack-canary checks, with both
+offline controls intact. The host interleaving is not forced in either VM.
+
+The foreground target remains a single global PID. It may cease to exist after
+selection releases the lock; the protected signal-delivery lookup handles that
+case. This change does not introduce per-terminal ownership or a general process
+reference-counting API. Other unlocked diagnostic readers remain outside its scope.
+
 ## Remaining limits
 
 The previously reproduced AP-parent prompt failure passes the bounded target

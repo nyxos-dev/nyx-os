@@ -5,6 +5,8 @@
  * only), this reports BOTH press and release, with layout-independent Set-1 scancodes
  * (bit 0x80 = E0-extended arrow/nav). A game reads keys this way. */
 
+static long wait_collect(int pid, int* status, int flags);
+
 static int foreground_test(void) {
     unsigned long self = getpid();
     const unsigned long invalid[] = {0x100000000ULL | self, 0x100000000ULL,
@@ -16,6 +18,17 @@ static int foreground_test(void) {
         printf("keyevtest: foreground invalid %u -> %ld %s\n", i, rc, rc == -1 ? "PASS" : "FAIL");
         if (rc != -1) failed++;
     }
+    for (int i = 0; i < 32; i++) {
+        int status = -1;
+        long child = fork();
+        if (child < 0) return 1;
+        if (!child) exit(0);
+        int ok = setfg(child) == 0;
+        if (wait_collect((int)child, &status, 0) != child || status != 0) ok = 0;
+        if (setfg((long)self) != 0 || setfg(child) != -1) ok = 0;
+        if (!ok) failed++;
+    }
+    printf("keyevtest: foreground collection %s (32 children)\n", failed ? "FAIL" : "PASS");
     if (setfg(0) != 0 || setfg((long)self) != 0) failed++;
     printf("keyevtest: foreground %s (%d failures)\n", failed ? "FAIL" : "PASS", failed);
     return failed ? 1 : 0;

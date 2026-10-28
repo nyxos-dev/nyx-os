@@ -995,6 +995,17 @@ process_t* find_process(uint64_t pid) {
     return NULL;
 }
 
+int process_set_foreground(uint64_t pid) {
+    extern uint32_t g_foreground_pid;
+    if (pid != (uint32_t)pid) return -1;
+    uint64_t flags = spin_lock_irqsave(&sched_lock);
+    process_t* p = pid ? find_process(pid) : NULL;
+    int valid = !pid || (p && !p->reap_claimed);
+    if (valid) g_foreground_pid = (uint32_t)pid;
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return valid ? 0 : -1;
+}
+
 // Per-CPU identity survives table compaction. The index is only a bootstrap
 // fallback before the BSP has registered its current task. AP idle has no task.
 process_t* get_current_process(void) {
