@@ -395,8 +395,11 @@ int memset32_selftest(void) {
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
     if (!fb_addr) return;
     if (x >= fb_width || y >= fb_height) return;
-    if (x + w > fb_width) w = fb_width - x;
-    if (y + h > fb_height) h = fb_height - y;
+    // Subtract after validating the origin: x+w/y+h can wrap for dimensions
+    // converted from negative layout space and bypass the framebuffer bound.
+    if (w > fb_width - x) w = fb_width - x;
+    if (h > fb_height - y) h = fb_height - y;
+    if (!w || !h) return;
 
     if (fb_bpp == 32) {
         if (!clip_on && !region_on) {

@@ -1023,6 +1023,14 @@ The immediate data and desktop priorities are:
     another file gesture. Clipboard operations resume after closing. See
     [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md).
 
+76. Development version 6.5.271 bounds File Manager Properties to the client
+    area and wraps its fields. Limited space shows an ellipsis and resize hint;
+    very small windows retain a compact close hint. Display sanitization leaves
+    the filename and path snapshot unchanged. Short windows skip an unavailable
+    scrollbar track; rectangle filling also rejects wrapped bounds, preventing
+    an effectively unbounded redraw after shrinking the window. See
+    [FILE_MANAGER_PATHS.md](FILE_MANAGER_PATHS.md).
+
 ### Oneiros numerical failure handling (6.5.208)
 
 The desktop and `nyxgen` check attention scores, hidden activations, output logits

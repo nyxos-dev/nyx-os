@@ -559,6 +559,105 @@ static void fm_draw_sort_arrow(int x, int y, int up, uint32_t col) {
 // Type-column labels come from the shared kernel classifier (kernel/fs/filetype.c).
 extern const char* filetype_label(const char* name, int is_dir);
 
+#define PROPS_MARGIN 4
+#define PROPS_PADDING 10
+#define PROPS_MAX_WIDTH 520
+#define PROPS_COMPACT_WIDTH 120
+#define PROPS_COMPACT_HEIGHT 80
+#define PROPS_LINE_STEP (FONT_HEIGHT + 2)
+#define PROPS_BODY_TOP (FONT_HEIGHT + PROPS_PADDING)
+#define PROPS_FOOTER_GAP 6
+
+static void fileman_property_line(fileman_win_t* fm, int field, char* out, size_t n) {
+    if (field == 0) snprintf(out, n, "Name: %s", fm->props_name);
+    else if (field == 1) snprintf(out, n, "Type: %s", fm->props_is_dir ? "Directory" : "File");
+    else if (field == 2) fileman_property_size(fm, out, n);
+    else snprintf(out, n, "Path: %s", fm->props_path);
+}
+
+static void fileman_property_row(int x, int y, const char* text, int count,
+                                 int columns, int more, uint32_t fg, uint32_t bg) {
+    char row[64];
+    if (columns > (int)sizeof(row) - 1) columns = sizeof(row) - 1;
+    if (count > columns) count = columns;
+    if (count <= 0) return;
+    for (int i = 0; i < count; i++) {
+        unsigned char c = (unsigned char)text[i];
+        row[i] = c >= 32 && c <= 126 ? (char)c : '?';
+    }
+    if (more) {
+        int dots = count < 3 ? count : 3;
+        for (int i = 0; i < dots; i++) row[count - 1 - i] = '.';
+    }
+    row[count] = '\0';
+    font_draw_string(x, y, row, fg, bg);
+}
+
+static void fileman_draw_properties(fileman_win_t* fm, int cx, int cy, uint32_t cw, uint32_t ch) {
+    if (cw < 2 * (PROPS_PADDING + PROPS_MARGIN) + FONT_WIDTH || ch <= 2 * PROPS_MARGIN) return;
+    int pw = cw > PROPS_MAX_WIDTH + 2 * PROPS_MARGIN ? PROPS_MAX_WIDTH : (int)cw - 2 * PROPS_MARGIN;
+    int columns = (pw - 2 * PROPS_PADDING) / FONT_WIDTH;
+    int rows = 0;
+    char line[400];
+    for (int field = 0; field < 4; field++) {
+        fileman_property_line(fm, field, line, sizeof(line));
+        rows += ((int)strlen(line) + columns - 1) / columns;
+    }
+    int ph = rows * PROPS_LINE_STEP + PROPS_BODY_TOP + PROPS_MARGIN + FONT_HEIGHT + PROPS_FOOTER_GAP;
+    if (ph > (int)ch - 2 * PROPS_MARGIN) ph = (int)ch - 2 * PROPS_MARGIN;
+    int px = cx + ((int)cw - pw) / 2, py = cy + ((int)ch - ph) / 2;
+    uint32_t bg = fb_rgb(45, 45, 55), border = fb_rgb(120, 120, 140);
+    uint32_t fg = fb_rgb(220, 220, 230);
+    fb_fill_rect(px, py, pw, ph, bg);
+    fb_fill_rect(px, py, pw, 1, border);
+    fb_fill_rect(px, py + ph - 1, pw, 1, border);
+    fb_fill_rect(px, py, 1, ph, border);
+    fb_fill_rect(px + pw - 1, py, 1, ph, border);
+    if (pw < PROPS_COMPACT_WIDTH || ph < PROPS_COMPACT_HEIGHT) {
+        if (ph >= FONT_HEIGHT + 2 * PROPS_MARGIN)
+            fileman_property_row(px + PROPS_PADDING, py + PROPS_MARGIN, "Properties", 10, columns, columns < 10, fg, bg);
+        if (ph >= 2 * FONT_HEIGHT + 3 * PROPS_MARGIN)
+            fileman_property_row(px + PROPS_PADDING, py + FONT_HEIGHT + 2 * PROPS_MARGIN, "Resize/Esc", 10, columns, columns < 10, fg, bg);
+        return;
+    }
+    fb_fill_rect(px + 1, py + 1, pw - 2, FONT_HEIGHT + 6, THEME_PANEL_HEADER);
+    fileman_property_row(px + PROPS_PADDING, py + 3, "Properties", 10, columns, 0, fg, THEME_PANEL_HEADER);
+    int y = py + PROPS_BODY_TOP, footer_y = py + ph - FONT_HEIGHT - PROPS_FOOTER_GAP;
+    int available = (footer_y - PROPS_MARGIN - y) / PROPS_LINE_STEP;
+    int used = 0;
+    for (int field = 0; field < 4 && used < available; field++) {
+        fileman_property_line(fm, field, line, sizeof(line));
+        int length = strlen(line);
+        for (int offset = 0; offset < length && used < available; offset += columns) {
+            int count = length - offset;
+            if (count > columns) count = columns;
+            int more = used + 1 == available && (offset + count < length || field < 3);
+            fileman_property_row(px + PROPS_PADDING, y, line + offset, count, columns, more, fg, bg);
+            y += PROPS_LINE_STEP;
+            used++;
+        }
+    }
+    const char* hint = used < rows ? "Resize for more; Esc closes" : "Click, Esc or Enter to close";
+    if ((int)strlen(hint) > columns) hint = "Resize/Esc";
+    fileman_property_row(px + PROPS_PADDING, footer_y, hint, strlen(hint), columns, 0,
+                         fb_rgb(150, 150, 160), bg);
+}
+
+static void fileman_draw_scrollbar(int x, int y, int height, int count, int rows, int offset) {
+    if (height <= 0) return;
+    fb_fill_rect(x, y, SCROLL_W, (uint32_t)height, fb_rgb(40,40,45));
+    if (count > rows) {
+        int top = (offset * height) / count;
+        int thumb = (rows * height) / count;
+        if (thumb < 8) thumb = 8;
+        if (thumb > height) thumb = height;
+        if (top + thumb > height) top = height - thumb;
+        fb_fill_rect(x, y + top, SCROLL_W, (uint32_t)thumb, fb_rgb(100,100,110));
+        fb_fill_rect(x, y + top, SCROLL_W, 1, fb_rgb(140,140,150));
+        fb_fill_rect(x, y + top + thumb - 1, SCROLL_W, 1, fb_rgb(70,70,80));
+    }
+}
+
 void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
@@ -680,20 +779,8 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     }
 
     // Scrollbar
-    int sb_x = cx + list_w;
-    int sb_y = list_y;
-    int sb_h = avail_h;
-    fb_fill_rect(sb_x, sb_y, SCROLL_W, (uint32_t)sb_h, fb_rgb(40,40,45));
-
-    if (disp_count > max_rows) {
-        int thumb_top = (fm->scroll_offset * sb_h) / disp_count;
-        int thumb_h = (max_rows * sb_h) / disp_count;
-        if (thumb_h < 8) thumb_h = 8;
-        if (thumb_top + thumb_h > sb_h) thumb_top = sb_h - thumb_h;
-        fb_fill_rect(sb_x, sb_y + thumb_top, SCROLL_W, (uint32_t)thumb_h, fb_rgb(100,100,110));
-        fb_fill_rect(sb_x, sb_y + thumb_top, SCROLL_W, 1, fb_rgb(140,140,150));
-        fb_fill_rect(sb_x, sb_y + thumb_top + thumb_h - 1, SCROLL_W, 1, fb_rgb(70,70,80));
-    }
+    fileman_draw_scrollbar(cx + list_w, list_y, avail_h,
+                          disp_count, max_rows, fm->scroll_offset);
 
     // Status bar
     int status_y = cy + ch - HEADER_H;
@@ -765,31 +852,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     }
 
     // Properties modal — drawn last so it overlays everything; any click closes it (fileman_win_click).
-    if (fm->props_open) {
-        int pw = 320, ph = 130;
-        int px = cx + ((int)cw - pw) / 2;
-        int py = cy + ((int)ch - ph) / 2;
-        if (px < cx + 4) px = cx + 4;
-        if (py < cy + 4) py = cy + 4;
-        fb_fill_rect(px, py, pw, ph, fb_rgb(45, 45, 55));
-        fb_fill_rect(px, py, pw, 1, fb_rgb(120, 120, 140));
-        fb_fill_rect(px, py + ph - 1, pw, 1, fb_rgb(120, 120, 140));
-        fb_fill_rect(px, py, 1, ph, fb_rgb(120, 120, 140));
-        fb_fill_rect(px + pw - 1, py, 1, ph, fb_rgb(120, 120, 140));
-        fb_fill_rect(px, py, pw, char_h + 6, THEME_PANEL_HEADER);
-        font_draw_string(px + 8, py + 3, "Properties", fb_rgb(255, 255, 255), THEME_PANEL_HEADER);
-        int ly = py + char_h + 12;
-        char line[400];
-        snprintf(line, sizeof(line), "Name: %s", fm->props_name);
-        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
-        snprintf(line, sizeof(line), "Type: %s", fm->props_is_dir ? "Directory" : "File");
-        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
-        fileman_property_size(fm, line, sizeof(line));
-        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
-        snprintf(line, sizeof(line), "Path: %s", fm->props_path);
-        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55));
-        font_draw_string(px + 10, py + ph - char_h - 6, "(click, Esc or Enter to close)", fb_rgb(150, 150, 160), fb_rgb(45, 45, 55));
-    }
+    if (fm->props_open) fileman_draw_properties(fm, cx, cy, cw, ch);
 }
 
 void fileman_win_click(window_t* win, int mx, int my, int btn) {

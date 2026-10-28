@@ -198,3 +198,56 @@ four-CPU startup passing.
 An initial candidate fails the stationary-release check because the compositor
 only dispatches movement; the corrected pointer branch passes a complete fresh
 VM run. This target check is distinct from the host model of hidden VFS actions.
+
+## Bounded Properties layout (6.5.271)
+
+The Properties panel fits inside the client area with a four-pixel margin and
+a maximum width of 520 pixels. Its fields wrap using the existing 8-by-16 font.
+When there is insufficient height, the final visible row ends with an ellipsis
+and the footer asks for more space. Very small windows use a compact
+`Resize/Esc` hint. The existing click, Esc and Enter dismissal rules remain.
+
+Rendering replaces control and non-ASCII bytes with `?` in the temporary row;
+the stored name, path, metadata and clipboard remain unchanged. This is a
+bounded byte-oriented display, not Unicode support. The panel allocates no
+heap memory, adds no periodic work and does not alter global framebuffer clips.
+Other File Manager controls retain their existing layout limitations.
+
+`tools/test_fileman_properties.py` exercises the actual drawing helpers with
+recording graphics functions and the kernel formatter under ASan/UBSan. It
+checks panel and text bounds across client sizes from zero through 800 by 600,
+snapshot preservation, complete long fields at normal size, explicit overflow
+at smaller sizes, directory/unknown sizes and control-byte rendering. These
+are host geometry checks, separate from framebuffer and interactive VM tests.
+
+Shrinking the client height to 80 pixels also exposed a pre-existing scrollbar
+failure: the remaining track height became negative, was converted to an unsigned
+dimension, and overflowed the framebuffer filler's `y + height` boundary test.
+With window clipping active, drawing could then iterate billions of rows while
+the desktop stopped responding. The scrollbar now skips non-positive tracks and
+fits its thumb even when fewer than eight pixels remain. The rectangle filler
+checks dimensions against the remaining framebuffer width and height using
+subtraction, so wrapped dimensions cannot bypass the bounds in either pixel format.
+
+The host suite covers 72,257 panel/scrollbar checks and 64,001 framebuffer cases
+under ASan/UBSan. The framebuffer reference uses widened arithmetic, verifies the
+entire buffer and guard area, and includes zero sizes, off-screen origins, wrapped
+dimensions, 8/32-bit pixels and clipping combinations. It retains the existing
+limitation that the 8-bit path does not apply window/region clips. The earlier
+implementation fails the bounds suite with a sanitizer buffer overflow; the GUI
+reproduction stops in `fb_fill_rect` while shrinking to the minimum height.
+
+A fresh four-CPU, 5-GiB QEMU/TCG session exercises real PS/2 input with a 63-byte
+name and a 256-byte property path. Normal, 300-by-180, minimum 120-by-80 and
+quarter-tiled client geometry preserve the open snapshot; restoring the window
+recovers the full fields. The long path is reached by navigating from its parent
+because the complete launch command exceeds the terminal's input limit. Its size
+remains `Unknown` when the existing metadata path limit is exceeded.
+Screenshots separately verify wrapping, the ellipsis and the compact hint.
+
+The same session checks blocked hidden actions, Esc/Enter/click dismissal,
+consumed held presses, stationary release, an acknowledged move after dismissal,
+terminal execution and dragging. Stack-canary checking and the userspace libc test
+pass. After VM shutdown, nine expected file payloads match exactly, including the
+six-byte moved file; its old source is absent. This does not establish atomic
+moves, full Unicode layout, general rendering safety or hardware support.
