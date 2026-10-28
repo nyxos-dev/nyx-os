@@ -10,19 +10,24 @@
 # Needs:  grub-mkrescue, xorriso, mtools (mformat). The x86_64-efi GRUB platform is
 #         used from /usr/lib/grub if installed system-wide (apt: grub-efi-amd64-bin),
 #         otherwise fetched WITHOUT root via `apt-get download` + `dpkg-deb -x`.
-set -e
+set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$REPO/NyxOS-uefi.iso}"
 KERNEL="$REPO/kernel/nyx-kernel.bin"
 
+[ ! -d "$OUT" ] || { echo "[mkuefi] output is a directory: $OUT" >&2; exit 1; }
 [ -f "$KERNEL" ] || { echo "[mkuefi] kernel not built: $KERNEL — run build.ps1 (or make -C kernel) first"; exit 1; }
 for t in grub-mkrescue xorriso mformat; do
   command -v "$t" >/dev/null || { echo "[mkuefi] missing '$t' — apt install grub-common grub-efi-amd64-bin xorriso mtools"; exit 1; }
 done
 
 # Locate the x86_64-efi GRUB platform (modinfo.sh + *.mod). Prefer a system install.
-EFI=/usr/lib/grub/x86_64-efi
+EFI="${NYX_GRUB_EFI_DIR:-/usr/lib/grub/x86_64-efi}"
+if [ -n "${NYX_GRUB_EFI_DIR:-}" ] && [ ! -f "$EFI/modinfo.sh" ]; then
+  echo "[mkuefi] invalid NYX_GRUB_EFI_DIR: missing modinfo.sh" >&2
+  exit 1
+fi
 if [ ! -f "$EFI/modinfo.sh" ]; then
   echo "[mkuefi] x86_64-efi GRUB platform not installed system-wide; fetching (no root)..."
   CACHE="$HOME/.cache/nyx-grub-efi"
@@ -33,10 +38,19 @@ if [ ! -f "$EFI/modinfo.sh" ]; then
   EFI="$CACHE/x86_64-efi"
 fi
 
-STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
-mkdir -p "$STAGE/boot/grub"
-cp "$KERNEL" "$STAGE/boot/nyx-kernel.bin"
-cat > "$STAGE/boot/grub/grub.cfg" <<'CFG'
+STAGE="$(mktemp -d)"
+PENDING=""
+cleanup() {
+  rm -rf -- "$STAGE"
+  if [ -n "$PENDING" ]; then rm -f -- "$PENDING"; fi
+}
+trap cleanup EXIT
+# Keep an existing image intact until the new one has been produced successfully.
+# A sibling temporary file also keeps the final rename on the same filesystem.
+PENDING="$(mktemp -- "${OUT}.pending.XXXXXX")"
+mkdir -p "$STAGE/image/boot/grub"
+cp "$KERNEL" "$STAGE/image/boot/nyx-kernel.bin"
+cat > "$STAGE/image/boot/grub/grub.cfg" <<'CFG'
 set timeout=10
 set default=0
 insmod all_video
@@ -67,5 +81,16 @@ CFG
 
 # grub-mkrescue's -d takes a single-platform module dir → a UEFI (El Torito 0xEF) ISO
 # that is USB-bootable under UEFI. (Secure Boot must be OFF; the loader is unsigned.)
-grub-mkrescue -d "$EFI" -o "$OUT" "$STAGE" 2>&1 | grep -vE '^xorriso : UPDATE' || true
+if ! grub-mkrescue -d "$EFI" -o "$PENDING" "$STAGE/image" > "$STAGE/build.log" 2>&1; then
+  cat "$STAGE/build.log" >&2
+  echo "[mkuefi] image creation failed; destination unchanged" >&2
+  exit 1
+fi
+cat "$STAGE/build.log"
+if [ ! -s "$PENDING" ]; then
+  echo "[mkuefi] builder produced no image; destination unchanged" >&2
+  exit 1
+fi
+mv -f -- "$PENDING" "$OUT"
+PENDING=""
 echo "[mkuefi] wrote $OUT ($(stat -c%s "$OUT") bytes) — UEFI-bootable, Secure Boot OFF"

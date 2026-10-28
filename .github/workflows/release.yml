@@ -1,51 +1,75 @@
 name: Release
 
-# When a version tag (e.g. v6.5.0) is pushed, build the bootable ISO and publish
-# a GitHub Release with the ISO and kernel attached, so anyone can download and
-# boot NyxOS without building it.
+# Publish the exact artifacts that passed the reusable build and boot checks.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write   # create the release and upload assets
+  contents: read
 
 jobs:
+  qualification:
+    name: Qualify release artifacts
+    uses: ./.github/workflows/build.yml
+
   release:
-    name: Build ISO and publish the release
+    name: Publish verified artifacts
+    needs: qualification
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+      security-events: read
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Install toolchain
+      - name: Require the analyzed master candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE_SHA: ${{ github.sha }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y make nasm gcc binutils python3 \
-            grub-common grub-pc-bin xorriso mtools
+          master_sha=$(gh api "repos/$GH_REPO/git/ref/heads/master" --jq '.object.sha')
+          test "$master_sha" = "$CANDIDATE_SHA"
+          gh api "repos/$GH_REPO/actions/workflows/codeql.yml/runs" --method GET \
+            -f "head_sha=$CANDIDATE_SHA" -f status=completed -f per_page=1 \
+            | jq -e --arg sha "$CANDIDATE_SHA" \
+              '.workflow_runs[0] | .head_sha == $sha and .conclusion == "success"'
+          gh api "repos/$GH_REPO/code-scanning/analyses" --method GET \
+            -f ref=refs/heads/master -f tool_name=CodeQL -f per_page=1 \
+            | jq -e --arg sha "$CANDIDATE_SHA" \
+              '.[0] | .commit_sha == $sha and .error == "" and .rules_count > 0'
+          open_alerts=$(gh api "repos/$GH_REPO/code-scanning/alerts" --method GET \
+            -f ref=refs/heads/master -f state=open -f per_page=100 --paginate --jq 'length')
+          test "$open_alerts" = 0
 
-      - name: Build kernel and ISO
+      - name: Download qualified artifacts from this run
+        uses: actions/download-artifact@v8
+        with:
+          name: nyxos-build
+
+      - name: Verify and name release assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          make -C kernel
-          mkdir -p iso/boot/grub
-          printf '%s\n' \
-            'set timeout=5' 'set default=0' \
-            "menuentry 'NyxOS' {" \
-            '    multiboot2 /boot/nyx-kernel.bin' \
-            '    boot' '}' > iso/boot/grub/grub.cfg
-          cp kernel/nyx-kernel.bin iso/boot/
-          grub-mkrescue -o "NyxOS-${GITHUB_REF_NAME}.iso" iso/
+          sha256sum -c SHA256SUMS
+          mkdir release-assets
+          cp NyxOS.iso "release-assets/NyxOS-${RELEASE_TAG}.iso"
+          cp NyxOS-uefi.iso "release-assets/NyxOS-${RELEASE_TAG}-uefi.iso"
+          cp kernel/nyx-kernel.bin release-assets/nyx-kernel.bin
+          cd release-assets
+          sha256sum ./*.iso nyx-kernel.bin > SHA256SUMS
+          sha256sum -c SHA256SUMS
 
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists (curated manually) — skipping."
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists; preserving its assets."
           else
-            gh release create "${GITHUB_REF_NAME}" \
-              "NyxOS-${GITHUB_REF_NAME}.iso" \
-              kernel/nyx-kernel.bin \
-              --title "NyxOS ${GITHUB_REF_NAME}" \
-              --generate-notes
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --verify-tag --title "NyxOS $RELEASE_TAG" --generate-notes
           fi

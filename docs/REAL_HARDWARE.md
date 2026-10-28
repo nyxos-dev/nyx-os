@@ -17,6 +17,11 @@ come from a system install (`sudo apt install grub-efi-amd64-bin`) if present, o
 they are fetched without root via `apt-get download`. Under the hood it just runs
 `tools/mkuefi.sh`, which you can call directly on Linux.
 
+An unsuccessful image build returns an error and preserves any existing output.
+The destination is replaced only after the builder succeeds with a nonempty
+temporary image. `NYX_GRUB_EFI_DIR` can select an existing GRUB EFI module directory;
+an explicit directory without `modinfo.sh` is rejected rather than downloaded.
+
 ## Flash to USB
 
 Write `NyxOS-uefi.iso` to a USB stick with **Rufus** in **DD / Image mode** (not the

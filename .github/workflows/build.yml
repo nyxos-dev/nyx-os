@@ -1,6 +1,7 @@
 name: Build kernel
 
 on:
+  workflow_call:
   push:
     branches: [master]
   pull_request:
@@ -8,7 +9,7 @@ on:
 
 # A newer push to the same branch cancels an in-flight run.
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y make nasm gcc binutils python3 \
-            grub-common grub-pc-bin xorriso mtools e2fsprogs
+            grub-common grub-pc-bin grub-efi-amd64-bin xorriso mtools e2fsprogs
 
       - name: Build kernel and userland
         run: |
@@ -213,6 +214,9 @@ jobs:
       - name: Test PIT boot programming
         run: python3 tools/test_pit_programming.py
 
+      - name: Test UEFI image failure handling
+        run: python3 tools/test_mkuefi.py
+
       - name: Test process snapshot copyout
         run: python3 tools/test_process_snapshot.py
 
@@ -239,18 +243,23 @@ jobs:
           # and a self-test ISO whose GRUB entry adds the `selftest` multiboot command
           # line, which makes the kernel run its offline self-test battery and halt
           # (consumed by the self-tests job below).
+          stage=$(mktemp -d)
+          trap 'rm -rf -- "$stage"' EXIT
           make_iso() {   # $1 = kernel cmdline, $2 = staging dir, $3 = output iso
             mkdir -p "$2/boot/grub"
             printf '%s\n' \
               'set timeout=5' 'set default=0' \
               "menuentry 'NyxOS' {" \
               "    multiboot2 /boot/nyx-kernel.bin $1" \
+              '    module2 /boot/nyx-kernel.bin nyxkernel.bin' \
               '    boot' '}' > "$2/boot/grub/grub.cfg"
             cp kernel/nyx-kernel.bin "$2/boot/"
-            grub-mkrescue -o "$3" "$2"
+            grub-mkrescue -d /usr/lib/grub/i386-pc -o "$3" "$2"
           }
-          make_iso ""         iso    NyxOS.iso
-          make_iso "selftest" iso-st NyxOS-selftest.iso
+          make_iso ""         "$stage/normal"   NyxOS.iso
+          make_iso "selftest" "$stage/selftest" NyxOS-selftest.iso
+          bash tools/mkuefi.sh NyxOS-uefi.iso
+          sha256sum NyxOS.iso NyxOS-uefi.iso NyxOS-selftest.iso kernel/nyx-kernel.bin > SHA256SUMS
 
       - name: Report sizes
         run: |
@@ -270,10 +279,17 @@ jobs:
             kernel/nyx-kernel.bin
             NyxOS.iso
             NyxOS-selftest.iso
+            NyxOS-uefi.iso
+            SHA256SUMS
           if-no-files-found: error
 
   smoke-boot:
-    name: QEMU smoke boot (reaches login, no panic)
+    name: QEMU login (${{ matrix.firmware }}, ${{ matrix.cpus }} CPUs)
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
+        cpus: [1, 4]
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -281,12 +297,15 @@ jobs:
       - name: Install QEMU and e2fsprogs
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 e2fsprogs
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 e2fsprogs ovmf
 
       - name: Download the ISO
         uses: actions/download-artifact@v8
         with:
           name: nyxos-build
+
+      - name: Verify downloaded build artifacts
+        run: sha256sum -c SHA256SUMS
 
       - name: Create a blank ext2 disk
         run: |
@@ -297,6 +316,9 @@ jobs:
           mkfs.ext2 -q -b 1024 -I 128 -O ^resize_inode,^dir_index,^ext_attr ext2-test.img
 
       - name: Boot NyxOS and confirm it reaches the login screen
+        env:
+          FIRMWARE: ${{ matrix.firmware }}
+          CPUS: ${{ matrix.cpus }}
         run: |
           # Catches a boot regression (a panic or a hang during init) with no human
           # in the loop. Success = the kernel prints "[LOGIN] Starting login screen"
@@ -304,8 +326,16 @@ jobs:
           # (memory, paging, SMP, drivers, net, crypto, ext2 mount, compositor task).
           # KVM is unavailable on GitHub runners, so QEMU uses TCG (software) and the
           # boot is slower than on hardware — hence the generous timeout.
-          timeout 240 qemu-system-x86_64 \
-            -cdrom NyxOS.iso \
+          firmware=()
+          image=NyxOS.iso
+          if [ "$FIRMWARE" = uefi ]; then
+            image=NyxOS-uefi.iso
+            cp /usr/share/OVMF/OVMF_VARS_4M.fd ovmf-vars.fd
+            firmware=(-drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd
+                      -drive if=pflash,format=raw,file=ovmf-vars.fd)
+          fi
+          timeout 240 qemu-system-x86_64 "${firmware[@]}" \
+            -cdrom "$image" -smp "$CPUS" \
             -drive file=ext2-test.img,format=raw,index=0,media=disk \
             -m 512M -cpu qemu64,+rdrand,+rdseed \
             -serial file:serial.log -display none -no-reboot &
@@ -314,10 +344,10 @@ jobs:
           for i in $(seq 1 100); do
             sleep 2
             [ -f serial.log ] || continue
-            if grep -q 'Starting login screen' serial.log; then ok=1; break; fi
             if grep -Eq 'PANIC|Kernel panic|#PF|#GP|General Protection|Triple fault' serial.log; then
               echo "::error::a kernel fault was printed during boot"; break
             fi
+            if grep -q 'Starting login screen' serial.log; then ok=1; break; fi
           done
           kill "$QPID" 2>/dev/null || true
           echo '----- serial log (tail) -----'
@@ -343,6 +373,9 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: nyxos-build
+
+      - name: Verify downloaded build artifacts
+        run: sha256sum -c SHA256SUMS
 
       - name: Create a blank ext2 disk
         run: |

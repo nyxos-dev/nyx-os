@@ -40,6 +40,20 @@ Unexecuted cases stay open. Passing emulation does not qualify physical devices.
 
 ## Candidate and publication procedure
 
+The tag-triggered release workflow runs the reusable build workflow before
+publication. It downloads that run's artifacts, checks their SHA-256 manifest,
+and publishes the same kernel and BIOS/UEFI image bytes with release filenames.
+It does not rebuild an image after qualification. The build checks normal login
+with one/four CPUs under BIOS and OVMF and runs the separate BIOS self-test image.
+Publication also requires the tag's revision to match `master`, a successful
+CodeQL workflow and analysis of that revision, and no open code-scanning alerts
+on `master`. Missing analysis or unavailable API results block publication.
+Keep the candidate on `master` through qualification and publication; create its
+tag only after the branch's CodeQL run has finished successfully.
+These automated checks do not replace the interactive installation, persistence,
+recovery and security-analysis gates above. The release workflow does not create
+tags; a development version alone does not request publication.
+
 1. Close reproducible crash, corruption, data-loss and security blockers. Recheck
    the remaining limitations against the intended release scope.
 2. Build from a clean source tree using the existing toolchain and snapshot rules.
